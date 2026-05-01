@@ -3,7 +3,7 @@
 #include "display_bsp.h"
 #include <esp_now.h>
 #include <WiFi.h>
-#include <Fonts/FreeMonoBold24pt7b.h>
+#include <Fonts/FreeMonoBold18pt7b.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMono9pt7b.h>
 #include <math.h>
@@ -11,42 +11,38 @@
 static const int W = 400;
 static const int H = 300;
 
+// ── Screen battery (18650) ────────────────────────────────────────────────────
+// Verify SCR_BATT_PIN from the Waveshare RLCD 4.2" dev board schematic.
+// GPIO1 is the most common sense pin on this module (1:2 divider → Vadc = Vbat/2).
+static const int   SCR_BATT_PIN = 1;
+static const float SCR_BATT_DIV = 2.0f;
+
+// ── Charging indicator ────────────────────────────────────────────────────────
+// Set to the TP4056 CHRG GPIO (active LOW when charging). -1 = disabled.
+static const int CHRG_PIN = -1;
+
 DisplayPort RlcdPort(12, 11, 5, 40, 41, W, H);
 GFXcanvas1  canvas(W, H);
 
-// ═══════════════════════════════════════════════════════════════
-//  LAYOUT  (all pixel ranges verified)
+// ═══════════════════════════════════════════════════════════════════════
+//  LAYOUT — all boundaries verified, nothing overlaps
 //
-//  ROW 0  y =  0 ..  29   Header bar
-//  ROW 1  y = 30 .. 209   Gauges    (180 px tall)
-//  ROW 2  y = 210 .. 299  Info bar  ( 90 px tall)
+//  ROW 0  y=0..29    HEADER
+//    Mode badge   x=3,   w=90,  h=24, y=3
+//    State badge  x=97,  w=108, h=24, y=3
+//    SCR bat bar  x=210, w=182, h=17, y=6
 //
-//  ROW 0  Mode badge  x=3..93   (w=90, FreeMonoBold12pt7b, "NORMAL"=84px ✓)
-//         State badge x=97..205 (w=108, "RAMPING"=98px ✓)
-//         Battery bar x=209..391 (w=182), nub x=391..396
+//  ROW 1  y=30..219  GAUGES
+//    x=0..120   RPM small    CX=60  CY=132 R=52
+//    x=120..300 Speed large  CX=210 CY=132 R=78
+//    x=300..400 SET mini     CX=350 CY=82  R=32
+//               LIVE mini    CX=350 CY=169 R=32
 //
-//  ROW 1 columns   |  0 .. 199  Speed   |  200 .. 399  RPM  |
-//  ROW 2 columns   |  0 .. 109  Amps    |  110 .. 399  Values|
-//
-//  Speed gauge  CX=97  CY=120  R=72
-//    arc top:       120-72    =  48  > 30 ✓
-//    arc corners:   120+51    = 171  < 210 ✓
-//    arc rightmost: 97+51     = 148  < 200 ✓
-//
-//  RPM gauge  CX=303  CY=120  R=72
-//    arc leftmost:  303-51    = 252  > 200 ✓
-//    arc rightmost: 303+51    = 354  < 400 ✓
-//    arc corners:   same vertical  ✓
-//
-//  Amps bar  x=18  y=222  w=72  h=62
-//    right:  18+72 = 90   < 110 ✓
-//    bottom: 222+62= 284  < 299 ✓
-//
-//  Value rows  x=114  w=282  rows at y=224,252,280
-//    bar bottom: 285+10 = 295  < 300 ✓
-// ═══════════════════════════════════════════════════════════════
+//  ROW 2a y=220..258 AMPS bar (x=0..202) | RAMP bar (x=203..399)
+//  ROW 2b y=259..299 Vehicle battery bar (full width)
+// ═══════════════════════════════════════════════════════════════════════
 
-// ─── Data ────────────────────────────────────────────────────────────────────
+// ─── Data ─────────────────────────────────────────────────────────────────────
 struct DashData {
   float speedMph    = 0;
   float batV        = 24.6f;
@@ -59,7 +55,7 @@ struct DashData {
   float rampPct     = 0;
 };
 
-// ─── ESP-NOW ─────────────────────────────────────────────────────────────────
+// ─── ESP-NOW ──────────────────────────────────────────────────────────────────
 volatile bool hasNew = false;
 char          rxBuf[128];
 portMUX_TYPE  mux = portMUX_INITIALIZER_UNLOCKED;
@@ -88,19 +84,33 @@ bool parsePacket(const char* src, DashData& d) {
   return true;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-int batPct(float v) {
+// ─── Battery helpers ──────────────────────────────────────────────────────────
+int batPct(float v) {                          // vehicle: 20V=0%, 25.6V=100%
   int p = (int)((v - 20.0f) / 5.6f * 100.0f);
   return p < 0 ? 0 : (p > 100 ? 100 : p);
 }
 
+float scrBatV() {
+  return analogRead(SCR_BATT_PIN) / 4095.0f * 3.3f * SCR_BATT_DIV;
+}
+
+int scrBatPct() {                              // 18650: 3.0V=0%, 4.2V=100%
+  int p = (int)((scrBatV() - 3.0f) / 1.2f * 100.0f);
+  return p < 0 ? 0 : (p > 100 ? 100 : p);
+}
+
+bool isCharging() {
+  if (CHRG_PIN < 0) return false;
+  return digitalRead(CHRG_PIN) == LOW;         // TP4056 CHRG is active LOW
+}
+
+// ─── Drawing primitives ───────────────────────────────────────────────────────
 float gaugeAng(float val, float lo, float hi) {
   float n = (val - lo) / (hi - lo);
   if (n < 0) n = 0; if (n > 1) n = 1;
   return (225.0f - n * 270.0f) * (float)M_PI / 180.0f;
 }
 
-// Draw arc dLo°..dHi° at radius r, t=thickness 1-3
 void arc(int cx, int cy, int r, float dLo, float dHi, int t) {
   for (float d = dLo; d <= dHi + 0.01f; d += 0.7f) {
     float a = d * (float)M_PI / 180.0f;
@@ -118,7 +128,7 @@ void tick(int cx, int cy, int ro, int ri, float deg) {
                   cx+(int)(ri*cosf(a)), cy-(int)(ri*sinf(a)), 1);
 }
 
-// Draw text centred on pixel (px, py)
+// Centre text on pixel (px, py)
 void ct(const GFXfont* f, const char* s, int px, int py) {
   canvas.setFont(f);
   canvas.setTextColor(1);
@@ -128,7 +138,7 @@ void ct(const GFXfont* f, const char* s, int px, int py) {
   canvas.print(s);
 }
 
-// Inverted badge
+// Inverted filled badge
 void badge(int x, int y, int w, int h, const char* s) {
   canvas.fillRect(x, y, w, h, 1);
   canvas.setFont(&FreeMonoBold12pt7b);
@@ -140,40 +150,62 @@ void badge(int x, int y, int w, int h, const char* s) {
   canvas.setTextColor(1);
 }
 
-void minibar(int x, int y, int w, int h, float pct) {
+// Horizontal battery bar with fill, nub, and centred label
+void battBar(int x, int y, int w, int h, int pct, const char* label) {
   canvas.drawRect(x, y, w, h, 1);
-  int f = (int)((w-2) * (pct > 100.f ? 1.f : pct / 100.f));
-  if (f > 0) canvas.fillRect(x+1, y+1, f, h-2, 1);
+  canvas.fillRect(x+w, y+h/2-2, 3, 4, 1);           // nub
+  int f = (int)((w-2) * pct / 100);
+  if (f > 0) canvas.fillRect(x+1, y+1, f, h-2, 1);  // fill
+  canvas.setFont(&FreeMono9pt7b);
+  canvas.setTextColor(pct > 50 ? 0 : 1);
+  int16_t x1_, y1_; uint16_t tw, th;
+  canvas.getTextBounds(label, 0, 0, &x1_, &y1_, &tw, &th);
+  canvas.setCursor(x + w/2 - (int)tw/2, y + h - 3);
+  canvas.print(label);
+  canvas.setTextColor(1);
 }
 
-// ─── Gauge drawing ────────────────────────────────────────────────────────────
+// Horizontal progress bar (no nub, no text)
+void hbar(int x, int y, int w, int h, float pct, bool hatch = false) {
+  canvas.drawRect(x, y, w, h, 1);
+  int f = (int)((w-2) * (pct > 100.f ? 1.f : pct / 100.f));
+  if (f > 0) {
+    if (hatch) {
+      for (int fy = y+1; fy < y+h-1; fy++)
+        for (int fx = x+1; fx < x+1+f; fx++)
+          if ((fx+fy) % 2 == 0) canvas.drawPixel(fx, fy, 1);
+    } else {
+      canvas.fillRect(x+1, y+1, f, h-2, 1);
+    }
+  }
+}
+
+// ─── Main gauge (speed / RPM) ─────────────────────────────────────────────────
+// numFont / numDY let the caller choose font size and vertical offset
 void drawGauge(int cx, int cy, int r,
                float val, float lo, float hi,
                const char* bigNum, const char* unit,
-               int dangerLo, int dangerHi,          // 0 = no danger zone
-               int effAt,                            // 0 = no eff marker
-               int tickStep, int labelStep) {
+               int dangerLo, int dangerHi, int effAt,
+               int tickStep, int labelStep,
+               const GFXfont* numFont, int numDY) {
 
-  // Outer arc (double thick)
   arc(cx, cy, r,   -45.f, 225.f, 2);
   arc(cx, cy, r-4, -45.f, 225.f, 1);
 
   // Danger zone hatch
   if (dangerLo > 0) {
-    float dLo = 225.f - ((float)dangerLo/(hi))*270.f;  // NOTE: lo=0 assumed
-    float dHi_d = 225.f - ((float)dangerHi/(hi))*270.f;
-    float dStart = dHi_d < dLo ? dHi_d : dLo;
-    float dEnd   = dHi_d < dLo ? dLo   : dHi_d;
-    for (float dg = dStart; dg <= dEnd; dg += 0.9f) {
-      float a = dg * (float)M_PI / 180.f;
+    float dA = 225.f - ((float)dangerLo/hi)*270.f;
+    float dB = 225.f - ((float)dangerHi/hi)*270.f;
+    for (float dg = dB; dg <= dA; dg += 0.9f) {
+      float a = dg*(float)M_PI/180.f;
       for (int ri = r-9; ri <= r+2; ri += 2)
         canvas.drawPixel(cx+(int)(ri*cosf(a)), cy-(int)(ri*sinf(a)), 1);
     }
   }
 
-  // Progress fill arc
-  float fillEnd = 225.f - (val / hi) * 270.f;
-  if (val > lo + 0.5f) arc(cx, cy, r-9, fillEnd, 225.f, 3);
+  // Progress fill
+  if (val > lo + 0.5f)
+    arc(cx, cy, r-9, 225.f - (val/hi)*270.f, 225.f, 3);
 
   // Efficiency marker
   if (effAt > 0) {
@@ -182,12 +214,12 @@ void drawGauge(int cx, int cy, int r,
     tick(cx, cy, r+4, r-14, ed+2.f);
   }
 
-  // Ticks + labels
+  // Ticks + labels (skip end-stop label at -45° to prevent overlap with number)
   for (float v = lo; v <= hi + 0.1f; v += tickStep) {
     float deg = 225.f - ((v-lo)/(hi-lo))*270.f;
-    bool isMajor = (((int)v % labelStep) == 0);
-    tick(cx, cy, r, isMajor ? r-15 : r-7, deg);
-    if (isMajor) {
+    bool  maj = (((int)v % labelStep) == 0);
+    tick(cx, cy, r, maj ? r-15 : r-7, deg);
+    if (maj && deg > -40.f) {
       char buf[8];
       if (hi >= 1000) {
         if ((int)v == 0) snprintf(buf, sizeof(buf), "0");
@@ -195,10 +227,8 @@ void drawGauge(int cx, int cy, int r,
       } else {
         snprintf(buf, sizeof(buf), "%d", (int)v);
       }
-      float a = deg * (float)M_PI / 180.f;
-      int lx = cx + (int)((r-26)*cosf(a));
-      int ly = cy - (int)((r-26)*sinf(a));
-      ct(&FreeMono9pt7b, buf, lx, ly);
+      float a = deg*(float)M_PI/180.f;
+      ct(&FreeMono9pt7b, buf, cx+(int)((r-26)*cosf(a)), cy-(int)((r-26)*sinf(a)));
     }
   }
 
@@ -213,11 +243,33 @@ void drawGauge(int cx, int cy, int r,
   canvas.fillCircle(cx, cy, 6, 1);
   canvas.fillCircle(cx, cy, 3, 0);
 
-  // Big number — baseline at cy+36, ascent~28 → top at cy+8. Arc corners cy+51 → number inside ✓
-  ct(&FreeMonoBold24pt7b, bigNum, cx, cy+22);
+  ct(numFont,        bigNum, cx, cy + numDY);
+  ct(&FreeMono9pt7b, unit,   cx, cy + numDY + 20);
+}
 
-  // Unit label — centered below number
-  ct(&FreeMono9pt7b, unit, cx, cy+50);
+// ─── Mini gauge (SET / LIVE) ──────────────────────────────────────────────────
+// Simple arc + fill + needle + centre number + label below gap
+void drawMiniGauge(int cx, int cy, int r,
+                   float val, float lo, float hi,
+                   const char* numStr, const char* label) {
+  arc(cx, cy, r, -45.f, 225.f, 2);
+
+  // Fill arc
+  if (val > lo + 0.5f)
+    arc(cx, cy, r-6, 225.f - ((val-lo)/(hi-lo))*270.f, 225.f, 2);
+
+  // Needle
+  float ang = gaugeAng(val, lo, hi);
+  canvas.drawLine(cx, cy,
+                  cx+(int)((r-3)*cosf(ang)), cy-(int)((r-3)*sinf(ang)), 1);
+  canvas.fillCircle(cx, cy, 3, 1);
+  canvas.fillCircle(cx, cy, 1, 0);
+
+  // Number inside arc (10px below centre — sits in the open gap)
+  ct(&FreeMonoBold12pt7b, numStr, cx, cy+10);
+
+  // Label below gap
+  ct(&FreeMono9pt7b, label, cx, cy + r + 4);
 }
 
 // ─── Full dashboard ───────────────────────────────────────────────────────────
@@ -225,107 +277,114 @@ void drawDash(const DashData& d, bool demo) {
   canvas.fillScreen(0);
 
   // ══ ROW 0: HEADER  y=0..29 ══════════════════════════════════════════════════
-  // Mode badge w=90 fits "NORMAL" (FreeMonoBold12pt7b ~14px/char → 84px) + 3px pad each side
-  // State badge w=108 fits "RAMPING" (~98px) + 5px pad each side
   badge(3,  3,  90, 24, d.mode);
   badge(97, 3, 108, 24, d.state);
 
-  // Battery bar  x=209..391  w=182  nub x=391..396  (inside 400px ✓)
+  // Screen battery bar (x=210 y=6 w=182 h=17)
   {
-    int bp = batPct(d.batV);
-    canvas.drawRect(209, 3, 182, 24, 1);
-    canvas.fillRect(391, 9, 5, 12, 1);    // nub
-    int f = (int)(178 * bp / 100);
-    if (f > 0) canvas.fillRect(211, 5, f, 20, 1);
-    char s[20]; snprintf(s, sizeof(s), "%.1fV  %d%%", d.batV, bp);
-    canvas.setFont(&FreeMono9pt7b);
-    canvas.setTextColor(bp > 50 ? 0 : 1);
-    // Centre text in bar: bar spans 209..391, inner 211..389 = 178px wide
-    int tpx = 300 - (int)(strlen(s) * 7 / 2);
-    canvas.setCursor(tpx, 20);
-    canvas.print(s);
-    canvas.setTextColor(1);
+    int   sp  = scrBatPct();
+    float sv  = scrBatV();
+    bool  chg = isCharging();
+    char  s[28];
+    if      (demo && chg) snprintf(s, sizeof(s), "SCR %.1fV CHG DM", sv);
+    else if (demo)        snprintf(s, sizeof(s), "SCR %.1fV %d%% DM", sv, sp);
+    else if (chg)         snprintf(s, sizeof(s), "SCR %.1fV CHG",     sv);
+    else                  snprintf(s, sizeof(s), "SCR %.1fV %d%%",    sv, sp);
+    battBar(210, 6, 182, 17, sp, s);
   }
-  if (demo) { canvas.setFont(&FreeMono9pt7b); canvas.setTextColor(1); canvas.setCursor(372, 20); canvas.print("DM"); }
+
   canvas.drawFastHLine(0, 30, W, 1);
 
-  // ══ ROW 1: GAUGES  y=30..209 ════════════════════════════════════════════════
-  canvas.drawFastVLine(200, 30, 180, 1);   // vertical divider
+  // ══ ROW 1: GAUGES  y=30..219 ════════════════════════════════════════════════
+  canvas.drawFastVLine(120, 30, 190, 1);   // RPM | Speed
+  canvas.drawFastVLine(300, 30, 190, 1);   // Speed | Mini gauges
 
-  // Section labels — y=41, between separator(30) and arc tops(48) ✓
-  ct(&FreeMono9pt7b, "SPEED", 97, 41);
-  ct(&FreeMono9pt7b, "MOTOR RPM", 303, 41);
+  // Section labels
+  ct(&FreeMono9pt7b, "MOTOR RPM", 60,  40);
+  ct(&FreeMono9pt7b, "SPEED",    210,  40);
+  ct(&FreeMono9pt7b, "THROTTLE", 350,  40);
 
-  // Speed gauge  CX=97 CY=120 R=72
-  {
-    char buf[8]; snprintf(buf, sizeof(buf), "%.1f", d.speedMph);
-    // ticks every 5, labels every 10
-    drawGauge(97, 120, 72, d.speedMph, 0, 30, buf, "MPH", 0, 0, 0, 5, 10);
-  }
-
-  // RPM gauge  CX=303 CY=120 R=72
-  // danger 2200-2500, efficiency at 1700, ticks every 250, labels every 1000 (0/1k/2k)
+  // RPM — small gauge left (CX=60 CY=132 R=52)
   {
     char buf[8]; snprintf(buf, sizeof(buf), "%.0f", d.rpm);
-    drawGauge(303, 120, 72, d.rpm, 0, 2500, buf, "RPM", 2200, 2500, 1700, 250, 1000);
+    drawGauge(60, 132, 52,
+              d.rpm, 0, 2500, buf, "RPM",
+              2200, 2500, 1700, 250, 1000,
+              &FreeMonoBold12pt7b, 12);
   }
 
-  canvas.drawFastHLine(0, 210, W, 1);
-
-  // ══ ROW 2: INFO  y=210..299 ═════════════════════════════════════════════════
-  canvas.drawFastVLine(110, 210, 90, 1);   // amps | values divider
-
-  // ── Amps bar  x=18 y=220 w=72 h=62 ─────────────────────────────────────────
-  ct(&FreeMono9pt7b, "AMPS", 54, 216);     // centred in amps section (0..109)
-  canvas.drawRect(18, 222, 72, 62, 1);
-
-  // Warn line at 80A (y = 222+62 - 62*0.8 = 284-50 = 234)
-  int warnY = 222 + 62 - 1 - (int)(60 * 80 / 100);
-  canvas.drawFastHLine(18, warnY, 72, 1);
-
+  // Speed — large gauge centre (CX=210 CY=132 R=78)
   {
-    float ap = d.amps > 100 ? 1.f : d.amps / 100.f;
-    int fh = (int)(60 * ap);
-    if (fh > 0) {
-      int fy = 222 + 62 - 1 - fh;
-      if (d.amps > 80.f) {
-        for (int y = fy; y < 284; y++)
-          for (int x = 19; x < 90; x++)
-            if ((x+y)%2 == 0) canvas.drawPixel(x, y, 1);
-      } else {
-        canvas.fillRect(19, fy, 70, fh, 1);
-      }
-    }
-  }
-  // Amp value below bar — baseline 298, within H=300 ✓
-  {
-    char buf[8]; snprintf(buf, sizeof(buf), "%.0fA", d.amps);
-    ct(&FreeMonoBold12pt7b, buf, 54, 291);
+    char buf[8]; snprintf(buf, sizeof(buf), "%.1f", d.speedMph);
+    drawGauge(210, 132, 78,
+              d.speedMph, 0, 30, buf, "MPH",
+              0, 0, 0, 5, 10,
+              &FreeMonoBold18pt7b, 22);
   }
 
-  // ── Value rows  x=114..396  three rows ──────────────────────────────────────
-  // Row heights: each row is label(13px) + bar(10px) + gap(5px) = 28px
-  // Row 1 SET:  label y=224  bar y=229..238
-  // Row 2 LIVE: label y=252  bar y=257..266
-  // Row 3 RAMP: label y=280  bar y=285..294  ← bottom 294 < 300 ✓
-  const int RX = 114, RW = 282;
-  struct { const char* lbl; float val; int ly; int by; } rows[3] = {
-    { "SET",  d.setpointPct, 224, 229 },
-    { "LIVE", d.livePct,     252, 257 },
-    { "RAMP", d.rampPct,     280, 285 },
-  };
-  for (int i = 0; i < 3; i++) {
-    char txt[20];
-    snprintf(txt, sizeof(txt), "%s  %.1f%%", rows[i].lbl, rows[i].val);
+  // SET mini gauge (CX=350 CY=82 R=32)
+  {
+    char buf[8]; snprintf(buf, sizeof(buf), "%.0f%%", d.setpointPct);
+    drawMiniGauge(350, 82, 32, d.setpointPct, 0, 100, buf, "SET");
+  }
+
+  // LIVE mini gauge (CX=350 CY=169 R=32)
+  {
+    char buf[8]; snprintf(buf, sizeof(buf), "%.0f%%", d.livePct);
+    drawMiniGauge(350, 169, 32, d.livePct, 0, 100, buf, "LIVE");
+  }
+
+  canvas.drawFastHLine(0, 220, W, 1);
+
+  // ══ ROW 2a: AMPS + RAMP  y=220..258 ═════════════════════════════════════════
+  canvas.drawFastVLine(203, 220, 39, 1);   // Amps | Ramp
+
+  // AMPS (x=0..202)
+  {
+    char lbl[16]; snprintf(lbl, sizeof(lbl), "AMPS  %.0fA", d.amps);
     canvas.setFont(&FreeMono9pt7b);
     canvas.setTextColor(1);
-    canvas.setCursor(RX, rows[i].ly);
-    canvas.print(txt);
-    minibar(RX, rows[i].by, RW, 10, rows[i].val);
+    canvas.setCursor(5, 229);
+    canvas.print(lbl);
+
+    // Bar x=5 y=234 w=192 h=14
+    const int AX=5, AY=234, AW=192, AH=14;
+    int warnX = AX + 1 + (int)((AW-2) * 0.8f);
+    hbar(AX, AY, AW, AH, d.amps, d.amps > 80.f);
+    canvas.drawFastVLine(warnX, AY, AH, 1);  // 80A warning line
+
+    // Scale labels
+    canvas.setFont(&FreeMono9pt7b); canvas.setTextColor(1);
+    canvas.setCursor(AX,        AY+AH+8); canvas.print("0");
+    canvas.setCursor(warnX-7,   AY+AH+8); canvas.print("80");
+    canvas.setCursor(AX+AW-14,  AY+AH+8); canvas.print("^");
+  }
+
+  // RAMP (x=203..399)
+  {
+    char lbl[20]; snprintf(lbl, sizeof(lbl), "RAMP  %.1f%%", d.rampPct);
+    canvas.setFont(&FreeMono9pt7b);
+    canvas.setTextColor(1);
+    canvas.setCursor(207, 229);
+    canvas.print(lbl);
+
+    // Bar x=207 y=234 w=186 h=14
+    hbar(207, 234, 186, 14, d.rampPct, false);
+  }
+
+  canvas.drawFastHLine(0, 259, W, 1);
+
+  // ══ ROW 2b: VEHICLE BATTERY  y=259..299 ══════════════════════════════════════
+  ct(&FreeMono9pt7b, "VEHICLE BATTERY", 200, 266);
+
+  {
+    int bp = batPct(d.batV);
+    char s[24]; snprintf(s, sizeof(s), "%.1fV  %d%%", d.batV, bp);
+    battBar(5, 272, 389, 18, bp, s);
   }
 }
 
-// ─── Push canvas ─────────────────────────────────────────────────────────────
+// ─── Push canvas ──────────────────────────────────────────────────────────────
 void pushCanvas() {
   uint8_t* buf = canvas.getBuffer();
   const int bpr = (W+7)/8;
@@ -344,7 +403,7 @@ void pushCanvas() {
   RlcdPort.RLCD_Display();
 }
 
-// ─── Demo ────────────────────────────────────────────────────────────────────
+// ─── Demo ─────────────────────────────────────────────────────────────────────
 DashData demoTick(unsigned long ms) {
   DashData d;
   float t = (ms % 10000) / 10000.f;
@@ -379,13 +438,15 @@ DashData demoTick(unsigned long ms) {
 void setup() {
   Serial.begin(115200);
   delay(200);
+  analogSetAttenuation(ADC_11db);
+  if (CHRG_PIN >= 0) pinMode(CHRG_PIN, INPUT_PULLUP);
   WiFi.mode(WIFI_STA);
   if (esp_now_init() == ESP_OK) {
     esp_now_register_recv_cb(onReceive);
     Serial.print("MAC: "); Serial.println(WiFi.macAddress());
   }
   RlcdPort.RLCD_Init();
-  Serial.println("Dashboard V6");
+  Serial.println("Dashboard V8");
 }
 
 DashData      cur;

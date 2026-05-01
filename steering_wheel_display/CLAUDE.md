@@ -13,7 +13,7 @@ This file is written for an AI assistant picking up this project cold. Read it b
 > - Update the `Current version` and `Last updated` line at the top of `SYSTEM_INFO.md`
 > - Add a row to the `Version History` table in both files
 > - Update any sections whose content changed (layout, wiring, rules, known issues, etc.)
-> - Bump the version string in `setup()` in `display_receiver.ino`
+> - Bump the version string in `setup()` in `Steering_Wheel_Display.ino`
 
 ---
 
@@ -24,29 +24,33 @@ An ESP32 dashboard that receives live telemetry over ESP-NOW wireless and render
 | Sketch | Status | Rule |
 |--------|--------|------|
 | `throttle_controller.ino` (in parent folder) | **FINAL — V17** | **Never edit. Never suggest edits. It is done.** |
-| `display_receiver.ino` (this folder) | Active — **V7** | All work happens here |
+| `Steering_Wheel_Display/Steering_Wheel_Display.ino` | Active — **V8** | All work happens here |
 
 ---
 
 ## Files in This Folder
 
 ```
-display_receiver.ino   ← the sketch — all active development
-display_bsp.h          ← Waveshare RLCD driver header (do not modify)
-display_bsp.cpp        ← Waveshare RLCD driver implementation (do not modify)
-SYSTEM_INFO.md         ← human-readable system reference, kept in sync with the code
-CLAUDE.md              ← this file
+steering_wheel_display/
+├── Steering_Wheel_Display/
+│   ├── Steering_Wheel_Display.ino  ← THE SKETCH — all active development
+│   ├── display_bsp.h               ← Waveshare RLCD driver header (do not modify)
+│   └── display_bsp.cpp             ← Waveshare RLCD driver implementation (do not modify)
+├── SYSTEM_INFO.md
+└── CLAUDE.md
 ```
 
-`display_bsp.h` and `display_bsp.cpp` come from the Waveshare demo package. They **must** stay in the same folder as the sketch or it will not compile.
+**Arduino IDE rule:** the sketch file name must match its folder name. The folder is `Steering_Wheel_Display` and the sketch is `Steering_Wheel_Display.ino`. Open the `.ino` directly in Arduino IDE — it will handle the folder automatically.
+
+`display_bsp.h` and `display_bsp.cpp` come from the Waveshare demo package. They **must** stay in the same folder as the `.ino` or it will not compile.
 
 ---
 
 ## Rules — Follow These on Every Edit
 
-1. **Bump the version string** in `setup()` on every change to `display_receiver.ino`.  
-   Current version: **V7**. Next edit makes it V8, and so on.  
-   The line is: `Serial.println("Dashboard V7");`
+1. **Bump the version string** in `setup()` on every change to `Steering_Wheel_Display.ino`.  
+   Current version: **V8**. Next edit makes it V9, and so on.  
+   The line is: `Serial.println("Dashboard V8");`
 
 2. **Update `SYSTEM_INFO.md`** after any significant change — new feature, layout change, bug fix, or version bump.  
    Update the `Current version`, `Last updated`, and `Version History` table at minimum.  
@@ -131,19 +135,23 @@ speed_mph,batV,rpm,amps,mode,state,setpoint%,live%,ramp%
 Full pixel-level layout is in `SYSTEM_INFO.md`. Summary:
 
 ```
-ROW 0  y=0..29    Header: [Mode badge] [State badge] [Battery bar]
-ROW 1  y=30..209  Gauges: Speed (left) | RPM (right) — divider at x=200
-ROW 2  y=210..299 Info:   Amps bar (left) | SET/LIVE/RAMP rows (right) — divider at x=110
+ROW 0   y=0..29    Header: [Mode badge] [State badge] [SCR battery bar]
+ROW 1   y=30..219  Gauges: RPM small (left 0..120) | Speed large (120..300) | SET+LIVE mini (300..400)
+ROW 2a  y=220..258 AMPS bar (left 0..202) | RAMP bar (right 203..399)
+ROW 2b  y=259..299 Vehicle battery bar (full width)
 ```
 
 Key coordinates (do not change without updating SYSTEM_INFO.md):
 - Mode badge: `x=3, w=90, h=24`
 - State badge: `x=97, w=108, h=24`
-- Battery bar: `x=209, w=182, h=24`
-- Speed gauge: `CX=97, CY=120, R=72`
-- RPM gauge: `CX=303, CY=120, R=72`
-- Amps bar: `x=18, y=222, w=72, h=62`
-- SET/LIVE/RAMP: `x=114, w=282`
+- SCR battery bar: `x=210, w=182, h=17, y=6`
+- RPM gauge: `CX=60, CY=132, R=52` — small, left zone
+- Speed gauge: `CX=210, CY=132, R=78` — large, centre zone
+- SET mini gauge: `CX=350, CY=82, R=32`
+- LIVE mini gauge: `CX=350, CY=169, R=32`
+- AMPS bar: `x=5, y=234, w=192, h=14` (80A warning line)
+- RAMP bar: `x=207, y=234, w=186, h=14`
+- Vehicle battery bar: `x=5, y=272, w=389, h=18`
 
 ---
 
@@ -151,18 +159,24 @@ Key coordinates (do not change without updating SYSTEM_INFO.md):
 
 | Identifier | Used for |
 |------------|---------|
-| `FreeMonoBold24pt7b` | Large gauge numbers |
-| `FreeMonoBold12pt7b` | Badge text, amp value |
-| `FreeMono9pt7b` | Labels, ticks, battery text, SET/LIVE/RAMP rows |
+| `FreeMonoBold18pt7b` | Speed gauge number (large centre gauge) |
+| `FreeMonoBold12pt7b` | RPM gauge number, mini gauge numbers, badge text |
+| `FreeMono9pt7b` | Labels, tick text, battery bars, all bar labels |
 
 **Font width reference (FreeMonoBold12pt7b):** "NORMAL" ≈ 84px, "RAMPING" ≈ 98px. The badge widths above were chosen specifically to fit these strings. Do not shrink the badges.
+
+**numDY parameter in drawGauge():** vertical offset for the centre number — `22` for 18pt (Speed), `12` for 12pt (RPM).
 
 ---
 
 ## Current State
 
-- **V7 is written and ready to flash.** Display confirmed working on hardware (photo received).
+- **V8 is written, ready to flash.** Complete UI redesign based on user feedback photo.
 - Screen battery (18650) read via `analogRead(SCR_BATT_PIN)` on GPIO1 with 1:2 voltage divider. **Verify GPIO1 against the Waveshare RLCD 4.2" dev board schematic** — change `SCR_BATT_PIN` and `SCR_BATT_DIV` if needed.
+- Charging indicator: `static const int CHRG_PIN = -1;` — disabled by default. Set to the TP4056 CHRG GPIO (active LOW) once verified from schematic/silkscreen.
+- `analogSetAttenuation(ADC_11db)` called in `setup()` for full 0–3.3V ADC range.
+- New helper functions added in V8: `scrBatV()`, `scrBatPct()`, `isCharging()`, `hbar()`, `drawMiniGauge()`.
+- `drawGauge()` now takes `numFont` and `numDY` parameters so gauge size and font can be set independently.
 
 ---
 
@@ -174,3 +188,4 @@ Key coordinates (do not change without updating SYSTEM_INFO.md):
 | V5 | Switched to 2-row layout (gauges top, info bottom) |
 | V6 | Fixed badge widths, moved battery bar to x=209, fixed RPM "0k" label bug |
 | V7 | Gauge numbers → FreeMonoBold18pt7b (no arc overlap); RPM end-stop label suppressed; battery bar split into vehicle + 18650 screen bars; amps redesigned as horizontal bar; screen battery ADC on GPIO1 |
+| V8 | Full UI redesign: Speed large gauge centred (CX=210,R=78), RPM small gauge left (CX=60,R=52), SET+LIVE mini gauges right column (R=32 each), AMPS + RAMP horizontal bars in bottom strip, vehicle battery bar full-width below that, SCR battery bar top-right, charging indicator support (CHRG_PIN); new helpers: scrBatV/scrBatPct/isCharging/hbar/drawMiniGauge; drawGauge gains numFont+numDY params |

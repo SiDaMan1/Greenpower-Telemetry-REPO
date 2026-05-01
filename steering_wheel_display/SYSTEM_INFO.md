@@ -1,5 +1,5 @@
 # Telemetry Dashboard — System Info
-**Current version:** V7  
+**Current version:** V8  
 **Last updated:** 2026-05-01
 
 ---
@@ -11,7 +11,7 @@ Two ESP32 sketches that work together as a wireless telemetry display system for
 | Sketch | Status | Description |
 |--------|--------|-------------|
 | `throttle_controller.ino` | **FINAL — V17, do not edit** | Throttle controller with OLED display, sends telemetry over ESP-NOW |
-| `display_receiver.ino` | **Active development** | Receives telemetry and renders a live dashboard on the RLCD |
+| `Steering_Wheel_Display/Steering_Wheel_Display.ino` | **Active — V8** | Receives telemetry and renders a live dashboard on the RLCD |
 
 ---
 
@@ -39,15 +39,21 @@ Two ESP32 sketches that work together as a wireless telemetry display system for
 
 ---
 
-## Required Files (must all be in the same folder as the sketch)
+## File Structure
+
+Arduino IDE requires the sketch file name to match its containing folder name.
 
 ```
-display_receiver.ino   ← main sketch
-display_bsp.h          ← Waveshare RLCD driver header (from demo package)
-display_bsp.cpp        ← Waveshare RLCD driver implementation
+steering_wheel_display/
+├── Steering_Wheel_Display/
+│   ├── Steering_Wheel_Display.ino  ← active sketch (open this in Arduino IDE)
+│   ├── display_bsp.h               ← Waveshare RLCD driver header (do not modify)
+│   └── display_bsp.cpp             ← Waveshare RLCD driver implementation (do not modify)
+├── SYSTEM_INFO.md                  ← this file — keep in sync with the code
+└── CLAUDE.md                       ← AI briefing file — keep in sync with the code
 ```
 
-If `display_bsp.h` / `display_bsp.cpp` are missing, the sketch will not compile and the display will stay blank.
+If `display_bsp.h` / `display_bsp.cpp` are missing from the `Steering_Wheel_Display/` folder, the sketch will not compile and the display will stay blank.
 
 ---
 
@@ -101,21 +107,22 @@ Capped at **60 fps** — `if (now - lastFrm < 16) return;`
 ## Dashboard Layout
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ ROW 0  y=0..29     HEADER                                        │
-│  [MODE BADGE x=3 w=90] [STATE BADGE x=97 w=108] [BAT BAR x=209] │
-├────────────────────────┬─────────────────────────────────────────┤
-│ ROW 1  y=30..209       │  GAUGES                                 │
-│  SPEED gauge           │  RPM gauge                              │
-│  CX=97 CY=120 R=72     │  CX=303 CY=120 R=72                    │
-│                        │                                         │
-│     (left half 0..199) │ (right half 200..399)                   │
-├───────────┬────────────┴─────────────────────────────────────────┤
-│ ROW 2     │  INFO BAR  y=210..299                                │
-│ AMPS      │  SET / LIVE / RAMP rows                              │
-│ x=18 w=72 │  x=114 w=282                                        │
-│ (0..109)  │  (110..399)                                          │
-└───────────┴─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│ ROW 0   y=0..29    HEADER                                         │
+│  [MODE x=3 w=90] [STATE x=97 w=108]      [SCR BAT x=210 w=182]  │
+├────────────┬──────────────────────────┬───────────────────────────┤
+│ ROW 1      │  y=30..219               │                           │
+│ RPM small  │  SPEED large             │  SET mini  CX=350 CY=82  │
+│ CX=60      │  CX=210                  │  LIVE mini CX=350 CY=169 │
+│ CY=132 R=52│  CY=132 R=78             │  (R=32 each)              │
+│ (0..120)   │  (120..300)              │  (300..400)               │
+├──────┬─────┴──────────────────────────┴───────────────────────────┤
+│ROW2a │  y=220..258                                                │
+│ AMPS │  x=0..202      RAMP x=203..399                            │
+│ bar  │  bar                                                        │
+├──────┴────────────────────────────────────────────────────────────┤
+│ ROW 2b  y=259..299   VEHICLE BATTERY (full width)                 │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ### ROW 0 — Header (y=0..29)
@@ -123,43 +130,53 @@ Capped at **60 fps** — `if (now - lastFrm < 16) return;`
 |--------|---|---|---|---|-------|
 | Mode badge | 3 | 3 | 90 | 24 | Fits "NORMAL" (≈84px) with FreeMonoBold12pt7b |
 | State badge | 97 | 3 | 108 | 24 | Fits "RAMPING" (≈98px) |
-| Vehicle battery bar | 209 | 2 | 186 | 12 | Top thin bar — shows `V %`, nub right |
-| Screen battery bar | 209 | 16 | 186 | 12 | Bottom thin bar — shows `SCR %`, 18650 via GPIO1 ADC |
+| SCR battery bar | 210 | 6 | 182 | 17 | 18650 screen battery — shows `SCR %` + charging indicator |
 
-Vehicle battery %: **20V = 0%**, **25.6V = 100%** (2× 12V lead-acid in series)  
-Screen battery %: **3.0V = 0%**, **4.2V = 100%** (18650)  
+Screen battery %: **3.0V = 0%**, **4.2V = 100%** (18650 via GPIO1 ADC, 1:2 divider).  
+Charging indicator: drawn if `CHRG_PIN >= 0` and pin reads LOW (TP4056 CHRG active LOW).  
 Text colour inverts at 50%: white-on-black when >50%, black-on-white when ≤50%.
 
-### ROW 1 — Gauges (y=30..209)
-Vertical divider at x=200.
+### ROW 1 — Gauges (y=30..219)
+Three vertical zones divided at x=120 and x=300.
 
-**Speed gauge** (left):
-- Range: 0–30 MPH
-- Ticks every 5, labels every 10
-- No danger zone or efficiency marker
-
-**RPM gauge** (right):
+**RPM gauge** (left zone, x=0..120):
+- `CX=60, CY=132, R=52` — small gauge, font `FreeMonoBold12pt7b`, numDY=12
 - Range: 0–2500 RPM
 - Tick every 250, label every 1000 (displayed as `0` / `1k` / `2k`)
 - Danger zone: 2200–2500 (hatched arc)
 - Efficiency marker at 1700 RPM (extended tick)
+- End-stop label suppressed to avoid arc overlap
 
-Both gauges share the same `drawGauge()` function with a filled progress arc, needle, hub circle, and large centre number.
+**Speed gauge** (centre zone, x=120..300):
+- `CX=210, CY=132, R=78` — large gauge, font `FreeMonoBold18pt7b`, numDY=22
+- Range: 0–30 MPH
+- Ticks every 5, labels every 10
+- No danger zone or efficiency marker
 
-### ROW 2 — Info bar (y=210..299)
-Vertical divider at x=110.
+**SET + LIVE mini gauges** (right zone, x=300..400):
+- `drawMiniGauge()` — R=32, no tick marks, fills arc only, label + number centred
+- SET: `CX=350, CY=82`, range 0–100%, label "SET"
+- LIVE: `CX=350, CY=169`, range 0–100%, label "LIVE"
 
-**Amps section** (left column, 0..109):
-- "AMPS" label at top (FreeMono9pt7b)
-- Large amp value "36A" centred below label (FreeMonoBold18pt7b)
-- Horizontal level bar: x=6, y=253, w=98, h=16
-  - Solid fill ≤80A; hatched (checkerboard) fill >80A
-  - Vertical warning line at 80A position inside bar
-- Scale labels below bar: "0" left, "80" at warn line
+All gauges use `drawGauge()` (main) or `drawMiniGauge()` with filled progress arc, needle, hub circle, and centre number.
 
-**SET / LIVE / RAMP rows** (right column, 110..399):
-- Three horizontal mini-bars, one per row
-- Label + percentage value printed left of each bar
+### ROW 2a — Bottom bar (y=220..258)
+Vertical divider at x=203.
+
+**AMPS bar** (left, x=0..202):
+- "AMPS" label, value (e.g. "36A") printed left of bar
+- Bar: `x=5, y=234, w=192, h=14`
+- Solid fill ≤80A; hatched fill >80A
+- Vertical warning line at 80A position inside bar; "80" label below
+
+**RAMP bar** (right, x=203..399):
+- "RAMP" label, value % printed left of bar
+- Bar: `x=207, y=234, w=186, h=14`
+
+### ROW 2b — Vehicle battery (y=259..299)
+Full-width bar: `x=5, y=272, w=389, h=18`  
+Vehicle battery %: **20V = 0%**, **25.6V = 100%** (2× 12V lead-acid in series).  
+Shows voltage and % text. Text colour inverts at 50%.
 
 ---
 
@@ -167,9 +184,11 @@ Vertical divider at x=110.
 
 | Font | Size | Used for |
 |------|------|---------|
-| `FreeMonoBold18pt7b` | ~22px tall | Gauge numbers, amp value |
-| `FreeMonoBold12pt7b` | ~14px tall | Badge text |
-| `FreeMono9pt7b` | ~10px tall | Labels, tick text, battery bars, SET/LIVE/RAMP rows |
+| `FreeMonoBold18pt7b` | ~22px tall | Speed gauge centre number |
+| `FreeMonoBold12pt7b` | ~14px tall | RPM gauge number, mini gauge numbers, badge text |
+| `FreeMono9pt7b` | ~10px tall | Labels, tick text, battery bars, bar labels |
+
+`drawGauge()` takes `numFont` and `numDY` parameters. Use `numDY=22` for 18pt and `numDY=12` for 12pt.
 
 ---
 
@@ -181,9 +200,13 @@ Vertical divider at x=110.
 | V5 | — | Switched to 2-row layout (gauges top, info strip bottom) to fix crowding |
 | V6 | 2026-04-30 | Fixed badge widths (mode w=90, state w=108), moved battery bar to x=209, fixed RPM "0k" label bug |
 | V7 | 2026-05-01 | Gauge numbers shrunk to FreeMonoBold18pt7b (no arc overlap); RPM end-stop label suppressed; battery bar split into two thin stacked bars (vehicle + 18650 screen); amps redesigned as horizontal bar with large value display; screen battery ADC added on GPIO1 |
+| V8 | 2026-05-01 | Full UI redesign: Speed large centre gauge (CX=210,R=78,18pt), RPM small left gauge (CX=60,R=52,12pt), SET+LIVE mini gauges right column (R=32), AMPS+RAMP horizontal bars in ROW 2a, vehicle battery full-width bar in ROW 2b, SCR battery bar top-right (replaces stacked V7 bars), charging indicator support via CHRG_PIN; new helpers: scrBatV/scrBatPct/isCharging/hbar/drawMiniGauge; drawGauge gains numFont+numDY params |
 
 ---
 
 ## Known Issues / Next Steps
 
-- **Screen blank after flash** — not yet confirmed working on physical hardware. Check: (1) `display_bsp.cpp` is in the sketch folder, (2) SPI wiring matches the pin table above.
+- **V8 not yet flashed** — V7 was confirmed working on physical hardware. V8 is a full UI redesign; flash and verify visually.
+- **Screen battery pin unverified** — `SCR_BATT_PIN = 1` (GPIO1) assumed. Verify against Waveshare RLCD 4.2" dev board schematic before trusting readings. Adjust `SCR_BATT_DIV` if divider ratio differs.
+- **CHRG_PIN disabled** — `CHRG_PIN = -1`. Identify the TP4056 CHRG pin from the board schematic/silkscreen and set this constant to enable the charging indicator.
+- **Screen blank after flash** — Check: (1) `display_bsp.cpp` is in the `Steering_Wheel_Display/` folder, (2) SPI wiring matches the pin table above, (3) manual bootloader entry may be required.
