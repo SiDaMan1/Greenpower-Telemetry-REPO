@@ -1,6 +1,6 @@
 # Telemetry Dashboard — System Info
-**Current version:** V6  
-**Last updated:** 2026-04-30
+**Current version:** V7  
+**Last updated:** 2026-05-01
 
 ---
 
@@ -21,6 +21,7 @@ Two ESP32 sketches that work together as a wireless telemetry display system for
 |-----------|---------|
 | Board | Waveshare ESP32-S3-Zero |
 | Display | Waveshare 4.2" RLCD (Reflective LCD) — 400×300px, **not e-paper** |
+| Screen battery | 18650 cell in Waveshare RLCD dev module, monitored via GPIO1 ADC (verify pin from schematic) |
 | IDE | Arduino 1.8.19, ESP32 core 3.3.8 |
 
 ### SPI Wiring (display_receiver)
@@ -118,14 +119,16 @@ Capped at **60 fps** — `if (now - lastFrm < 16) return;`
 ```
 
 ### ROW 0 — Header (y=0..29)
-| Widget | x | w | h | Notes |
-|--------|---|---|---|-------|
-| Mode badge | 3 | 90 | 24 | Fits "NORMAL" (≈84px) with FreeMonoBold12pt7b |
-| State badge | 97 | 108 | 24 | Fits "RAMPING" (≈98px) |
-| Battery bar | 209 | 182 | 24 | Nub at x=391, fills left→right, text shows `V  %` |
+| Widget | x | y | w | h | Notes |
+|--------|---|---|---|---|-------|
+| Mode badge | 3 | 3 | 90 | 24 | Fits "NORMAL" (≈84px) with FreeMonoBold12pt7b |
+| State badge | 97 | 3 | 108 | 24 | Fits "RAMPING" (≈98px) |
+| Vehicle battery bar | 209 | 2 | 186 | 12 | Top thin bar — shows `V %`, nub right |
+| Screen battery bar | 209 | 16 | 186 | 12 | Bottom thin bar — shows `SCR %`, 18650 via GPIO1 ADC |
 
-Battery %: **20V = 0%**, **25.6V = 100%** (2× 12V lead-acid in series)  
-Battery text inverts colour at 50%: white-on-black when >50%, black-on-white when ≤50%.
+Vehicle battery %: **20V = 0%**, **25.6V = 100%** (2× 12V lead-acid in series)  
+Screen battery %: **3.0V = 0%**, **4.2V = 100%** (18650)  
+Text colour inverts at 50%: white-on-black when >50%, black-on-white when ≤50%.
 
 ### ROW 1 — Gauges (y=30..209)
 Vertical divider at x=200.
@@ -146,11 +149,13 @@ Both gauges share the same `drawGauge()` function with a filled progress arc, ne
 ### ROW 2 — Info bar (y=210..299)
 Vertical divider at x=110.
 
-**Amps bar** (left column, 0..109):
-- Vertical fill bar: x=18, y=222, w=72, h=62
-- Warning line at 80A
-- Solid fill ≤80A; hatched (checkerboard) fill >80A
-- Large amp value below bar
+**Amps section** (left column, 0..109):
+- "AMPS" label at top (FreeMono9pt7b)
+- Large amp value "36A" centred below label (FreeMonoBold18pt7b)
+- Horizontal level bar: x=6, y=253, w=98, h=16
+  - Solid fill ≤80A; hatched (checkerboard) fill >80A
+  - Vertical warning line at 80A position inside bar
+- Scale labels below bar: "0" left, "80" at warn line
 
 **SET / LIVE / RAMP rows** (right column, 110..399):
 - Three horizontal mini-bars, one per row
@@ -162,9 +167,9 @@ Vertical divider at x=110.
 
 | Font | Size | Used for |
 |------|------|---------|
-| `FreeMonoBold24pt7b` | ~28px tall | Large gauge numbers |
-| `FreeMonoBold12pt7b` | ~14px tall | Badge text, amp value |
-| `FreeMono9pt7b` | ~10px tall | Labels, tick text, battery text, SET/LIVE/RAMP rows |
+| `FreeMonoBold18pt7b` | ~22px tall | Gauge numbers, amp value |
+| `FreeMonoBold12pt7b` | ~14px tall | Badge text |
+| `FreeMono9pt7b` | ~10px tall | Labels, tick text, battery bars, SET/LIVE/RAMP rows |
 
 ---
 
@@ -175,6 +180,7 @@ Vertical divider at x=110.
 | V1–V4 | — | Persistent UI overlap: badge text wider than badge box; 3-column layout too crowded |
 | V5 | — | Switched to 2-row layout (gauges top, info strip bottom) to fix crowding |
 | V6 | 2026-04-30 | Fixed badge widths (mode w=90, state w=108), moved battery bar to x=209, fixed RPM "0k" label bug |
+| V7 | 2026-05-01 | Gauge numbers shrunk to FreeMonoBold18pt7b (no arc overlap); RPM end-stop label suppressed; battery bar split into two thin stacked bars (vehicle + 18650 screen); amps redesigned as horizontal bar with large value display; screen battery ADC added on GPIO1 |
 
 ---
 

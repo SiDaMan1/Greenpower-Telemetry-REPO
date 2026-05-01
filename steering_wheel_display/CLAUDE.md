@@ -24,7 +24,7 @@ An ESP32 dashboard that receives live telemetry over ESP-NOW wireless and render
 | Sketch | Status | Rule |
 |--------|--------|------|
 | `throttle_controller.ino` (in parent folder) | **FINAL — V17** | **Never edit. Never suggest edits. It is done.** |
-| `display_receiver.ino` (this folder) | Active — **V6** | All work happens here |
+| `display_receiver.ino` (this folder) | Active — **V7** | All work happens here |
 
 ---
 
@@ -45,8 +45,8 @@ CLAUDE.md              ← this file
 ## Rules — Follow These on Every Edit
 
 1. **Bump the version string** in `setup()` on every change to `display_receiver.ino`.  
-   Current version: **V6**. Next edit makes it V7, and so on.  
-   The line is: `Serial.println("Dashboard V6");`
+   Current version: **V7**. Next edit makes it V8, and so on.  
+   The line is: `Serial.println("Dashboard V7");`
 
 2. **Update `SYSTEM_INFO.md`** after any significant change — new feature, layout change, bug fix, or version bump.  
    Update the `Current version`, `Last updated`, and `Version History` table at minimum.  
@@ -161,10 +161,8 @@ Key coordinates (do not change without updating SYSTEM_INFO.md):
 
 ## Current State
 
-- **V6 is written and ready to flash.**
-- Physical screen output has **not yet been confirmed** — earlier tests flashed correctly but showed a blank screen.
-- Most likely causes of blank screen: `display_bsp.cpp` missing from folder, or SPI wiring error.
-- Confirm both `display_bsp` files are present before any flash attempt.
+- **V7 is written and ready to flash.** Display confirmed working on hardware (photo received).
+- Screen battery (18650) read via `analogRead(SCR_BATT_PIN)` on GPIO1 with 1:2 voltage divider. **Verify GPIO1 against the Waveshare RLCD 4.2" dev board schematic** — change `SCR_BATT_PIN` and `SCR_BATT_DIV` if needed.
 
 ---
 
@@ -175,3 +173,4 @@ Key coordinates (do not change without updating SYSTEM_INFO.md):
 | V1–V4 | Persistent overlap bugs — badge text wider than badge box, 3-column crowding |
 | V5 | Switched to 2-row layout (gauges top, info bottom) |
 | V6 | Fixed badge widths, moved battery bar to x=209, fixed RPM "0k" label bug |
+| V7 | Gauge numbers → FreeMonoBold18pt7b (no arc overlap); RPM end-stop label suppressed; battery bar split into vehicle + 18650 screen bars; amps redesigned as horizontal bar; screen battery ADC on GPIO1 |
