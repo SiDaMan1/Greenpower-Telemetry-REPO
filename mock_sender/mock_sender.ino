@@ -6,7 +6,7 @@
 //   3. Flash this sketch onto a second ESP32 and power it on.
 //
 // Packet format (CSV, matches display_receiver parsePacket):
-//   speedMph,batV,rpm,amps,mode,state,setpointPct,livePct,rampPct
+//   speedMph,batV,rpm,amps,mode,state,setpointPct,livePct
 
 #include <Arduino.h>
 #include <esp_now.h>
@@ -17,7 +17,7 @@
 uint8_t RECEIVER_MAC[6] = { 0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4 };
 
 // ─── Send interval ───────────────────────────────────────────────────────────
-static const unsigned long SEND_MS = 50;   // 20 Hz — matches ~60fps display cap
+static const unsigned long SEND_MS = 22;   // ~45 Hz (22ms)
 
 // ─── Demo simulation (mirrors demoTick in display_receiver) ──────────────────
 struct MockData {
@@ -29,7 +29,6 @@ struct MockData {
   const char* state;
   float setpointPct;
   float livePct;
-  float rampPct;
 };
 
 static MockData buildFrame(unsigned long ms) {
@@ -43,7 +42,6 @@ static MockData buildFrame(unsigned long ms) {
     d.amps          = 8.0f  + p * 62.0f;
     d.setpointPct   = 80.0f;
     d.livePct       = p * 80.0f;
-    d.rampPct       = p * 80.0f;
     d.state         = "RAMPING";
   } else if (t < 0.65f) {
     d.speedMph      = 26.0f;
@@ -51,7 +49,6 @@ static MockData buildFrame(unsigned long ms) {
     d.amps          = 36.0f;
     d.setpointPct   = 80.0f;
     d.livePct       = 80.0f;
-    d.rampPct       = 80.0f;
     d.state         = "HOLD";
   } else if (t < 0.72f) {
     float p         = (t - 0.65f) / 0.07f;
@@ -60,7 +57,6 @@ static MockData buildFrame(unsigned long ms) {
     d.amps          = 60.0f  + p * 35.0f;
     d.setpointPct   = 100.0f;
     d.livePct       = 80.0f  + p * 20.0f;
-    d.rampPct       = 80.0f  + p * 20.0f;
     d.state         = "REENG";
   } else {
     float p         = (t - 0.72f) / 0.28f;
@@ -69,7 +65,6 @@ static MockData buildFrame(unsigned long ms) {
     d.amps          = 95.0f  * (1.0f - p);
     d.setpointPct   = 100.0f * (1.0f - p);
     d.livePct       = 100.0f * (1.0f - p);
-    d.rampPct       = 100.0f * (1.0f - p);
     d.state         = "IDLE";
   }
 
@@ -128,10 +123,10 @@ void loop() {
 
   char pkt[128];
   snprintf(pkt, sizeof(pkt),
-    "%.2f,%.2f,%.1f,%.1f,%.7s,%.7s,%.1f,%.1f,%.1f",
+    "%.2f,%.2f,%.1f,%.1f,%.7s,%.7s,%.1f,%.1f",
     d.speedMph, d.batV, d.rpm, d.amps,
     d.mode, d.state,
-    d.setpointPct, d.livePct, d.rampPct);
+    d.setpointPct, d.livePct);
 
   esp_now_send(RECEIVER_MAC, (uint8_t*)pkt, strlen(pkt));
 

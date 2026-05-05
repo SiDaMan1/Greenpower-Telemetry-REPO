@@ -76,7 +76,7 @@ bool parsePacket(const char* src, DashData& d) {
   t = strtok(NULL, ","); if (!t) return false; strncpy(d.state, t, 7); d.state[7] = '\0';
   t = strtok(NULL, ","); if (!t) return false; d.setpointPct = atof(t);
   t = strtok(NULL, ","); if (!t) return false; d.livePct     = atof(t);
-  t = strtok(NULL, ","); if (!t) return false; d.rampPct     = atof(t);
+  t = strtok(NULL, ","); d.rampPct = t ? atof(t) : 0.0f;  // optional field
   return true;
 }
 
