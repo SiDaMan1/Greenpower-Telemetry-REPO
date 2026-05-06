@@ -24,7 +24,8 @@ An ESP32 dashboard that receives live telemetry over ESP-NOW wireless and render
 | Sketch | Status | Rule |
 |--------|--------|------|
 | `throttle_controller.ino` (in parent folder) | **FINAL — V17** | **Never edit. Never suggest edits. It is done.** |
-| `Steering_Wheel_Display/Steering_Wheel_Display.ino` | Active — **V8** | All work happens here |
+| `Steering_Wheel_Display/Steering_Wheel_Display.ino` | Reference — **V8** | Source of drawing engine |
+| `display_receiver/display_receiver.ino` | Active — **V10** | All active development here |
 
 ---
 
@@ -48,9 +49,9 @@ steering_wheel_display/
 
 ## Rules — Follow These on Every Edit
 
-1. **Bump the version string** in `setup()` on every change to `Steering_Wheel_Display.ino`.  
-   Current version: **V8**. Next edit makes it V9, and so on.  
-   The line is: `Serial.println("Dashboard V8");`
+1. **Bump the version string** in `setup()` on every change to the active sketch.  
+   `display_receiver.ino` is currently **V11**. Next edit makes it V12.  
+   The line is: `Serial.println("Dashboard V11");`
 
 2. **Update `SYSTEM_INFO.md`** after any significant change — new feature, layout change, bug fix, or version bump.  
    Update the `Current version`, `Last updated`, and `Version History` table at minimum.  
@@ -171,12 +172,14 @@ Key coordinates (do not change without updating SYSTEM_INFO.md):
 
 ## Current State
 
-- **V8 is written, ready to flash.** Complete UI redesign based on user feedback photo.
-- Screen battery (18650) read via `analogRead(SCR_BATT_PIN)` on GPIO1 with 1:2 voltage divider. **Verify GPIO1 against the Waveshare RLCD 4.2" dev board schematic** — change `SCR_BATT_PIN` and `SCR_BATT_DIV` if needed.
-- Charging indicator: `static const int CHRG_PIN = -1;` — disabled by default. Set to the TP4056 CHRG GPIO (active LOW) once verified from schematic/silkscreen.
-- `analogSetAttenuation(ADC_11db)` called in `setup()` for full 0–3.3V ADC range.
-- New helper functions added in V8: `scrBatV()`, `scrBatPct()`, `isCharging()`, `hbar()`, `drawMiniGauge()`.
-- `drawGauge()` now takes `numFont` and `numDY` parameters so gauge size and font can be set independently.
+- **V10 is written, ready to flash.** Active sketch is `display_receiver/display_receiver.ino`.
+- All fonts switched to FreeSansBold (9/12/18pt) — sportier sans-serif look.
+- `ctClear()` helper draws gauge numbers with a white background rectangle so they never overlap arcs or needle lines.
+- RAMP section removed. AMPS bar is now full-width (w=389).
+- Vehicle battery is a tall bar (h=30) with "BATT XX.XV XX%" label inside — no separate text label above it.
+- Screen battery (18650) read via `analogRead(SCR_BATT_PIN)` on GPIO1 with 1:2 voltage divider even in demo mode. **Verify GPIO1 against schematic** — adjust `SCR_BATT_PIN` / `SCR_BATT_DIV` if needed.
+- Charging indicator: `CHRG_PIN = -1` (disabled). Set to TP4056 CHRG pin (active LOW) once identified from schematic/silkscreen.
+- `analogSetAttenuation(ADC_11db)` in `setup()` for full 0–3.3V ADC range.
 
 ---
 
@@ -189,3 +192,6 @@ Key coordinates (do not change without updating SYSTEM_INFO.md):
 | V6 | Fixed badge widths, moved battery bar to x=209, fixed RPM "0k" label bug |
 | V7 | Gauge numbers → FreeMonoBold18pt7b (no arc overlap); RPM end-stop label suppressed; battery bar split into vehicle + 18650 screen bars; amps redesigned as horizontal bar; screen battery ADC on GPIO1 |
 | V8 | Full UI redesign: Speed large gauge centred (CX=210,R=78), RPM small gauge left (CX=60,R=52), SET+LIVE mini gauges right column (R=32 each), AMPS + RAMP horizontal bars in bottom strip, vehicle battery bar full-width below that, SCR battery bar top-right, charging indicator support (CHRG_PIN); new helpers: scrBatV/scrBatPct/isCharging/hbar/drawMiniGauge; drawGauge gains numFont+numDY params |
+| V9 | Ported V8 to display_receiver.ino (demo-only, no WiFi/ESP-NOW); DashData moved to dash_data.h header |
+| V10 | Overlap fixes via ctClear() (white clearbox behind numbers); FreeSansBold fonts throughout; RAMP removed, AMPS full-width; vehicle battery taller bar (h=30) label-inside; battBar vertically centres label; SCR bar h=22; gauge coords tuned |
+| V11 | Reduced font sizes: speed gauge 18pt→12pt, RPM gauge 12pt→9pt, badge text 12pt→9pt (fixes overflow in badge box); demo mode SCR battery now simulates 18650 draining 90→20% over 5 min instead of reading garbage ADC; dropped FreeSansBold18pt7b include |

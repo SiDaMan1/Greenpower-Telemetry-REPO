@@ -1,6 +1,6 @@
 # Telemetry Dashboard — System Info
-**Current version:** V8  
-**Last updated:** 2026-05-01
+**Current version:** V11 (display_receiver.ino)  
+**Last updated:** 2026-05-02
 
 ---
 
@@ -109,74 +109,62 @@ Capped at **60 fps** — `if (now - lastFrm < 16) return;`
 ```
 ┌───────────────────────────────────────────────────────────────────┐
 │ ROW 0   y=0..29    HEADER                                         │
-│  [MODE x=3 w=90] [STATE x=97 w=108]      [SCR BAT x=210 w=182]  │
+│  [MODE x=3 w=90] [STATE x=97 w=108]      [SCR BAT x=211 w=182]  │
 ├────────────┬──────────────────────────┬───────────────────────────┤
-│ ROW 1      │  y=30..219               │                           │
+│ ROW 1      │  y=31..219               │                           │
 │ RPM small  │  SPEED large             │  SET mini  CX=350 CY=82  │
-│ CX=60      │  CX=210                  │  LIVE mini CX=350 CY=169 │
-│ CY=132 R=52│  CY=132 R=78             │  (R=32 each)              │
+│ CX=60      │  CX=210                  │  LIVE mini CX=350 CY=166 │
+│ CY=127 R=50│  CY=124 R=76             │  (R=30 each)              │
 │ (0..120)   │  (120..300)              │  (300..400)               │
-├──────┬─────┴──────────────────────────┴───────────────────────────┤
-│ROW2a │  y=220..258                                                │
-│ AMPS │  x=0..202      RAMP x=203..399                            │
-│ bar  │  bar                                                        │
-├──────┴────────────────────────────────────────────────────────────┤
-│ ROW 2b  y=259..299   VEHICLE BATTERY (full width)                 │
+├────────────┴──────────────────────────┴───────────────────────────┤
+│ ROW 2   y=220..258   AMPS full width (no RAMP)                    │
+│  label y=233  bar x=5 y=238 w=389 h=13   warn line at 80%        │
+├───────────────────────────────────────────────────────────────────┤
+│ ROW 3   y=259..299   VEHICLE BATTERY (full width)                 │
+│  battBar x=5 y=263 w=389 h=30   label inside bar                 │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 ### ROW 0 — Header (y=0..29)
 | Widget | x | y | w | h | Notes |
 |--------|---|---|---|---|-------|
-| Mode badge | 3 | 3 | 90 | 24 | Fits "NORMAL" (≈84px) with FreeMonoBold12pt7b |
-| State badge | 97 | 3 | 108 | 24 | Fits "RAMPING" (≈98px) |
-| SCR battery bar | 210 | 6 | 182 | 17 | 18650 screen battery — shows `SCR %` + charging indicator |
+| Mode badge | 3 | 3 | 90 | 24 | Fits "NORMAL" with FreeSansBold12pt7b |
+| State badge | 97 | 3 | 108 | 24 | Fits "RAMPING" |
+| SCR battery bar | 211 | 4 | 182 | 22 | 18650 screen battery — shows `SCR %` + charging indicator |
 
 Screen battery %: **3.0V = 0%**, **4.2V = 100%** (18650 via GPIO1 ADC, 1:2 divider).  
-Charging indicator: drawn if `CHRG_PIN >= 0` and pin reads LOW (TP4056 CHRG active LOW).  
+Charging indicator: label shows "CHG" if `CHRG_PIN >= 0` and pin reads LOW (TP4056 CHRG active LOW).  
 Text colour inverts at 50%: white-on-black when >50%, black-on-white when ≤50%.
 
-### ROW 1 — Gauges (y=30..219)
+### ROW 1 — Gauges (y=31..219)
 Three vertical zones divided at x=120 and x=300.
 
 **RPM gauge** (left zone, x=0..120):
-- `CX=60, CY=132, R=52` — small gauge, font `FreeMonoBold12pt7b`, numDY=12
-- Range: 0–2500 RPM
-- Tick every 250, label every 1000 (displayed as `0` / `1k` / `2k`)
-- Danger zone: 2200–2500 (hatched arc)
-- Efficiency marker at 1700 RPM (extended tick)
-- End-stop label suppressed to avoid arc overlap
+- `CX=60, CY=127, R=50` — small gauge, font `FreeSansBold12pt7b`, numDY=18
+- Range: 0–2500 RPM; tick every 250, label every 1000 (`0` / `1k` / `2k`)
+- Danger zone 2200–2500 (hatched arc); efficiency marker at 1700 RPM
+- Numbers drawn with `ctClear()` (white clear-box behind) to prevent arc overlap
 
 **Speed gauge** (centre zone, x=120..300):
-- `CX=210, CY=132, R=78` — large gauge, font `FreeMonoBold18pt7b`, numDY=22
-- Range: 0–30 MPH
-- Ticks every 5, labels every 10
-- No danger zone or efficiency marker
+- `CX=210, CY=124, R=76` — large gauge, font `FreeSansBold18pt7b`, numDY=22
+- Range: 0–30 MPH; ticks every 5, labels every 10
+- Numbers drawn with `ctClear()`
 
 **SET + LIVE mini gauges** (right zone, x=300..400):
-- `drawMiniGauge()` — R=32, no tick marks, fills arc only, label + number centred
-- SET: `CX=350, CY=82`, range 0–100%, label "SET"
-- LIVE: `CX=350, CY=169`, range 0–100%, label "LIVE"
+- `drawMiniGauge()` — R=30, progress arc + needle, number with `ctClear()`
+- SET: `CX=350, CY=82`, range 0–100%, label "SET" at cy+r+14
+- LIVE: `CX=350, CY=166`, range 0–100%, label "LIVE" at cy+r+14
 
-All gauges use `drawGauge()` (main) or `drawMiniGauge()` with filled progress arc, needle, hub circle, and centre number.
+### ROW 2 — AMPS (full width, y=220..258)
+- Label "AMPS  XXA" at x=5, baseline y=233
+- Bar: `x=5, y=238, w=389, h=13` — solid fill ≤80A, hatched fill >80A
+- Vertical warning line drawn at 80% of bar width (80A mark)
+- No RAMP section (removed in V10)
 
-### ROW 2a — Bottom bar (y=220..258)
-Vertical divider at x=203.
-
-**AMPS bar** (left, x=0..202):
-- "AMPS" label, value (e.g. "36A") printed left of bar
-- Bar: `x=5, y=234, w=192, h=14`
-- Solid fill ≤80A; hatched fill >80A
-- Vertical warning line at 80A position inside bar; "80" label below
-
-**RAMP bar** (right, x=203..399):
-- "RAMP" label, value % printed left of bar
-- Bar: `x=207, y=234, w=186, h=14`
-
-### ROW 2b — Vehicle battery (y=259..299)
-Full-width bar: `x=5, y=272, w=389, h=18`  
-Vehicle battery %: **20V = 0%**, **25.6V = 100%** (2× 12V lead-acid in series).  
-Shows voltage and % text. Text colour inverts at 50%.
+### ROW 3 — Vehicle battery (y=259..299)
+- Bar: `x=5, y=263, w=389, h=30` — tall enough for vertically-centred label inside
+- Label format: `BATT  XX.XV  XX%`
+- Vehicle battery %: **20V = 0%**, **25.6V = 100%** (2× 12V lead-acid in series)
 
 ---
 
@@ -184,11 +172,12 @@ Shows voltage and % text. Text colour inverts at 50%.
 
 | Font | Size | Used for |
 |------|------|---------|
-| `FreeMonoBold18pt7b` | ~22px tall | Speed gauge centre number |
-| `FreeMonoBold12pt7b` | ~14px tall | RPM gauge number, mini gauge numbers, badge text |
-| `FreeMono9pt7b` | ~10px tall | Labels, tick text, battery bars, bar labels |
+| `FreeSansBold18pt7b` | ~22px tall | Speed gauge centre number |
+| `FreeSansBold12pt7b` | ~14px tall | RPM gauge number, badge text |
+| `FreeSansBold9pt7b`  | ~10px tall | All labels, tick text, battery bars, mini gauge numbers |
 
-`drawGauge()` takes `numFont` and `numDY` parameters. Use `numDY=22` for 18pt and `numDY=12` for 12pt.
+Switched from FreeMono to FreeSansBold in V10 for a sportier sans-serif look.  
+`drawGauge()` takes `numFont` and `numDY` parameters. `ctClear()` helper draws text with a white background rectangle to prevent overlap with arcs and needle lines.
 
 ---
 
@@ -201,6 +190,9 @@ Shows voltage and % text. Text colour inverts at 50%.
 | V6 | 2026-04-30 | Fixed badge widths (mode w=90, state w=108), moved battery bar to x=209, fixed RPM "0k" label bug |
 | V7 | 2026-05-01 | Gauge numbers shrunk to FreeMonoBold18pt7b (no arc overlap); RPM end-stop label suppressed; battery bar split into two thin stacked bars (vehicle + 18650 screen); amps redesigned as horizontal bar with large value display; screen battery ADC added on GPIO1 |
 | V8 | 2026-05-01 | Full UI redesign: Speed large centre gauge (CX=210,R=78,18pt), RPM small left gauge (CX=60,R=52,12pt), SET+LIVE mini gauges right column (R=32), AMPS+RAMP horizontal bars in ROW 2a, vehicle battery full-width bar in ROW 2b, SCR battery bar top-right (replaces stacked V7 bars), charging indicator support via CHRG_PIN; new helpers: scrBatV/scrBatPct/isCharging/hbar/drawMiniGauge; drawGauge gains numFont+numDY params |
+| V9 | 2026-05-02 | Ported V8 drawing engine to display_receiver.ino (demo-only, no WiFi/ESP-NOW); separated DashData into dash_data.h header to fix Arduino prototype-insertion compile error |
+| V10 | 2026-05-02 | Overlap fixes: added ctClear() helper (white clear-box behind gauge numbers prevents arc/needle overlap); switched all fonts to FreeSansBold (sportier sans-serif); removed RAMP section, AMPS bar now full-width (w=389); vehicle battery is taller bar (h=30) with label inside, no separate ct label above; battBar label vertically centred; SCR bar taller (h=22); gauge coordinates tuned (RPM CY=127 R=50, Speed CY=124 R=76, mini R=30) |
+| V11 | 2026-05-02 | Reduced font sizes: speed gauge 18pt→12pt (numDY=18), RPM gauge 12pt→9pt (numDY=14), badge text 12pt→9pt (fixes text wider than badge box with FreeSansBold proportional chars); demo SCR battery simulates 18650 draining 90→20% over 5 min (was reading garbage ADC in demo mode); dropped FreeSansBold18pt7b include |
 
 ---
 
