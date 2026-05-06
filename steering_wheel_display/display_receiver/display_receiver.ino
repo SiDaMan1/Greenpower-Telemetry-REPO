@@ -5,9 +5,9 @@
 #include <WiFi.h>
 
 // Waveshare RLCD compatible fonts
-#include "Fonts/BigShoulders_18pt_SemiBold9pt7b.h"
-#include "Fonts/BigShoulders_18pt_SemiBold12pt7b.h"
-#include "Fonts/BigShoulders_18pt_SemiBold14pt7b.h"
+#include "BigShoulders_18pt_SemiBold9pt7b.h"
+#include "BigShoulders_18pt_SemiBold12pt7b.h"
+#include "BigShoulders_18pt_SemiBold14pt7b.h"
 #include <math.h>
 
 // Font Aliases
