@@ -5,11 +5,14 @@
 //  Sensors collected:
 //    • GPS NMEA        — Serial1  GPIO 33(RX) / 34(TX)
 //    • MPU-6050 IMU    — I2C      SDA=17 / SCL=18  (shared with OLED)
-//    • DS18B20 temp    — 1-Wire   GPIO 47
+//    • DS18B20 temp    — 1-Wire   GPIO 45
 //    • Voltage divider — ADC      GPIO 1   (R1=100kΩ top, R2=15kΩ bot → max ~26.7V)
 //    • YHDC HSTS016L   — ADS1115  I2C 0x48 AIN0  (100 A Hall-effect, 3.3 V supply)
-//    • ESC telemetry   — Serial2  GPIO 45(RX) / 46(TX)  115200 baud
+//    • ESC telemetry   — Serial2  GPIO 44(RX) / 43(TX)  115200 baud
 //                        format:  MODE,STATE,setpointPct,livePct,rampPct\n
+//
+//  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
+//           Transmits lora_frame_t every 500 ms  (telemetry_packet_t + ESC fields)
 //
 //  Required libraries (install via Arduino Library Manager):
 //    • TinyGPS++             (Mikal Hart)
@@ -18,18 +21,21 @@
 //    • Adafruit ADS1X15      (Adafruit)
 //    • OneWire               (Paul Stoffregen)
 //    • DallasTemperature     (Miles Burton)
-//
-//  LoRa TX:  stub — implemented in next step.
+//    • RadioLib              (jgromes)
 // ════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
+#include <SPI.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <esp_now.h>
 #include <TinyGPSPlus.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADS1X15.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <RadioLib.h>
 #include "config.h"
 
 
@@ -37,12 +43,27 @@
 //  PIN ASSIGNMENTS
 // ════════════════════════════════════════════════════════════════════
 
+// LoRa SPI pins (fixed on Heltec V4)
+#define LORA_SCK          9
+#define LORA_MISO        11
+#define LORA_MOSI        10
+
+// LoRa TX interval
+#define LORA_TX_INTERVAL_MS  500   // 2 Hz
+
 #define GPS_RX_PIN        33
 #define GPS_TX_PIN        34
-#define ESC_RX_PIN        45
-#define ESC_TX_PIN        46
-#define DS18B20_PIN       47
+#define ESC_RX_PIN        44
+#define ESC_TX_PIN        43
+#define DS18B20_PIN       45
+#define MOTOR_RPM_PIN     47   // IR/laser interrupt — motor disc
+#define WHEEL_RPM_PIN     26   // IR/laser interrupt — wheel disc
 #define VOLTAGE_ADC_PIN    1   // ADC1_CH0
+
+// ── RPM disc slots per revolution ────────────────────────────────────
+// Count the slots on each disc and update these values.
+#define MOTOR_SLOTS_PER_REV  1
+#define WHEEL_SLOTS_PER_REV  1
 
 #define GPS_BAUD        9600   // change to 115200 if your module is configured that way
 
@@ -83,6 +104,14 @@ Adafruit_ADS1115  ads;
 OneWire           oneWire(DS18B20_PIN);
 DallasTemperature tempSensors(&oneWire);
 
+// SX1262 radio  (NSS, DIO1, RST, BUSY)
+SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
+bool   loraReady    = false;
+
+// ESP-NOW peer (steering wheel display)
+static const uint8_t PEER_MAC[6] = ESPNOW_PEER_MAC;
+bool   espNowReady  = false;
+
 // Serial0 = USB debug
 // Serial1 = GPS
 // Serial2 = ESC
@@ -101,8 +130,23 @@ struct EscData {
     bool  valid;
 };
 
-static EscData            esc = {};
-static telemetry_packet_t pkt = {};
+// LoRa frame — telemetry_packet_t + ESC fields in one binary payload
+// Receiver must include the same struct to decode.
+typedef struct __attribute__((packed)) {
+    telemetry_packet_t telem;           // 54 bytes
+    char  esc_mode[12];                 // "ECO" | "NORMAL" | "SPORT"
+    char  esc_state[16];                // "IDLE" | "REENG" | "RAMP" | "HOLD"
+    float esc_setpoint_pct;
+    float esc_live_pct;
+    float esc_ramp_pct;
+    uint8_t esc_valid;
+    float   motor_rpm;
+    float   wheel_rpm;
+} lora_frame_t;                         // 54 + 12 + 16 + 4+4+4 + 1 + 4+4 = 103 bytes
+
+static EscData            esc   = {};
+static telemetry_packet_t pkt   = {};
+static lora_frame_t       frame = {};
 
 
 // ════════════════════════════════════════════════════════════════════
@@ -110,8 +154,54 @@ static telemetry_packet_t pkt = {};
 // ════════════════════════════════════════════════════════════════════
 
 static const uint32_t SENSOR_INTERVAL_MS = 200;   // 5 Hz
+static const uint32_t RPM_CALC_INTERVAL_MS = 500; // recalculate RPM every 500 ms
 static uint32_t lastSensorMs = 0;
 static uint32_t lastGyroMs   = 0;
+static uint32_t lastLoraTxMs = 0;
+static uint32_t lastEspNowMs = 0;
+static uint32_t lastRpmMs    = 0;
+
+
+// ════════════════════════════════════════════════════════════════════
+//  RPM  (interrupt-driven pulse counters)
+// ════════════════════════════════════════════════════════════════════
+
+volatile uint32_t motorPulses = 0;
+volatile uint32_t wheelPulses = 0;
+
+// 10 ms debounce using esp_timer_get_time() — ISR-safe on ESP32-S3.
+// At 3000 RPM / 1 slot = pulse every 20 ms → 2× margin.
+// If you add more slots reduce debounce: µs < 60/(maxRPM*slots)*1e6
+void IRAM_ATTR motorRpmISR() {
+    static int64_t lastUs = 0;
+    int64_t now = esp_timer_get_time();
+    if (now - lastUs >= 10000) { motorPulses++; lastUs = now; }
+}
+void IRAM_ATTR wheelRpmISR() {
+    static int64_t lastUs = 0;
+    int64_t now = esp_timer_get_time();
+    if (now - lastUs >= 10000) { wheelPulses++; lastUs = now; }
+}
+
+static float motorRpm = 0.0f;
+static float wheelRpm = 0.0f;
+
+static void updateRpm() {
+    uint32_t now     = millis();
+    uint32_t elapsed = now - lastRpmMs;
+    if (elapsed < RPM_CALC_INTERVAL_MS) return;
+    lastRpmMs = now;
+
+    // Snapshot and reset counters atomically
+    noInterrupts();
+    uint32_t mp = motorPulses;  motorPulses = 0;
+    uint32_t wp = wheelPulses;  wheelPulses = 0;
+    interrupts();
+
+    float secs = elapsed / 1000.0f;
+    motorRpm = (mp / (float)MOTOR_SLOTS_PER_REV) / secs * 60.0f;
+    wheelRpm = (wp / (float)WHEEL_SLOTS_PER_REV) / secs * 60.0f;
+}
 
 
 // ════════════════════════════════════════════════════════════════════
@@ -238,6 +328,7 @@ static void updateImu() {
 static void updateSensors() {
     updateGps();
     updateImu();
+    updateRpm();
 
     // DS18B20 — blocking ~750 ms at 12-bit; use 9-bit (93 ms) for 5 Hz loop
     tempSensors.requestTemperatures();
@@ -253,12 +344,71 @@ static void updateSensors() {
 
 
 // ════════════════════════════════════════════════════════════════════
+//  LORA TX
+// ════════════════════════════════════════════════════════════════════
+
+static void loRaTx() {
+    if (!loraReady) return;
+
+    // Pack latest data into frame
+    frame.telem = pkt;
+    memcpy(frame.esc_mode,  esc.mode,  sizeof(frame.esc_mode));
+    memcpy(frame.esc_state, esc.state, sizeof(frame.esc_state));
+    frame.esc_setpoint_pct = esc.setpointPct;
+    frame.esc_live_pct     = esc.livePct;
+    frame.esc_ramp_pct     = esc.rampPct;
+    frame.esc_valid        = esc.valid ? 1 : 0;
+    frame.motor_rpm        = motorRpm;
+    frame.wheel_rpm        = wheelRpm;
+
+    int state = radio.transmit((uint8_t*)&frame, sizeof(frame));
+
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.printf("  [LoRa] TX OK  %u bytes  RSSI:%.0f dBm\n",
+                      sizeof(frame), radio.getRSSI());
+    } else {
+        Serial.printf("  [LoRa] TX ERR %d\n", state);
+    }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  ESP-NOW TX
+//  Format: speed_mph,batV,rpm,amps,mode,state,setpoint%,live%,ramp%
+//  rpm is 0 until a wheel/motor encoder is added.
+// ════════════════════════════════════════════════════════════════════
+
+static void espNowSend() {
+    if (!espNowReady) return;
+
+    char payload[128];
+    snprintf(payload, sizeof(payload),
+        "%.1f,%.2f,%.0f,%.1f,%s,%s,%.1f,%.1f,%.1f",
+        pkt.speed_mph,
+        pkt.voltage,
+        motorRpm,
+        pkt.current_a,
+        esc.valid ? esc.mode  : "---",
+        esc.valid ? esc.state : "---",
+        esc.setpointPct,
+        esc.livePct,
+        esc.rampPct
+    );
+
+    esp_err_t result = esp_now_send(PEER_MAC, (uint8_t*)payload, strlen(payload));
+    Serial.printf("  [ESP-NOW] %s  \"%s\"\n",
+                  result == ESP_OK ? "TX OK" : "TX ERR", payload);
+}
+
+
+// ════════════════════════════════════════════════════════════════════
 //  SETUP
 // ════════════════════════════════════════════════════════════════════
 
 void setup() {
     Serial.begin(115200);
-    delay(500);
+    uint32_t t0 = millis();
+    while (!Serial && millis() - t0 < 3000) delay(10);  // wait up to 3s for serial monitor
     Serial.println("\n[BOOT] Greenpower Sender V1");
 
     // GPS
@@ -271,8 +421,21 @@ void setup() {
     Serial.printf("[OK]   ESC    Serial2  RX=%d TX=%d @ 115200\n",
                   ESC_RX_PIN, ESC_TX_PIN);
 
-    // I2C — shared by MPU-6050 and onboard OLED (0x3C / 0x68, no conflict)
+    // Enable VEXT power rail (GPIO 36, active LOW) — powers OLED + external sensors
+    pinMode(VEXT_CTRL, OUTPUT);
+    digitalWrite(VEXT_CTRL, LOW);
+    delay(500);                        // give rail plenty of time to stabilise
+
+    // Pulse OLED reset (GPIO 21, active LOW)
+    pinMode(OLED_RST, OUTPUT);
+    digitalWrite(OLED_RST, LOW);
+    delay(50);
+    digitalWrite(OLED_RST, HIGH);
+    delay(200);                        // let OLED finish init before I2C scan
+
+    // I2C — SDA=17, SCL=18  (0x3C=OLED, 0x48=ADS1115, 0x68=MPU-6050)
     Wire.begin(OLED_SDA, OLED_SCL);
+    delay(100);
 
     // MPU-6050
     if (!mpu.begin(MPU6050_I2CADDR_DEFAULT, &Wire)) {
@@ -289,6 +452,15 @@ void setup() {
     tempSensors.setResolution(9);
     Serial.printf("[OK]   DS18B20  %d device(s)\n", tempSensors.getDeviceCount());
 
+    // RPM interrupt sensors
+    pinMode(MOTOR_RPM_PIN, INPUT_PULLDOWN);
+    pinMode(WHEEL_RPM_PIN, INPUT_PULLDOWN);
+    attachInterrupt(digitalPinToInterrupt(MOTOR_RPM_PIN), motorRpmISR, RISING);
+    attachInterrupt(digitalPinToInterrupt(WHEEL_RPM_PIN), wheelRpmISR, RISING);
+    lastRpmMs = millis();
+    Serial.printf("[OK]   RPM     motor=GPIO%d  wheel=GPIO%d\n",
+                  MOTOR_RPM_PIN, WHEEL_RPM_PIN);
+
     // Voltage divider ADC — 11 dB attenuation for full 0–3.3 V input range
     analogSetPinAttenuation(VOLTAGE_ADC_PIN, ADC_11db);
     Serial.printf("[OK]   V-ADC   pin=%d\n", VOLTAGE_ADC_PIN);
@@ -300,6 +472,45 @@ void setup() {
         ads.setGain(GAIN_ONE);
         Serial.printf("[OK]   ADS1115  0x%02X  AIN%d → HSTS016L\n",
                       ADS_I2C_ADDR, ADS_CURRENT_CH);
+    }
+
+    // WiFi (STA, no AP connection) + ESP-NOW
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("[WARN] ESP-NOW init failed");
+    } else {
+        esp_now_peer_info_t peer = {};
+        memcpy(peer.peer_addr, PEER_MAC, 6);
+        peer.channel = 0;
+        peer.encrypt = false;
+        if (esp_now_add_peer(&peer) != ESP_OK) {
+            Serial.println("[WARN] ESP-NOW add peer failed");
+        } else {
+            espNowReady = true;
+            Serial.printf("[OK]   ESP-NOW → %02X:%02X:%02X:%02X:%02X:%02X\n",
+                          PEER_MAC[0], PEER_MAC[1], PEER_MAC[2],
+                          PEER_MAC[3], PEER_MAC[4], PEER_MAC[5]);
+        }
+    }
+
+    // SX1262 LoRa radio
+    SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+    int loraState = radio.begin(
+        LORA_FREQ_MHZ,        // 915.0 MHz
+        125.0,                // bandwidth kHz
+        7,                    // spreading factor
+        5,                    // coding rate 4/5
+        LORA_SYNC_WORD,       // 0xF3
+        LORA_TX_POWER_DBM,    // 22 dBm
+        8                     // preamble length
+    );
+    if (loraState != RADIOLIB_ERR_NONE) {
+        Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
+    } else {
+        radio.setDio2AsRfSwitch(true);   // required on Heltec V4
+        loraReady = true;
+        Serial.println("[OK]   SX1262  915 MHz  SF7  BW125  22dBm");
     }
 
     Serial.println("[RDY]  Sensor loop starting\n");
@@ -321,24 +532,59 @@ void loop() {
 
     updateSensors();
 
-    // ── LoRa TX stub ─────────────────────────────────────────────────
-    // TODO: RadioLib transmit of pkt + esc fields — next step
+    // ── LoRa TX — every LORA_TX_INTERVAL_MS ─────────────────────────
+    if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
+        lastLoraTxMs = now;
+        loRaTx();
+    }
+
+    // ── ESP-NOW TX — every LORA_TX_INTERVAL_MS ───────────────────────
+    if (now - lastEspNowMs >= LORA_TX_INTERVAL_MS) {
+        lastEspNowMs = now;
+        espNowSend();
+    }
 
     // ── Debug dump to USB serial ─────────────────────────────────────
-    Serial.printf("V:%.2f V  I:%.1f A  T:%.1f°F  |  GPS:%u sats  %.1f mph  HDOP:%.1f\n",
-                  pkt.voltage, pkt.current_a, pkt.temp_f,
-                  pkt.satellites, pkt.speed_mph, pkt.hdop);
+    Serial.println("──────────────────────────────────────────");
 
-    Serial.printf("Roll:%.1f°  Pitch:%.1f°  Yaw:%.1f°  "
-                  "aX:%.2fg  aY:%.2fg  aZ:%.2fg\n",
-                  pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg,
-                  pkt.accel_g, pkt.lateral_g, pkt.vertical_g);
+    // Power
+    Serial.printf("  Voltage   : %.2f V\n",  pkt.voltage);
+    Serial.printf("  Current   : %.2f A\n",  pkt.current_a);
 
+    // RPM
+    Serial.printf("  Motor RPM : %.0f\n",    motorRpm);
+    Serial.printf("  Wheel RPM : %.0f\n",    wheelRpm);
+
+    // Temperature
+    Serial.printf("  Temp      : %.1f °F\n", pkt.temp_f);
+
+    // GPS
+    Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
+    Serial.printf("  Satellites: %u\n",       pkt.satellites);
+    Serial.printf("  Speed     : %.2f mph\n", pkt.speed_mph);
+    Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
+    Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
+    Serial.printf("  HDOP      : %.1f\n",     pkt.hdop);
+
+    // IMU
+    Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
+    Serial.printf("  Roll      : %.2f °\n",   pkt.roll_deg);
+    Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg);
+    Serial.printf("  Yaw       : %.2f °\n",   pkt.yaw_deg);
+    Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
+    Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
+    Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
+
+    // ESC
     if (esc.valid) {
-        Serial.printf("ESC [%s / %s]  SP:%.0f%%  LV:%.0f%%  RP:%.0f%%\n\n",
-                      esc.mode, esc.state,
-                      esc.setpointPct, esc.livePct, esc.rampPct);
+        Serial.printf("  ESC Mode  : %s\n",   esc.mode);
+        Serial.printf("  ESC State : %s\n",   esc.state);
+        Serial.printf("  Setpoint  : %.1f %%\n", esc.setpointPct);
+        Serial.printf("  Live      : %.1f %%\n", esc.livePct);
+        Serial.printf("  Ramp      : %.1f %%\n", esc.rampPct);
     } else {
-        Serial.println("ESC waiting for data...\n");
+        Serial.println("  ESC       : waiting for data...");
     }
+
+    Serial.println("──────────────────────────────────────────\n");
 }

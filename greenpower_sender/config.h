@@ -25,7 +25,7 @@
 // ════════════════════════════════════════════════════════════════════
 
 
-#define VEXT_CTRL       36  // External power supply control
+#define VEXT_CTRL       36  // External power supply control (active LOW)
 
 
 // ════════════════════════════════════════════════════════════════════

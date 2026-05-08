@@ -31,7 +31,7 @@ Every edit to `throttle_controller.ino` **must** increment the version number in
 1. `Serial.println("Throttle controller ready. VX");` inside `setup()`
 2. `display.println("Throttle Ctrl VX");` in the OLED boot message inside `setup()`
 
-Both must match. Current version: **V17**. Next edit → V18.
+Both must match. Current version: **V20**. Next edit → V21.
 
 ### Hardware Constraints
 - **3.3V logic** — do not connect 5V signals directly to any pin.
@@ -44,7 +44,7 @@ Both must match. Current version: **V17**. Next edit → V18.
 Double-tap RST to GND to enter DFU bootloader before uploading. Standard upload will not work without this step.
 
 ### Free Pins for Future Use
-D6, D7, D8, D10, D11, D12, D13, A1–A7. If adding UART for telemetry, suggested: D10=TX, D11=RX with `Serial1.begin(115200, SERIAL_8N1, 11, 10)`.
+D6, D7, D8, D12, D13, A1–A7. D10 and D11 are now in use for Serial1 UART telemetry.
 
 ### Code Style
 - Do not introduce abstraction layers beyond what the task requires.
@@ -62,7 +62,7 @@ D6, D7, D8, D10, D11, D12, D13, A1–A7. If adding UART for telemetry, suggested
 - EMA pot smoothing with POT_ALPHA=0.2
 - OLED: mode + state top row, large output % centre, pot % and ramp % bottom rows
 - Serial telemetry emitted every control tick (20 ms)
-- **Planned but not yet implemented:** forward telemetry via Serial1 (UART) to a second ESP32 receiver
+- **Serial1 UART telemetry active on D10(TX)/D11(RX)** — 20 Hz CSV packets at 115200 baud. Format: `mode,state,setpointPct,livePct,rampPct`. speedMph/batV/rpm/amps are omitted — they come from separate sensors and are merged downstream.
 
 ---
 

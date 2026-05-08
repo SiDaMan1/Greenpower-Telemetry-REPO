@@ -28,6 +28,13 @@ const int ECO_PIN      = 4;
 const int SPORT_PIN    = 5;
 const int BUTTON_PIN   = 2;
 
+// ─── UART telemetry (Serial1) ─────────────────────────────────────────────────
+// Wired to display_receiver: D10=TX → RX, D11=RX → TX, GND → GND
+// Serial1.begin() takes GPIO numbers, not Arduino pin labels.
+#define UART_TX_PIN 12   // D12
+#define UART_RX_PIN 11   // D11
+static const unsigned long UART_MS = 50;   // 20 Hz — matches mock_sender rate
+
 // ─── Modes ───────────────────────────────────────────────────────────────────
 enum Mode { ECO, NORMAL, SPORT };
 Mode currentMode = NORMAL;
@@ -76,6 +83,7 @@ float resumeTarget = 0.0f;
 float smoothedPot  = 0.0f;
 
 unsigned long lastTick    = 0;
+unsigned long lastUart    = 0;
 bool          prevTrigger = false;
 
 // ─── Display refresh ─────────────────────────────────────────────────────────
@@ -195,7 +203,10 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   Serial.begin(9600);
-  Serial.println("Throttle controller ready. V17");
+  Serial.println("Throttle controller ready. V22");
+
+  Serial1.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+  Serial.println("Serial1 UART ready on D10(TX)/D11(RX)");
 
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
@@ -206,7 +217,7 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Throttle Ctrl V17");
+  display.println("Throttle Ctrl V22");
   display.display();
 
   lastTick    = millis();
@@ -340,6 +351,23 @@ void loop() {
   Serial.print("ramp:");   Serial.print(rampPwm,      1); Serial.print("% ");
   Serial.print("resume:"); Serial.print(resumeTarget, 1); Serial.print("% ");
   Serial.print("out:");    Serial.print(outputPct,    1); Serial.println("%");
+
+  // ── UART telemetry (Serial1) — every 50ms → display_receiver ─────────────────
+  // Sends only what this device knows. speedMph/batV/rpm/amps come from
+  // separate sensors and are added downstream.
+  //   mode,state,setpointPct,livePct,rampPct
+  if (now - lastUart >= UART_MS) {
+    lastUart = now;
+    char pkt[64];
+    snprintf(pkt, sizeof(pkt),
+      "%.7s,%.7s,%.1f,%.1f,%.1f",
+      modeName(currentMode),
+      stateName(currentState),
+      potPct,
+      outputPct,
+      rampPwm);
+    Serial1.println(pkt);
+  }
 
   // ── Display update — every 100ms ─────────────────────────────────────────────
   if (now - lastDisplay >= 100) {

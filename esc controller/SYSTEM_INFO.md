@@ -28,7 +28,9 @@ An Arduino sketch running on an Arduino Nano ESP32 (ESP32-S3) that acts as a thr
 | D5 | SPORT mode switch (active-low) |
 | D9 | PWM output to ESC |
 | A0 | Throttle potentiometer |
-| D6–D8, D10–D13, A1–A7 | Free / unassigned |
+| D10 | Serial1 TX → display_receiver RX |
+| D11 | Serial1 RX → display_receiver TX |
+| D6–D8, D12, D13, A1–A7 | Free / unassigned |
 
 > **Upload method:** Double-tap RST pin to GND → green LED flashes → DFU bootloader active → upload from IDE. On Windows, WinUSB driver via Zadig is required.
 
@@ -93,12 +95,26 @@ Pot:  80.0%                   ← y=42 (size 1)
 Ramp: 62.3%                   ← y=54 (size 1)
 ```
 
-### Serial Telemetry
+### Serial Telemetry (USB debug)
 
 Emitted every 20 ms (control loop tick):
 ```
 NORMAL | RAMP | pot:80.0% ramp:62.3% resume:0.0% out:62.3%
 ```
+
+### UART Telemetry (Serial1 → display_receiver)
+
+Emitted every 50 ms (20 Hz) on D10/D11 at 115200 baud. Sends only the fields this device knows — speedMph, batV, rpm, and amps come from separate sensors and are merged downstream.
+
+```
+mode,state,setpointPct,livePct,rampPct
+```
+
+Example:
+```
+NORMAL,RAMP,80.0,62.3,62.3
+```
+Wiring: D10(TX) → receiver RX, D11(RX) → receiver TX, GND → GND.
 
 ---
 
@@ -118,8 +134,12 @@ NORMAL | RAMP | pot:80.0% ramp:62.3% resume:0.0% out:62.3%
 | `LEDC_FREQ_HZ` | 31372 | PWM frequency — above human hearing |
 | `LEDC_RES_BITS` | 8 | PWM resolution (0–255) |
 | `OLED_ADDR` | 0x3C | I2C address of SSD1306 display |
+| `UART_TX_PIN` | 21 (GPIO for D10) | Serial1 TX pin (→ display_receiver RX) |
+| `UART_RX_PIN` | 38 (GPIO for D11) | Serial1 RX pin (→ display_receiver TX) |
+| `UART_MS` | 50 ms | UART send interval (20 Hz) |
 | Control loop | 20 ms | `delay(20)` at bottom of loop() |
 | Display refresh | 100 ms | Independent of control loop |
+| UART send | 50 ms | Independent timer, 115200 baud |
 
 ---
 
@@ -129,4 +149,7 @@ NORMAL | RAMP | pot:80.0% ramp:62.3% resume:0.0% out:62.3%
 |---------|-------|
 | V1–V15 | Development history (pre-repo) |
 | V16 | Re-engage timing fixed; OLED layout finalized; rampStartPwm added to fix fast-blast-on-resume bug |
-| V17 | Current version in this folder |
+| V17 | In this folder at repo creation |
+| V18 | Added Serial1 UART telemetry on D10/D11 — 20 Hz CSV to display_receiver |
+| V19 | Removed speedMph/batV/rpm/amps from UART packet — supplied by separate sensors downstream |
+| V20 | Fixed UART GPIO bug — Serial1.begin() needs GPIO numbers (21/38), not Arduino pin labels (10/11) |
