@@ -79,7 +79,7 @@ static MockData buildFrame(unsigned long ms) {
 }
 
 // ─── ESP-NOW send callback ────────────────────────────────────────────────────
-void onSent(const uint8_t* mac, esp_now_send_status_t status) {
+void onSent(const wifi_tx_info_t* tx_info, esp_now_send_status_t status) {
   // optional: Serial.println(status == ESP_NOW_SEND_SUCCESS ? "ok" : "fail");
 }
 
