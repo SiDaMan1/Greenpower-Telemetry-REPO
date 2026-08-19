@@ -7,7 +7,7 @@
 //                          GPIO34 = ESP32 RX (from GPS TX)
 //                          GPIO33 = ESP32 TX (to GPS RX)
 //    • IMU              — HW-123 (MPU6050-compatible), I2C SDA=17/SCL=18
-//    • Temp probe        — analog NTC thermistor, GPIO6 (ADC1_CH5)
+//    • Temp probe        — DS18B20, 1-Wire digital, GPIO6 (4.7k pull-up to VCC)
 //    • ADS1115 (Lonely Binary board), I2C SDA=17/SCL=18, addr 0x48:
 //         A0 = motorVolt   — via 5:1 divider (VCC<25V)
 //         A1 = battVolt    — via 5:1 divider (VCC<25V)
@@ -30,6 +30,8 @@
 //    • Adafruit MPU6050        (Adafruit)
 //    • Adafruit Unified Sensor (Adafruit)
 //    • Adafruit ADS1X15        (Adafruit)
+//    • OneWire                 (Paul Stoffregen)
+//    • DallasTemperature       (Miles Burton)
 // ════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -39,6 +41,8 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_ADS1X15.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 #include "config.h"
 
 
@@ -55,7 +59,7 @@
 #define I2C_SDA_PIN       17   // shared I2C bus: IMU + ADS1115
 #define I2C_SCL_PIN       18
 
-#define TEMP_PROBE_PIN     6   // ADC1_CH5 — NTC thermistor analog output
+#define TEMP_PROBE_PIN     6   // DS18B20 1-Wire data (needs 4.7k pull-up to VCC)
 
 #define MOTOR_RPM_PIN      4   // laser-interrupt — motor disc (was wrongly 48 — never wired)
 #define WHEEL_RPM_PIN      3   // laser-interrupt — wheel disc (was wrongly 47 — never wired)
@@ -86,9 +90,12 @@
 //  CALIBRATION CONSTANTS
 // ════════════════════════════════════════════════════════════════════
 
-// Voltage dividers — 5:1, rated for VCC < 25 V (divided output maxes ~5 V)
-// Adjust if your actual resistor pair gives a different ratio.
-static const float VDIV_RATIO = 1.0f / 5.0f;
+// Voltage dividers — nominally 5:1, rated for VCC < 25 V (divided output maxes ~5 V).
+// Two physically separate resistor pairs — even nominally identical resistors
+// have tolerance, so each divider gets its own calibrated ratio rather than
+// sharing one constant. Calibration procedure is in CLAUDE.md.
+static const float VDIV_RATIO_MOTOR = 0.19893f;   // calibrated: sketch=12.97V, multimeter=13.04V
+static const float VDIV_RATIO_BATT  = 0.19954f;   // calibrated: sketch=13.02V, multimeter=13.05V
 
 // YHDC HSTS016L 100 A current sensor, read differentially (Vout - Vref)
 // on ADS1115 A2/A3, so no zero-offset constant is needed — Vref is
@@ -98,18 +105,8 @@ static const float VDIV_RATIO = 1.0f / 5.0f;
 // against a known load.
 static const float CURRENT_SENS = 0.016f;   // V per A — placeholder, calibrate
 
-// NTC thermistor temp probe (GPIO6) — divider assumed as:
-//   3.3V --[NTC_SERIES_R]-- ADC tap --[NTC]-- GND
-// If your probe is wired the opposite way (NTC on top), swap the
-// numerator/denominator in readTempF() below.
-static const float NTC_SERIES_R = 10000.0f;   // ohms, fixed series resistor
-static const float NTC_R0       = 10000.0f;   // ohms, NTC resistance at 25°C
-static const float NTC_BETA     =  3950.0f;   // NTC beta coefficient
-static const float NTC_T0_K     =   298.15f;  // 25°C in Kelvin
-
-// ESP32-S3 internal ADC (temp probe only — voltage/current now go through ADS1115)
-static const float ADC_REF_V   = 3.3f;
-static const float ADC_MAX     = 4095.0f;
+// DS18B20 needs no calibration constants — it's a digital sensor with its
+// own factory-calibrated ADC, unlike the analog dividers above.
 
 
 // ════════════════════════════════════════════════════════════════════
@@ -119,6 +116,8 @@ static const float ADC_MAX     = 4095.0f;
 TinyGPSPlus       gps;
 Adafruit_MPU6050  mpu;
 Adafruit_ADS1115  ads;
+OneWire           oneWire(TEMP_PROBE_PIN);
+DallasTemperature tempSensor(&oneWire);
 
 static telemetry_packet_t pkt = {};
 
@@ -243,12 +242,13 @@ static void updateRpm() {
 // ════════════════════════════════════════════════════════════════════
 
 // Single-ended read on A0/A1 through a 5:1 divider, gain set wide enough
-// to cover the divider's ~5V max output without clipping.
-static float readDividerVoltage(uint8_t channel) {
+// to cover the divider's ~5V max output without clipping. Each channel
+// passes its own calibrated ratio since the two dividers aren't identical.
+static float readDividerVoltage(uint8_t channel, float dividerRatio) {
     ads.setGain(GAIN_TWOTHIRDS);              // ±6.144V FSR
     int16_t raw  = ads.readADC_SingleEnded(channel);
     float   vadc = ads.computeVolts(raw);
-    return vadc / VDIV_RATIO;                 // undo the 5:1 divider
+    return vadc / dividerRatio;               // undo the divider
 }
 
 // Differential A2(Vout) - A3(Vref) — cancels the sensor's own zero offset
@@ -262,17 +262,25 @@ static float readCurrentAmps() {
 
 
 // ════════════════════════════════════════════════════════════════════
-//  SENSOR READER — NTC thermistor (GPIO6, ESP32 internal ADC)
+//  SENSOR READER — DS18B20 (GPIO6, 1-Wire digital)
 // ════════════════════════════════════════════════════════════════════
 
-static float readTempF() {
-    int   raw  = analogRead(TEMP_PROBE_PIN);
-    float vout = (raw / ADC_MAX) * ADC_REF_V;
-    vout = constrain(vout, 0.001f, ADC_REF_V - 0.001f);   // avoid /0 and log(<=0) at the rails
+// Raw Celsius reading from the last conversion, kept only for the serial
+// diagnostic dump — DEVICE_DISCONNECTED_C (-127) here means the sensor
+// didn't respond (check the pull-up resistor and data-line wiring).
+static float lastTempRawC = 0.0f;
 
-    float rNtc  = NTC_SERIES_R * vout / (ADC_REF_V - vout);
-    float tempK = 1.0f / (1.0f / NTC_T0_K + logf(rNtc / NTC_R0) / NTC_BETA);
-    float tempC = tempK - 273.15f;
+static float readTempF() {
+    // requestTemperatures() blocks until conversion finishes — ~750 ms at the
+    // default 12-bit resolution, or ~94 ms at 9-bit (set in setup()). Fine at
+    // this sketch's 200 ms sensor-poll cadence.
+    tempSensor.requestTemperatures();
+    float tempC = tempSensor.getTempCByIndex(0);
+    lastTempRawC = tempC;
+
+    if (tempC == DEVICE_DISCONNECTED_C) {
+        return NAN;   // caller/print sees this as clearly invalid, not a bogus number
+    }
     return tempC * 1.8f + 32.0f;
 }
 
@@ -340,8 +348,8 @@ static void updateSensors() {
     updateRpm();
 
     pkt.temp_f      = readTempF();
-    pkt.motor_volt  = readDividerVoltage(ADS_MOTOR_V_CH);
-    pkt.batt_volt   = readDividerVoltage(ADS_BATT_V_CH);
+    pkt.motor_volt  = readDividerVoltage(ADS_MOTOR_V_CH, VDIV_RATIO_MOTOR);
+    pkt.batt_volt   = readDividerVoltage(ADS_BATT_V_CH, VDIV_RATIO_BATT);
     pkt.current_a   = readCurrentAmps();
     pkt.motor_rpm   = motorRpm;
     pkt.wheel_rpm   = wheelRpm;
@@ -398,9 +406,12 @@ void setup() {
                   MOTOR_RPM_PIN, digitalRead(MOTOR_RPM_PIN),
                   WHEEL_RPM_PIN, digitalRead(WHEEL_RPM_PIN));
 
-    // Temp probe ADC — 11 dB attenuation for full 0–3.3 V input range
-    analogSetPinAttenuation(TEMP_PROBE_PIN, ADC_11db);
-    Serial.printf("[OK]   Temp    pin=GPIO%d\n", TEMP_PROBE_PIN);
+    // DS18B20 — 9-bit resolution keeps conversion time short (~94 ms) so it
+    // doesn't eat into the 200 ms sensor-poll cadence; 12-bit default is ~750 ms.
+    tempSensor.begin();
+    tempSensor.setResolution(9);
+    Serial.printf("[OK]   Temp    DS18B20 pin=GPIO%d  count=%d\n",
+                  TEMP_PROBE_PIN, tempSensor.getDeviceCount());
 
     // ADS1115 — motorVolt(A0) / battVolt(A1) / current sensor(A2-A3 diff)
     if (!ads.begin(ADS_I2C_ADDR, &Wire)) {
@@ -447,7 +458,11 @@ void loop() {
                   RPM_CALC_INTERVAL_MS / 1000.0f, digitalRead(WHEEL_RPM_PIN));
 
     // Temperature
-    Serial.printf("  Temp      : %.1f °F\n", pkt.temp_f);
+    if (isnan(pkt.temp_f)) {
+        Serial.println("  Temp      : DISCONNECTED (check pull-up + data line wiring)");
+    } else {
+        Serial.printf("  Temp      : %.1f °F  (%.2f °C raw)\n", pkt.temp_f, lastTempRawC);
+    }
 
     // GPS
     Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");

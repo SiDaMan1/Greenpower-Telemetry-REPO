@@ -32,7 +32,7 @@ There is no `SYSTEM_INFO.md` in this folder yet.
 | GPS TX (to GPS RX) | GPIO33 | " |
 | I2C SDA | GPIO17 | shared bus: IMU + ADS1115 |
 | I2C SCL | GPIO18 | " |
-| Temp probe (analog) | GPIO6 (ADC1_CH5) | NTC thermistor |
+| Temp probe (1-Wire digital) | GPIO6 (needs 4.7kΩ pull-up to VCC) | DS18B20 |
 | Motor RPM | GPIO4 | laser-interrupt disc sensor, unbranded |
 | Wheel RPM | GPIO3 (boot-strapping pin — fine as input post-boot) | laser-interrupt disc sensor, unbranded |
 | VEXT power rail | GPIO36 (active LOW) | Heltec V4 external sensor rail |
@@ -64,13 +64,26 @@ The struct is unused by any radio code right now, but it's the intended future L
 `readCurrentAmps()` uses `ads.readADC_Differential_2_3()` (Vout − Vref) instead of a fixed `CURRENT_ZERO_V` constant like the old design did. This is intentional — the sensor's Vref pin is wired to A3 specifically so the true zero point is measured every sample instead of assumed. Don't reintroduce a hardcoded zero-offset constant; only `CURRENT_SENS` (V per A) needs calibration.
 
 ### Calibration constants that still need real numbers
-These are placeholders pending bench calibration against known references — don't treat them as verified:
-- `CURRENT_SENS` (V/A for the YHDC HSTS016L) — depends on the sensor's actual supply voltage.
-- `NTC_SERIES_R`, `NTC_R0`, `NTC_BETA` — assume a common 10 kΩ/B=3950 NTC probe wired as `3.3V → series R → ADC tap → NTC → GND`. If the real probe's datasheet gives different values, or the divider is wired the opposite way (NTC on top), update `readTempF()` accordingly.
-- `VDIV_RATIO` (currently exactly `1/5`) — confirm against the actual measured resistor values, not just the nominal "5:1" spec.
+- `CURRENT_SENS` (V/A for the YHDC HSTS016L) — still a placeholder pending bench calibration against a known load, don't treat it as verified.
+- `VDIV_RATIO_MOTOR = 0.19893`, `VDIV_RATIO_BATT = 0.19954` — **calibrated against a multimeter**, no longer the nominal `1/5`. Motor: sketch read 12.97V vs multimeter 13.04V. Battery: sketch read 13.02V vs multimeter 13.05V. Re-run the procedure below if the resistors are ever swapped or the divider circuits rebuilt.
+
+### Voltage divider calibration procedure
+With the sketch running and printing `Motor Volt`/`Batt Volt` to serial:
+1. Measure the true voltage at that divider's input node with a multimeter, at the same time the serial dump shows a reading.
+2. Compute the corrected ratio: `new_ratio = old_ratio * (sketch_reading / multimeter_reading)`.
+   - Example: divider reports 24.60V, multimeter reads 24.35V, old ratio is `1/5` (0.2) → `new_ratio = 0.2 * (24.60/24.35) = 0.2021`.
+3. Put that value into `VDIV_RATIO_MOTOR` or `VDIV_RATIO_BATT` (whichever channel you measured) and re-flash.
+4. Re-check against the multimeter — one pass is normally enough since the relationship is linear, but repeat if the source voltage was unstable during the first measurement.
+
+Do this once per divider (motor and battery separately) — don't assume one calibrated value applies to both.
+
+### Temp probe is a DS18B20, not analog — don't re-add ADC/NTC code here
+Early in the V2 rework this was built as an analog NTC thermistor circuit (divider math, Beta equation, ADC oversampling/calibration) because the sensor was initially described as an "analog output" probe. It's actually a **DS18B20**, a digital 1-Wire sensor — none of that analog machinery applies, and it was the actual cause of the wild/inverted readings seen at the time (a 1-Wire digital pulse train read through an ADC as if it were a steady analog voltage produces meaningless numbers). The sketch now uses `OneWire`/`DallasTemperature` on GPIO6, same as V1 used on GPIO45. If temp readings ever look wrong again, don't reach for divider/thermistor math — check the 4.7kΩ pull-up and the data-line wiring first, and check `tempSensor.getDeviceCount()` in the boot log (0 means the sensor didn't respond).
+- 9-bit resolution is set intentionally (`tempSensor.setResolution(9)`) to keep the blocking `requestTemperatures()` call (~94 ms) well under the sketch's 200 ms sensor-poll cadence — 12-bit default (~750 ms) would stall the loop.
+- `readTempF()` returns `NAN` on `DEVICE_DISCONNECTED_C` rather than a bogus number — the print block checks `isnan()` and prints a clear DISCONNECTED line instead of a fake temperature.
 
 ### GPIO45 is not usable for analog input
-This was a real wiring mistake caught during the V2 rework: GPIO45/46 on the ESP32-S3 are dedicated strapping pins with no ADC channel. The temp probe was moved to GPIO6 (ADC1_CH5) for this reason — don't route any new analog sensor to 45 or 46.
+This was a real wiring mistake caught early in the V2 rework, before the sensor was correctly identified as the digital DS18B20 above: GPIO45/46 on the ESP32-S3 are dedicated strapping pins with no ADC channel. Kept here as a standing rule for any *future* analog sensor — don't route one to GPIO45 or 46.
 
 ### RPM sensing — polarity-agnostic, period-based (V2.2 rework)
 The original ISR design assumed the sensors idled LOW and pulsed HIGH (`RISING` + `INPUT_PULLDOWN`) — wrong for these unbranded modules, so it read zero. It was also wired to the wrong pins entirely (GPIO47/48, never connected — the sensors actually landed on **GPIO4 (motor) / GPIO3 (wheel)**; confirmed working via `rpm_pin_test.ino`). Once wiring was fixed, RPM values only moved in large fixed steps (~60 RPM per detected edge) because the first rework counted edges in a fixed 500 ms window — coarse by construction at low pulse rates.
@@ -98,7 +111,7 @@ VEXT power rail is enabled and given time to stabilize *before* I2C init — kee
 - Sensor-only, serial-print build — no LoRa, no ESP-NOW yet
 - Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 2 Hz
 - ESC/UART telemetry removed (was present in V1, not part of this breadboard build)
-- Voltage and current sensing moved entirely to the ADS1115; the ESP32's internal ADC is now only used for the temp probe
+- Voltage and current sensing moved entirely to the ADS1115; the ESP32's internal ADC is no longer used for anything in this sketch (temp probe is 1-Wire digital, not analog)
 
 ---
 
