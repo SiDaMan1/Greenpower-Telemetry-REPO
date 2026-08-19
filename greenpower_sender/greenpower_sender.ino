@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════
-//  GREENPOWER SENDER  —  V2  (breadboard data-collection rework)
+//  GREENPOWER SENDER  —  V3  (breadboard, sensors + LoRa + ESP-NOW)
 //  Heltec ESP32-S3 LoRa WiFi V4
 //
 //  Sensors collected (all point-to-point wiring, no PCB):
@@ -16,14 +16,16 @@
 //    • Motor RPM         — laser-interrupt disc sensor, GPIO4 (CHANGE-edge, polarity-agnostic)
 //    • Wheel RPM         — laser-interrupt disc sensor, GPIO3 (CHANGE-edge, polarity-agnostic)
 //
+//  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
+//           Transmits telemetry_packet_t every 500 ms
+//
+//  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
+//              mock_sender — see espNowSend() below. ESC fields are sent as
+//              placeholders ("---", 0) since this build has no ESC link.
+//
 //  NOTE: ADS1115 must be powered from 5V, not 3.3V — the voltage-divider
 //  channels can swing up to ~5V (25V input / 5:1) and would clip against
 //  a 3.3V supply rail regardless of gain setting.
-//
-//  This build only reads sensors and prints to USB serial. LoRa (on-board
-//  SX1262) and ESP-NOW transmission are not wired up yet — telemetry_packet_t
-//  in config.h is kept ready for that so the data model doesn't need to
-//  change when radio support is added.
 //
 //  Required libraries (install via Arduino Library Manager):
 //    • TinyGPS++               (Mikal Hart)
@@ -32,10 +34,14 @@
 //    • Adafruit ADS1X15        (Adafruit)
 //    • OneWire                 (Paul Stoffregen)
 //    • DallasTemperature       (Miles Burton)
+//    • RadioLib                (jgromes)
 // ════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
+#include <SPI.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <esp_now.h>
 #include <math.h>
 #include <TinyGPSPlus.h>
 #include <Adafruit_MPU6050.h>
@@ -43,6 +49,7 @@
 #include <Adafruit_ADS1X15.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <RadioLib.h>
 #include "config.h"
 
 
@@ -51,6 +58,13 @@
 // ════════════════════════════════════════════════════════════════════
 
 #define VEXT_CTRL         36   // External sensor power rail (active LOW) — Heltec V4
+
+// LoRa SPI pins (fixed on Heltec V4). NSS/RST/DIO1/BUSY are in config.h
+// since a receiver on the same board type would share them.
+#define LORA_SCK           9
+#define LORA_MISO         11
+#define LORA_MOSI         10
+#define LORA_TX_INTERVAL_MS  500   // 2 Hz — also paces ESP-NOW TX
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
 #define GPS_TX_PIN        33   // ESP32 TX  → GPS RX
@@ -119,6 +133,14 @@ Adafruit_ADS1115  ads;
 OneWire           oneWire(TEMP_PROBE_PIN);
 DallasTemperature tempSensor(&oneWire);
 
+// SX1262 radio (NSS, DIO1, RST, BUSY)
+SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
+bool   loraReady   = false;
+
+// ESP-NOW peer (steering wheel display)
+static const uint8_t PEER_MAC[6] = ESPNOW_PEER_MAC;
+bool   espNowReady = false;
+
 static telemetry_packet_t pkt = {};
 
 
@@ -131,6 +153,8 @@ static const uint32_t RPM_CALC_INTERVAL_MS = 500;   // recalculate RPM every 500
 static uint32_t lastSensorMs = 0;
 static uint32_t lastGyroMs   = 0;
 static uint32_t lastRpmMs    = 0;
+static uint32_t lastLoraTxMs = 0;
+static uint32_t lastEspNowMs = 0;
 
 
 // ════════════════════════════════════════════════════════════════════
@@ -358,6 +382,52 @@ static void updateSensors() {
 
 
 // ════════════════════════════════════════════════════════════════════
+//  LORA TX
+// ════════════════════════════════════════════════════════════════════
+
+static void loRaTx() {
+    if (!loraReady) return;
+
+    int state = radio.transmit((uint8_t*)&pkt, sizeof(pkt));
+
+    if (state == RADIOLIB_ERR_NONE) {
+        Serial.printf("  [LoRa] TX OK  %u bytes  RSSI:%.0f dBm\n",
+                      sizeof(pkt), radio.getRSSI());
+    } else {
+        Serial.printf("  [LoRa] TX ERR %d\n", state);
+    }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  ESP-NOW TX
+//  Format: speed_mph,batV,rpm,amps,mode,state,setpoint%,live%,ramp%
+//  Same format as mock_sender, so display_receiver doesn't care which
+//  sender is live. This build has no ESC link, so the mode/state/percent
+//  fields are sent as placeholders rather than real data.
+// ════════════════════════════════════════════════════════════════════
+
+static void espNowSend() {
+    if (!espNowReady) return;
+
+    char payload[128];
+    snprintf(payload, sizeof(payload),
+        "%.1f,%.2f,%.0f,%.1f,%s,%s,%.1f,%.1f,%.1f",
+        pkt.speed_mph,
+        pkt.batt_volt,
+        pkt.motor_rpm,
+        pkt.current_a,
+        "---", "---",   // no ESC link in this build
+        0.0f, 0.0f, 0.0f
+    );
+
+    esp_err_t result = esp_now_send(PEER_MAC, (uint8_t*)payload, strlen(payload));
+    Serial.printf("  [ESP-NOW] %s  \"%s\"\n",
+                  result == ESP_OK ? "TX OK" : "TX ERR", payload);
+}
+
+
+// ════════════════════════════════════════════════════════════════════
 //  SETUP
 // ════════════════════════════════════════════════════════════════════
 
@@ -365,7 +435,7 @@ void setup() {
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && millis() - t0 < 3000) delay(10);  // wait up to 3s for serial monitor
-    Serial.println("\n[BOOT] Greenpower Sender V2 (breadboard)");
+    Serial.println("\n[BOOT] Greenpower Sender V3 (breadboard, LoRa + ESP-NOW)");
 
     // GPS
     Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
@@ -421,6 +491,45 @@ void setup() {
                       ADS_I2C_ADDR);
     }
 
+    // WiFi (STA, no AP connection) + ESP-NOW
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("[WARN] ESP-NOW init failed");
+    } else {
+        esp_now_peer_info_t peer = {};
+        memcpy(peer.peer_addr, PEER_MAC, 6);
+        peer.channel = 0;
+        peer.encrypt = false;
+        if (esp_now_add_peer(&peer) != ESP_OK) {
+            Serial.println("[WARN] ESP-NOW add peer failed");
+        } else {
+            espNowReady = true;
+            Serial.printf("[OK]   ESP-NOW → %02X:%02X:%02X:%02X:%02X:%02X\n",
+                          PEER_MAC[0], PEER_MAC[1], PEER_MAC[2],
+                          PEER_MAC[3], PEER_MAC[4], PEER_MAC[5]);
+        }
+    }
+
+    // SX1262 LoRa radio
+    SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
+    int loraState = radio.begin(
+        LORA_FREQ_MHZ,        // 915.0 MHz
+        125.0,                // bandwidth kHz
+        7,                    // spreading factor
+        5,                    // coding rate 4/5
+        LORA_SYNC_WORD,       // 0xF3
+        LORA_TX_POWER_DBM,    // 22 dBm
+        8                     // preamble length
+    );
+    if (loraState != RADIOLIB_ERR_NONE) {
+        Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
+    } else {
+        radio.setDio2AsRfSwitch(true);   // required on Heltec V4
+        loraReady = true;
+        Serial.println("[OK]   SX1262  915 MHz  SF7  BW125  22dBm");
+    }
+
     Serial.println("[RDY]  Sensor loop starting\n");
 }
 
@@ -438,6 +547,18 @@ void loop() {
     lastSensorMs = now;
 
     updateSensors();
+
+    // ── LoRa TX — every LORA_TX_INTERVAL_MS ─────────────────────────
+    if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
+        lastLoraTxMs = now;
+        loRaTx();
+    }
+
+    // ── ESP-NOW TX — every LORA_TX_INTERVAL_MS ───────────────────────
+    if (now - lastEspNowMs >= LORA_TX_INTERVAL_MS) {
+        lastEspNowMs = now;
+        espNowSend();
+    }
 
     // ── Debug dump to USB serial ─────────────────────────────────────
     Serial.println("──────────────────────────────────────────");

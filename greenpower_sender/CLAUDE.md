@@ -6,9 +6,9 @@
 
 ## What This Project Is
 
-The **real** telemetry sender for the Greenpower vehicle, currently built on a **breadboard** around a Heltec ESP32-S3 LoRa WiFi V4. It reads live sensors and prints the results to USB serial. Radio transmission (LoRa via the board's on-board SX1262, and ESP-NOW to the steering wheel [`display_receiver`](../steering_wheel_display/CLAUDE.md)) is **not implemented yet** — that's deliberately deferred to a later pass. `telemetry_packet_t` in `config.h` is kept ready as the future payload shape so the data model won't need to change when radio support is added.
+The **real** telemetry sender for the Greenpower vehicle, currently built on a **breadboard** around a Heltec ESP32-S3 LoRa WiFi V4. It reads live sensors, prints the results to USB serial, and transmits on two radio links at once: **LoRa** (on-board SX1262, binary `telemetry_packet_t`) for a future long-range base-station receiver, and **ESP-NOW** to the steering wheel [`display_receiver`](../steering_wheel_display/CLAUDE.md) (same CSV format as [`mock_sender`](../mock_sender/CLAUDE.md), so the receiver doesn't care which sender is live).
 
-There is no ESC/UART link in this build — that was dropped in the V2 rework since the breadboard setup doesn't include the ESC controller.
+There is no ESC/UART link in this build — that was dropped in the V2 rework since the breadboard setup doesn't include the ESC controller. (The ESP-NOW payload still reserves fields for it, sent as placeholders — see below.)
 
 ---
 
@@ -16,8 +16,8 @@ There is no ESC/UART link in this build — that was dropped in the V2 rework si
 
 | File | Role | May be edited? |
 |------|------|----------------|
-| `greenpower_sender.ino` | Entire sketch — sensor reads, RPM ISRs, serial debug dump | **Yes — primary target** |
-| `config.h` | `telemetry_packet_t` — the future shared packet struct | **Yes — but see "Packet struct" below** |
+| `greenpower_sender.ino` | Entire sketch — sensor reads, RPM ISRs, LoRa TX, ESP-NOW TX, serial debug dump | **Yes — primary target** |
+| `config.h` | LoRa radio settings, ESP-NOW peer MAC, `telemetry_packet_t` — all shared with a receiver | **Yes — but see "config.h is shared" below** |
 | `CLAUDE.md` | This file | **Yes — update after significant changes** |
 
 There is no `SYSTEM_INFO.md` in this folder yet.
@@ -37,6 +37,8 @@ There is no `SYSTEM_INFO.md` in this folder yet.
 | Wheel RPM | GPIO3 (boot-strapping pin — fine as input post-boot) | laser-interrupt disc sensor, unbranded |
 | VEXT power rail | GPIO36 (active LOW) | Heltec V4 external sensor rail |
 
+**LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, SF7, BW125, sync word 0xF3, 22 dBm — see `config.h`.
+
 **ADS1115 (Lonely Binary board, I2C addr 0x48)** — shared bus with the IMU:
 | Channel | Signal |
 |---|---|
@@ -54,8 +56,20 @@ The voltage-divider channels (A0/A1) can swing up to ~5V (25V max input ÷ 5:1 d
 
 ## Rules and Constraints
 
-### `config.h` / `telemetry_packet_t` — not yet used for transmission, but keep it receiver-ready
-The struct is unused by any radio code right now, but it's the intended future LoRa/ESP-NOW payload. Treat field changes the same as if a receiver already depended on it: update the size comment (currently 66 bytes, packed) whenever a field is added, removed, or reordered.
+### `config.h` is shared — coordinate before changing it
+`telemetry_packet_t` (66 bytes, packed), the LoRa RF settings, and `ESPNOW_PEER_MAC` are meant to be identical on both ends of each link. No LoRa receiver exists in this repo yet, but any future one must use a byte-identical copy of `telemetry_packet_t` and matching RF settings (freq/bandwidth/SF/coding rate/sync word) or it won't decode anything. Update the size comment whenever a packet field is added, removed, or reordered.
+
+### ESP-NOW packet format — must match `mock_sender` and `display_receiver`
+```
+speed_mph,batV,rpm,amps,mode,state,setpoint%,live%,ramp%
+```
+Produced by `espNowSend()`, must stay field-for-field identical to what `mock_sender.ino` sends (see [`mock_sender/CLAUDE.md`](../mock_sender/CLAUDE.md)) and what `display_receiver`'s `parsePacket()` expects. This build has no ESC link, so `mode`/`state`/the three percent fields are sent as fixed placeholders (`"---"`, `0.0`) rather than real data — `rpm` uses the real `motor_rpm`, not a placeholder, since this sender does have real encoders.
+
+### ESP-NOW peer MAC — critical
+`ESPNOW_PEER_MAC` in `config.h` must match the MAC address `display_receiver` prints on boot. Currently `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` — same value used by `mock_sender`, so the two senders are interchangeable from the receiver's point of view.
+
+### LoRa and ESP-NOW are independent, but share one timer
+Both fire off `LORA_TX_INTERVAL_MS` (500 ms) in `loop()`, using separate `lastLoraTxMs`/`lastEspNowMs` timestamps — they're two unrelated radios, don't assume one blocks or depends on the other.
 
 ### ADS1115 gain is switched per-read — don't assume a fixed gain
 `readDividerVoltage()` sets `GAIN_TWOTHIRDS` (±6.144V FSR) before reading A0/A1; `readCurrentAmps()` sets `GAIN_ONE` (±4.096V FSR) before the A2-A3 differential read. These are deliberately different — the divider channels need the wider range to avoid clipping near 5V, the current channel wants the extra resolution. If you add a new ADS1115 channel, set its own gain explicitly rather than assuming the previous read's gain is still active.
@@ -106,12 +120,14 @@ VEXT power rail is enabled and given time to stabilize *before* I2C init — kee
 
 ---
 
-## Current State (V2 — breadboard rework)
+## Current State (V3)
 
-- Sensor-only, serial-print build — no LoRa, no ESP-NOW yet
+- Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 500 ms interval
 - Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 2 Hz
-- ESC/UART telemetry removed (was present in V1, not part of this breadboard build)
+- ESP-NOW peer: `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` (steering wheel `display_receiver`)
+- ESC/UART telemetry removed (was present in V1, not part of this breadboard build) — ESP-NOW still sends placeholder ESC fields for format compatibility
 - Voltage and current sensing moved entirely to the ADS1115; the ESP32's internal ADC is no longer used for anything in this sketch (temp probe is 1-Wire digital, not analog)
+- No LoRa receiver counterpart exists in this repo yet
 
 ---
 

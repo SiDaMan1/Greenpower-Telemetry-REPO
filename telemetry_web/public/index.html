@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Greenpower Telemetry</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #131a22;
+    --border: #223040;
+    --text: #e7edf3;
+    --muted: #7c8fa3;
+    --accent: #3ddc84;
+    --danger: #ff5c5c;
+    --tile-bg: #0f151d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 1000px;
+    margin: 0 auto 20px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  h1 {
+    font-size: 1.4rem;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+  }
+  .status.online { color: var(--accent); border-color: rgba(61,220,132,0.4); background: rgba(61,220,132,0.08); }
+  .status.offline { color: var(--danger); border-color: rgba(255,92,92,0.4); background: rgba(255,92,92,0.08); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .status.online .dot { box-shadow: 0 0 8px currentColor; }
+
+  main { max-width: 1000px; margin: 0 auto; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+  .tile {
+    background: var(--tile-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .tile .label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .tile .value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile .unit {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-left: 4px;
+    font-weight: 400;
+  }
+
+  .section-label {
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 24px 0 10px;
+  }
+  .section-label:first-of-type { margin-top: 8px; }
+
+  footer {
+    max-width: 1000px;
+    margin: 28px auto 0;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
+  .offline-banner {
+    max-width: 1000px;
+    margin: 0 auto 20px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    background: rgba(255,92,92,0.08);
+    border: 1px solid rgba(255,92,92,0.35);
+    color: var(--danger);
+    font-size: 0.9rem;
+    display: none;
+  }
+  .offline-banner.show { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏁 Greenpower Telemetry</h1>
+  <div class="status offline" id="statusPill">
+    <span class="dot"></span>
+    <span id="statusText">Connecting…</span>
+  </div>
+</header>
+
+<main>
+  <div class="offline-banner" id="offlineBanner">
+    No receiver is currently forwarding data. Plug in the receiver and accept the forward prompt on the host computer to go live.
+  </div>
+
+  <div class="section-label">Power</div>
+  <div class="grid">
+    <div class="tile"><div class="label">Battery</div><div class="value" id="v-batt_volt">—<span class="unit">V</span></div></div>
+    <div class="tile"><div class="label">Motor Volt</div><div class="value" id="v-motor_volt">—<span class="unit">V</span></div></div>
+    <div class="tile"><div class="label">Current</div><div class="value" id="v-current_a">—<span class="unit">A</span></div></div>
+  </div>
+
+  <div class="section-label">Drivetrain</div>
+  <div class="grid">
+    <div class="tile"><div class="label">Motor RPM</div><div class="value" id="v-motor_rpm">—</div></div>
+    <div class="tile"><div class="label">Wheel RPM</div><div class="value" id="v-wheel_rpm">—</div></div>
+    <div class="tile"><div class="label">Speed</div><div class="value" id="v-speed_mph">—<span class="unit">mph</span></div></div>
+    <div class="tile"><div class="label">Temp</div><div class="value" id="v-temp_f">—<span class="unit">°F</span></div></div>
+  </div>
+
+  <div class="section-label">GPS</div>
+  <div class="grid">
+    <div class="tile"><div class="label">Satellites</div><div class="value" id="v-satellites">—</div></div>
+    <div class="tile"><div class="label">HDOP</div><div class="value" id="v-hdop">—</div></div>
+    <div class="tile"><div class="label">Latitude</div><div class="value" id="v-latitude">—</div></div>
+    <div class="tile"><div class="label">Longitude</div><div class="value" id="v-longitude">—</div></div>
+  </div>
+
+  <div class="section-label">IMU</div>
+  <div class="grid">
+    <div class="tile"><div class="label">Roll</div><div class="value" id="v-roll_deg">—<span class="unit">°</span></div></div>
+    <div class="tile"><div class="label">Pitch</div><div class="value" id="v-pitch_deg">—<span class="unit">°</span></div></div>
+    <div class="tile"><div class="label">Yaw</div><div class="value" id="v-yaw_deg">—<span class="unit">°</span></div></div>
+    <div class="tile"><div class="label">Accel</div><div class="value" id="v-accel_g">—<span class="unit">g</span></div></div>
+    <div class="tile"><div class="label">Lateral</div><div class="value" id="v-lateral_g">—<span class="unit">g</span></div></div>
+    <div class="tile"><div class="label">Vertical</div><div class="value" id="v-vertical_g">—<span class="unit">g</span></div></div>
+  </div>
+
+  <div class="section-label">Link</div>
+  <div class="grid">
+    <div class="tile"><div class="label">RSSI</div><div class="value" id="v-rssi">—<span class="unit">dBm</span></div></div>
+    <div class="tile"><div class="label">SNR</div><div class="value" id="v-snr">—<span class="unit">dB</span></div></div>
+    <div class="tile"><div class="label">Packet #</div><div class="value" id="v-seq">—</div></div>
+  </div>
+</main>
+
+<footer>Polling every second. Data source: receiver_agent → /api/telemetry.</footer>
+
+<script>
+const FIELD_FORMAT = {
+  batt_volt: v => v.toFixed(2), motor_volt: v => v.toFixed(2), current_a: v => v.toFixed(2),
+  motor_rpm: v => Math.round(v), wheel_rpm: v => Math.round(v),
+  speed_mph: v => v.toFixed(1), temp_f: v => v.toFixed(1),
+  satellites: v => Math.round(v), hdop: v => v.toFixed(1),
+  latitude: v => v.toFixed(6), longitude: v => v.toFixed(6),
+  roll_deg: v => v.toFixed(1), pitch_deg: v => v.toFixed(1), yaw_deg: v => v.toFixed(1),
+  accel_g: v => v.toFixed(3), lateral_g: v => v.toFixed(3), vertical_g: v => v.toFixed(3),
+  rssi: v => Math.round(v), snr: v => v.toFixed(1), seq: v => v,
+};
+
+function setTile(id, value, fmt) {
+  const el = document.getElementById('v-' + id);
+  if (!el) return;
+  const unitEl = el.querySelector('.unit');
+  el.firstChild.textContent = (value === undefined || value === null) ? '—' : fmt(value);
+  if (unitEl) el.appendChild(unitEl); // re-append unit span after text overwrite
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/latest', { cache: 'no-store' });
+    const { online, data } = await res.json();
+
+    const pill = document.getElementById('statusPill');
+    const text = document.getElementById('statusText');
+    const banner = document.getElementById('offlineBanner');
+    pill.className = 'status ' + (online ? 'online' : 'offline');
+    text.textContent = online ? 'Live' : 'Offline';
+    banner.className = 'offline-banner' + (online ? '' : ' show');
+
+    if (data) {
+      for (const [key, fmt] of Object.entries(FIELD_FORMAT)) {
+        if (typeof data[key] === 'number') setTile(key, data[key], fmt);
+      }
+    }
+  } catch (e) {
+    // network hiccup polling our own API — just try again next tick
+  }
+}
+
+poll();
+setInterval(poll, 1000);
+</script>
+
+</body>
+</html>

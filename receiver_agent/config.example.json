@@ -1,0 +1,4 @@
+{
+  "websiteUrl": "https://telemetry.yourdomain.com/api/telemetry",
+  "apiKey": "paste-the-same-TELEMETRY_API_KEY-from-Railway-here"
+}

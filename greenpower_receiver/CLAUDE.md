@@ -1,0 +1,71 @@
+# CLAUDE.md — Greenpower Receiver
+
+**This file is a briefing for an AI assistant.** Read it before touching any code in this folder.
+
+---
+
+## What This Project Is
+
+A pure **LoRa → USB serial relay**. It listens for `telemetry_packet_t` frames transmitted by [`greenpower_sender`](../greenpower_sender/CLAUDE.md) over the on-board SX1262 and prints each one to USB serial as it arrives. No ESP-NOW, no display, no onward transmission of any kind — this is meant to sit on a laptop/base-station desk, plugged in over USB, either read directly in a serial monitor or parsed by another program watching that port.
+
+This is a **different device** from [`steering_wheel_display`](../steering_wheel_display/CLAUDE.md), which receives over ESP-NOW (not LoRa) and drives a physical dashboard. The two receivers serve different purposes and don't share code.
+
+---
+
+## Files in This Folder
+
+| File | Role | May be edited? |
+|------|------|----------------|
+| `greenpower_receiver.ino` | Entire sketch — LoRa RX, serial dump | **Yes — primary target** |
+| `config.h` | LoRa radio settings + `telemetry_packet_t` — must match `greenpower_sender`'s copy exactly | **Yes — but see "config.h must stay in sync" below** |
+| `CLAUDE.md` | This file | **Yes — update after significant changes** |
+
+There is no `SYSTEM_INFO.md` in this folder yet.
+
+---
+
+## Hardware
+
+Assumed to be another **Heltec ESP32-S3 LoRa WiFi V4** (same board as the sender), using the same on-board SX1262 pins: NSS=8, RST=12, DIO1=14, BUSY=13, SPI SCK=9/MISO=11/MOSI=10. This assumption was made without confirming the actual receiver hardware — if it turns out to be a different board, the pin `#define`s in both `greenpower_receiver.ino` (SPI pins) and `config.h` (NSS/RST/DIO1/BUSY) need to be updated to match, and this section corrected.
+
+No other peripherals — no sensors, no GPS, no display. Just the radio and USB.
+
+---
+
+## Rules and Constraints
+
+### `config.h` must stay in sync with `greenpower_sender/config.h`
+This is two independently-maintained copies of the same file, not a shared include — Arduino sketches in separate folders can't easily share a header across sketch boundaries, so both sides keep their own copy by convention (same pattern used by `mock_sender`/`display_receiver` elsewhere in this repo). If `telemetry_packet_t` or the LoRa RF settings (frequency, bandwidth, spreading factor, coding rate, sync word) change on the sender side, copy the change here too, in the same commit — a mismatch means packets either won't decode or won't be heard at all, usually with no obvious error message pointing at the real cause.
+
+### Interrupt-driven receive — keep the ISR trivial
+`setPacketFlag()` only sets a `volatile bool`; all real work (`radio.readData()`, parsing, printing) happens in `loop()`. Don't add radio calls or `Serial.print` inside the ISR itself — RadioLib's SPI transactions aren't ISR-safe, and blocking work in an interrupt handler risks missing the next packet or crashing.
+
+### Always call `radio.startReceive()` again after handling a packet
+This happens unconditionally at the bottom of `loop()`, including after CRC errors and other read failures — skipping it on the error paths would leave the radio in a finished-RX state that never hears another packet. Don't add an early `return` on an error branch without restarting receive first.
+
+### Serial protocol is a contract with `receiver_agent` — don't change it silently
+Added in the V1.1 pass to support the local forwarder agent (`../receiver_agent`): a `DEVICE_ID` beacon (`GREENPOWER_RX_V1`) printed once at boot and on-demand in response to `ID?\n`, plus a `JSON:`-prefixed machine-readable line after every successfully decoded packet (exact behavior is documented in the header comment block at the top of the .ino). `receiver_agent` parses both of these — if the JSON field set changes, bump the `DEVICE_ID` version suffix and update the agent in the same change, since it means the agent's parser needs to change too.
+
+### RSSI/SNR are receiver-only diagnostics
+`radio.getRSSI()`/`radio.getSNR()` reflect this device's radio, not anything in `telemetry_packet_t` — they're printed per-packet as link-quality info, not part of the sender's data. Don't confuse the two when adding new printed fields.
+
+### Code style
+- Keep the ASCII banner section headers (`════...`) and print-dump field ordering, matching `greenpower_sender.ino`'s serial dump — makes the two easy to compare side-by-side when debugging a link issue.
+
+---
+
+## Current State (V1)
+
+- LoRa RX only — no ESP-NOW, no display, no packet forwarding beyond USB serial
+- Interrupt-driven receive via RadioLib (`setPacketReceivedAction` + `startReceive()`), not blocking/polled
+- Prints full packet contents plus RSSI/SNR/packet count on every successful receive; CRC mismatches and other read errors are counted and logged, not silently dropped
+- Assumes a second Heltec ESP32-S3 LoRa WiFi V4 as the host board — **unconfirmed**, see Hardware section
+- Speaks a small serial protocol to `../receiver_agent`: `DEVICE_ID` beacon/handshake (`GREENPOWER_RX_V1`) + a `JSON:` line per packet
+
+---
+
+## Self-Maintenance Requirement
+
+After every significant change to this project, update this file's **Hardware** section and **Current State** section.
+
+"Significant change" means: `telemetry_packet_t` layout change, LoRa RF setting change, pin reassignment, or actual host-hardware confirmation/correction. Comment edits do not require a doc update.

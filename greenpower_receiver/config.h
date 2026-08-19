@@ -1,7 +1,9 @@
 // ════════════════════════════════════════════════════════════════════
-//  COMMON CONFIGURATION — SHARED BY SENDER & RECEIVER
-//  LoRa radio settings and the telemetry packet shape, common to any
-//  device that talks to this sender over LoRa or ESP-NOW.
+//  COMMON CONFIGURATION — SHARED WITH greenpower_sender
+//  Must stay byte-for-byte identical to
+//  ../greenpower_sender/config.h for the LoRa RF settings and
+//  telemetry_packet_t, or packets sent by that sketch won't decode here.
+//  If one changes, change the other in the same commit.
 // ════════════════════════════════════════════════════════════════════
 
 
@@ -20,25 +22,17 @@
 #define LORA_BUSY       13
 
 
-// LoRa RF settings — a receiver must match these to hear this sender
+// LoRa RF settings — must match greenpower_sender exactly or this receiver
+// won't hear it (TX power is meaningless for RX but kept for symmetry with
+// the sender's config.h / radio.begin() call signature).
 #define LORA_FREQ_MHZ     915.0
 #define LORA_SYNC_WORD    0xF3
-#define LORA_TX_POWER_DBM 22   // Maximum TX power for SX1262 (Heltec V4)
-
-
-// ════════════════════════════════════════════════════════════════════
-//  ESP-NOW TARGET MAC ADDRESS
-//  Set this to the MAC address of the receiving device (display_receiver).
-//  Run `WiFi.macAddress()` on the receiver and paste here.
-// ════════════════════════════════════════════════════════════════════
-
-
-#define ESPNOW_PEER_MAC  { 0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4 }
+#define LORA_TX_POWER_DBM 22
 
 
 // ════════════════════════════════════════════════════════════════════
 //  SHARED TELEMETRY PACKET  (binary, sender → receiver over LoRa)
-//  Both sides must include this header — 66 bytes, no padding.
+//  Must be identical to greenpower_sender/config.h — 66 bytes, no padding.
 // ════════════════════════════════════════════════════════════════════
 
 
