@@ -2,53 +2,41 @@
 
 Runs on whatever computer the `greenpower_receiver` ESP32 is plugged into. Watches for it over USB, asks before forwarding, and relays live telemetry to the web dashboard.
 
-## Setup
+## Setup (one time)
 
-```bash
-cd receiver_agent
-npm install
-cp config.example.json config.json
-```
+1. Make sure [Node.js](https://nodejs.org) (LTS) is installed.
+2. Double-click **`setup.bat`**.
 
-Edit `config.json`:
-```json
-{
-  "websiteUrl": "https://telemetry.yourdomain.com/api/telemetry",
-  "apiKey": "same value as TELEMETRY_API_KEY on Railway"
-}
-```
+That's it. It installs dependencies, asks for your website URL and API key the first time (same `TELEMETRY_API_KEY` you set on Railway), registers itself to start silently every time you log in, and starts it immediately.
 
-## Run manually (do this first, before setting up auto-start)
+## Using it (every time after that)
 
-```bash
-npm start
-```
+1. Plug in the receiver.
+2. A Windows notification pops up: *"Forward live telemetry from COM5 to the dashboard?"*
+3. Click it.
 
-Plug in the receiver. Within a couple seconds you should see:
-```
-[FOUND] Greenpower receiver on COM5
-```
-...followed by a Windows notification asking to forward. Click it to accept — you'll then see `[FORWARD] Starting forwarding from COM5` and the dashboard should go live.
+That's the whole thing — no commands, no terminal. The agent is already running in the background from login; plugging in the receiver is the only action needed.
 
-If nothing happens: check that `greenpower_receiver.ino` is actually flashed and running (open a serial monitor on the port directly and confirm you see `GREENPOWER_RX_V1` and `JSON:` lines), and that no other program (like the Arduino IDE's own Serial Monitor) has the port open at the same time — only one program can hold a serial port open at once.
+## If something's not working
 
-## Auto-start when you log in (Windows)
+The agent runs hidden with no visible window, so check **`agent.log`** in this folder for what it's doing — it logs every device it sees, prompts shown, and any forwarding errors (not every individual packet, just state changes and problems).
 
-Once the manual run above works, make it start automatically:
-
-1. Press `Win+R`, type `shell:startup`, hit Enter — this opens your Startup folder.
-2. Create a shortcut in that folder pointing to a small batch file, e.g. `start-agent.bat`:
-   ```bat
-   @echo off
-   cd /d "C:\path\to\Greenpower-Telemetry-REPO\receiver_agent"
-   node agent.js
-   ```
-3. Put that `.bat` file's shortcut in the Startup folder. It'll now launch (with a visible console window, so you can see its log output) every time you log in.
-
-For a version that runs silently with no console window, use Windows Task Scheduler instead: create a task triggered "At log on", action = run `node.exe` with argument `agent.js` and "Start in" set to this folder, and check "Run whether user is logged on or not" if you want it to run even without an active session.
+Common issues:
+- **No notification appears** — confirm `greenpower_receiver.ino` is actually flashed and running (open a serial monitor on the port directly and confirm you see `GREENPOWER_RX_V1` and `JSON:` lines). Also check nothing else (like the Arduino IDE's own Serial Monitor) has the port open — only one program can hold a serial port at a time.
+- **Notification appears but forwarding fails** — check `agent.log` for `[WARN] Forward failed`. Usually means the URL or API key in `config.json` is wrong, or the website isn't reachable.
+- **Want to change the URL/API key** — delete `config.json` and re-run `setup.bat`, or just edit `config.json` directly (it's plain JSON) and restart the agent (log out/in, or run `node agent.js` manually once).
 
 ## What this does NOT do
 
 - Does not remember your choice between plug-ins — unplug and replug the receiver, and it asks again. This is intentional (see `CLAUDE.md`).
 - Does not retry failed sends to the dashboard — a dropped request is just logged and skipped, not queued.
-- Only tested on Windows so far.
+- Windows only, tested via Startup-folder auto-start.
+
+## Manual run (for testing, or non-Windows)
+
+```bash
+npm install
+cp config.example.json config.json   # then fill it in
+npm start
+```
+This runs it in the foreground with normal console output instead of the hidden/logged mode `setup.bat` configures.

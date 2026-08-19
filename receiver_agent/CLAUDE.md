@@ -19,8 +19,10 @@ This is meant to run continuously in the background (e.g. started at login), not
 | File | Role | May be edited? |
 |------|------|----------------|
 | `agent.js` | Entire agent — port scanning, device identification, prompt, forwarding | **Yes — primary target** |
-| `config.example.json` | Template for local config — copy to `config.json` and fill in real values | **Yes, as a template** |
+| `setup.bat` | One-time Windows setup: `npm install`, prompts for config if missing, registers hidden auto-start at login, starts it immediately | **Yes** |
+| `config.example.json` | Template for local config — copy to `config.json` and fill in real values (or let `setup.bat` do it) | **Yes, as a template** |
 | `config.json` | Real config (gitignored — contains the API key) | **User-created, not checked in** |
+| `agent.log` | Runtime log (gitignored) — the only visibility into the agent once it's running hidden via `setup.bat` | **Generated, not checked in** |
 | `package.json` | Dependencies (`serialport`, `node-notifier`) | **Yes, if adding a real dependency** |
 | `CLAUDE.md` | This file | **Yes — update after significant changes** |
 
@@ -37,20 +39,39 @@ This is meant to run continuously in the background (e.g. started at login), not
 ### `knownPorts` forgets a port when it disappears, on purpose
 So unplugging and replugging the same physical receiver re-triggers the full identify → prompt flow rather than silently doing nothing (or silently resuming forwarding without asking again). Don't "fix" this into a persistent allow-list unless the user specifically asks for that — it would also mean silent forwarding after the first plug-in, which contradicts the consent requirement above.
 
-### `node-notifier`'s cross-platform behavior is inconsistent — Windows path is what's tested
-The response string that means "user clicked the notification" varies by OS/backend; this code only treats the literal `'activate'` response as acceptance. If notifications aren't appearing or clicks aren't registering as acceptance on whatever OS this actually runs on, check what `node-notifier` actually returns there before assuming the accept/decline logic itself is broken — log the raw `response` value first.
+### `node-notifier`'s response casing is not reliable — always compare case-insensitively
+The prompt uses `actions: ['Yes', 'No']`, which on Windows (SnoreToast backend) renders as real toast buttons. This caused a real, confirmed bug: SnoreToast returned the response as lowercase `'yes'` even though the button was defined as `'Yes'` — a strict `response === 'Yes'` check silently treated every acceptance as a decline, so clicking "Yes" never started forwarding and looked from the user's side like the whole system was broken. The fix is `response.toLowerCase() === 'yes'`; don't go back to an exact-case string match. A `[DEBUG]` log line prints the raw `response` value on every prompt — leave that in, it's what caught this bug and will catch the next backend-specific surprise.
+
+### Success/failure confirmation notifications fire once per connection, not per packet
+`startForwarding()` tracks `confirmed`/`failureNotified` in closure state scoped to that one port connection. The first successful forward triggers a one-time "Forwarding live telemetry..." toast; if the *first* attempt fails and nothing has succeeded yet, a one-time failure toast fires instead. Don't move this logic into `forwardLine()` itself or make it fire on every call — at the sender's ~500ms packet rate, a real outage would otherwise spam a failure toast twice a second.
 
 ### Fetch requires Node 18+
 `forwardLine()` uses the global `fetch` built into Node 18+, no `node-fetch` dependency. If this ever needs to run on an older Node version, that's a real added dependency, not just a version bump.
 
+### `agent.pid` is what makes `setup.bat` idempotent — don't remove it
+The agent writes its own PID to `agent.pid` on startup. `setup.bat` reads that file and `taskkill /F`s the old process before launching a new one, every time it's re-run. Without this, re-running `setup.bat` (e.g. to pick up a code change) piles up multiple hidden `node.exe` instances — this actually happened once: an old instance held a serial port open, and the new instance's `SerialPort.list()`/open attempt failed with "Access denied" on that port, which looked like a hardware/driver problem but was really just a stale process fighting the new one for the same port. If you change how the agent is launched (e.g. a different auto-start mechanism), keep an equivalent single-instance guard.
+
+### `log()` timestamps every line, not just the session start
+Needed for real diagnosis — a burst of identical errors within milliseconds (e.g. duplicate processes fighting over one port) looks identical to the same errors spread across a 20-second window in an unstamped log, and those two situations point at completely different root causes. Keep per-line timestamps if `log()` is ever refactored.
+
+### The `log()` helper exists because the agent runs invisibly — don't call `console.*` directly
+`setup.bat` registers the agent to run via a hidden `wscript`-launched process with no visible window (`WshShell.Run "node agent.js", 0, False`), so `console.log`/`console.error` output goes nowhere anyone can see. Every message in this file goes through `log()`, which writes to both stdout (useful for the manual `npm start` path) and `agent.log`. If you add new log output, use `log()`, not `console.*` directly, or it'll be invisible in the normal (hidden, auto-started) way this actually runs.
+
+### `agent.log` is truncated fresh on every start, not appended forever
+By design — this agent deliberately doesn't log per-packet forwarding activity (only state changes: found/prompted/forwarding/errors), so log volume per run stays small and a fresh-per-run log is simpler than rotation. Don't add per-packet logging to `forwardLine()`'s success path — that would both spam `agent.log` and make the file grow unbounded on an agent left running for weeks.
+
+### `setup.bat`'s config-write block avoids delayed-expansion pitfalls on purpose
+The `set /p` + config.json write logic uses `goto`/labels instead of nesting inside an `if (...)` parenthesized block — batch expands `%VAR%` at parse time for a whole parenthesized block, so a variable set with `set /p` earlier in the *same* block reads back empty. If you touch `setup.bat`, keep variable-set-then-use sequences as separate top-level lines (or add `setlocal enabledelayedexpansion` + `!VAR!` if you reintroduce a block) rather than reintroducing this bug.
+
 ---
 
-## Current State (V1)
+## Current State (V1.1 — one-click setup)
 
 - Windows-focused (development/testing done on Windows); other platforms untested
 - No persistent "remember this device" — every unplug/replug re-prompts
 - No retry/queue on forward failure — a failed POST to `telemetry_web` is logged and dropped, not retried
-- Not yet wired up to auto-start at login — see `README.md` for manual setup steps; this is a documented gap, not an oversight
+- One-time setup is `setup.bat`: installs deps, prompts for config if missing, registers a hidden auto-start launcher in the user's Startup folder (`%APPDATA%\...\Startup\GreenpowerReceiverAgent.vbs`), and starts it immediately. After that, normal use is plug-in + one notification click — no terminal, no manual `npm start`.
+- Runs hidden (no console window) once auto-started; `agent.log` (truncated per run) is the only runtime visibility
 
 ---
 

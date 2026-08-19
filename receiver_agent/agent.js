@@ -22,6 +22,45 @@ const path = require('path');
 const { SerialPort } = require('serialport');
 const notifier = require('node-notifier');
 
+// ── Logging ─────────────────────────────────────────────────────────
+// Once this runs silently at login (see setup.bat), there's no visible
+// console to watch — everything also goes to agent.log next to this file
+// so a problem can still be diagnosed after the fact. Truncated fresh on
+// every start rather than appended forever, since forwarding activity
+// itself is deliberately NOT logged per-packet (only state changes and
+// errors are), so this shouldn't grow large within one run anyway.
+const LOG_PATH = path.join(__dirname, 'agent.log');
+try { fs.writeFileSync(LOG_PATH, `── Greenpower receiver agent started ${new Date().toISOString()} ──\n`); } catch (e) { /* non-fatal */ }
+
+function log(line) {
+    // Per-line timestamps (not just one at session start) — without these,
+    // a burst of repeated errors is indistinguishable from the same errors
+    // spread over a long window, which matters a lot when diagnosing things
+    // like multiple agent instances fighting over one serial port.
+    const stamped = `[${new Date().toISOString()}] ${line}`;
+    console.log(stamped);
+    try { fs.appendFileSync(LOG_PATH, stamped + '\n'); } catch (e) { /* non-fatal, don't let logging crash the agent */ }
+}
+
+// ── Single-instance PID file ───────────────────────────────────────
+// setup.bat reads this file to kill any previous hidden instance before
+// starting a new one — otherwise re-running setup.bat piles up multiple
+// node.exe processes, and an old one holding a serial port open causes a
+// confusing "Access denied" on that port in the NEW instance, which looks
+// like a hardware/driver problem but is actually just a stale process.
+const PID_PATH = path.join(__dirname, 'agent.pid');
+try { fs.writeFileSync(PID_PATH, String(process.pid)); } catch (e) { /* non-fatal */ }
+function cleanupPidFile() {
+    try {
+        if (fs.readFileSync(PID_PATH, 'utf8').trim() === String(process.pid)) {
+            fs.unlinkSync(PID_PATH);
+        }
+    } catch (e) { /* non-fatal — file may already be gone */ }
+}
+process.on('exit', cleanupPidFile);
+process.on('SIGINT', () => { cleanupPidFile(); process.exit(); });
+process.on('SIGTERM', () => { cleanupPidFile(); process.exit(); });
+
 // ── Config ──────────────────────────────────────────────────────────
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 let fileConfig = {};
@@ -29,7 +68,7 @@ if (fs.existsSync(CONFIG_PATH)) {
     try {
         fileConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
     } catch (e) {
-        console.error(`[ERROR] config.json exists but isn't valid JSON: ${e.message}`);
+        log(`[ERROR] config.json exists but isn't valid JSON: ${e.message}`);
     }
 }
 
@@ -37,9 +76,9 @@ const WEBSITE_URL = process.env.WEBSITE_URL || fileConfig.websiteUrl;
 const API_KEY     = process.env.TELEMETRY_API_KEY || fileConfig.apiKey;
 
 if (!WEBSITE_URL || !API_KEY) {
-    console.error('[ERROR] Missing websiteUrl/apiKey.');
-    console.error('        Copy config.example.json to config.json and fill it in,');
-    console.error('        or set WEBSITE_URL and TELEMETRY_API_KEY environment variables.');
+    log('[ERROR] Missing websiteUrl/apiKey.');
+    log('        Copy config.example.json to config.json and fill it in,');
+    log('        or set WEBSITE_URL and TELEMETRY_API_KEY environment variables.');
     process.exit(1);
 }
 
@@ -54,8 +93,8 @@ const NOTIFY_TIMEOUT_S    = 20;   // how long the accept/decline prompt stays up
 // tick for the same physical device.
 const knownPorts = new Map();   // path -> 'pending' | 'ours' | 'not-ours'
 
-console.log('[READY] Greenpower receiver agent running — watching for USB connections...');
-console.log(`        Forwarding target: ${WEBSITE_URL}`);
+log('[READY] Greenpower receiver agent running — watching for USB connections...');
+log(`        Forwarding target: ${WEBSITE_URL}`);
 
 setInterval(scanPorts, SCAN_MS);
 scanPorts();
@@ -65,7 +104,7 @@ async function scanPorts() {
     try {
         ports = await SerialPort.list();
     } catch (e) {
-        console.error(`[ERROR] Failed to list serial ports: ${e.message}`);
+        log(`[ERROR] Failed to list serial ports: ${e.message}`);
         return;
     }
 
@@ -75,7 +114,7 @@ async function scanPorts() {
     // the identify/prompt flow instead of staying silently ignored forever.
     for (const knownPath of knownPorts.keys()) {
         if (!currentPaths.has(knownPath)) {
-            console.log(`[INFO] ${knownPath} disconnected.`);
+            log(`[INFO] ${knownPath} disconnected.`);
             knownPorts.delete(knownPath);
         }
     }
@@ -94,7 +133,7 @@ function identifyPort(portPath) {
     try {
         port = new SerialPort({ path: portPath, baudRate: BAUD_RATE }, (err) => {
             if (err) {
-                console.log(`[INFO] Couldn't open ${portPath} (${err.message}) — likely in use by something else, skipping.`);
+                log(`[INFO] Couldn't open ${portPath} (${err.message}) — likely in use by something else, skipping.`);
                 knownPorts.set(portPath, 'not-ours');
             }
         });
@@ -132,24 +171,29 @@ function identifyPort(portPath) {
 }
 
 function promptToForward(portPath, port) {
-    console.log(`[FOUND] Greenpower receiver on ${portPath}`);
+    log(`[FOUND] Greenpower receiver on ${portPath}`);
 
     notifier.notify(
         {
             title: 'Greenpower Receiver Connected',
-            message: `Forward live telemetry from ${portPath} to the dashboard?\nClick this notification to start forwarding.`,
+            message: `Forward live telemetry from ${portPath} to the dashboard?`,
             wait: true,
             timeout: NOTIFY_TIMEOUT_S,
+            actions: ['Yes', 'No'],   // Windows (SnoreToast backend) renders these as real toast buttons
         },
-        (err, response) => {
-            // node-notifier's response strings vary by OS/notifier backend —
-            // 'activate' (clicked) is the reliable "yes" signal on Windows.
-            // Anything else (timeout, dismissed) is treated as "no".
-            if (response === 'activate') {
-                console.log(`[FORWARD] Starting forwarding from ${portPath}`);
+        (err, response, metadata) => {
+            // node-notifier's response strings vary by OS/notifier backend, AND
+            // by observed behavior even on the SAME backend the button label's
+            // case isn't guaranteed to come back as typed (SnoreToast returned
+            // lowercase 'yes' for a button defined as 'Yes') — so compare
+            // case-insensitively rather than against an exact literal.
+            log(`[DEBUG] Notification response: ${JSON.stringify(response)}`);
+            const accepted = typeof response === 'string' && response.toLowerCase() === 'yes';
+            if (accepted) {
+                log(`[FORWARD] Starting forwarding from ${portPath}`);
                 startForwarding(portPath, port);
             } else {
-                console.log(`[SKIP] Not forwarding ${portPath} (no response / declined).`);
+                log(`[SKIP] Not forwarding ${portPath} (response: ${response || 'none'}).`);
                 port.close(() => {});
             }
         }
@@ -158,6 +202,12 @@ function promptToForward(portPath, port) {
 
 function startForwarding(portPath, port) {
     let buffer = '';
+    // Confirm/alert only once per connection — not per packet, or the very
+    // first hiccup on an otherwise-fine link would spam a failure toast every
+    // 500ms, and a working link would spam a success toast just as often.
+    let confirmed = false;
+    let failureNotified = false;
+
     port.on('data', (chunk) => {
         buffer += chunk.toString('utf8');
         let idx;
@@ -165,22 +215,40 @@ function startForwarding(portPath, port) {
             const line = buffer.slice(0, idx).trim();
             buffer = buffer.slice(idx + 1);
             if (line.startsWith('JSON:')) {
-                forwardLine(line.slice(5));
+                forwardLine(line.slice(5), (ok) => {
+                    if (ok && !confirmed) {
+                        confirmed = true;
+                        log(`[FORWARD] Confirmed — first packet from ${portPath} reached the dashboard.`);
+                        notifier.notify({
+                            title: 'Greenpower Receiver',
+                            message: `Forwarding live telemetry from ${portPath} to the dashboard.`,
+                            timeout: 5,
+                        });
+                    } else if (!ok && !confirmed && !failureNotified) {
+                        failureNotified = true;
+                        notifier.notify({
+                            title: 'Greenpower Receiver — Forwarding Failed',
+                            message: 'Could not reach the dashboard. Check config.json and agent.log.',
+                            timeout: 8,
+                        });
+                    }
+                });
             }
         }
     });
 
     port.on('close', () => {
-        console.log(`[INFO] ${portPath} closed — stopped forwarding.`);
+        log(`[INFO] ${portPath} closed — stopped forwarding.`);
     });
 }
 
-async function forwardLine(jsonStr) {
+async function forwardLine(jsonStr, onResult) {
     let data;
     try {
         data = JSON.parse(jsonStr);
     } catch (e) {
-        console.error(`[WARN] Bad JSON from receiver, skipping: ${e.message}`);
+        log(`[WARN] Bad JSON from receiver, skipping: ${e.message}`);
+        if (onResult) onResult(false);
         return;
     }
 
@@ -194,9 +262,13 @@ async function forwardLine(jsonStr) {
             body: JSON.stringify(data),
         });
         if (!res.ok) {
-            console.error(`[WARN] Forward failed: HTTP ${res.status}`);
+            log(`[WARN] Forward failed: HTTP ${res.status}`);
+            if (onResult) onResult(false);
+            return;
         }
+        if (onResult) onResult(true);
     } catch (e) {
-        console.error(`[WARN] Forward failed: ${e.message}`);
+        log(`[WARN] Forward failed: ${e.message}`);
+        if (onResult) onResult(false);
     }
 }
