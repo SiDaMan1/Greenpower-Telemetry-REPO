@@ -11,11 +11,13 @@ Vehicle (greenpower_sender) ──LoRa──▶ greenpower_receiver ──USB─
 
 If you just want telemetry from the receiver flowing to the dashboard, you don't need this whole repo — only the **receiver agent**. Grab it, unzip it, and run the setup script:
 
-[![Download Receiver Agent](https://img.shields.io/badge/⬇️_Download-Receiver_Agent-22c55e?style=for-the-badge)](https://download-directory.github.io/?url=https://github.com/SiDaMan1/Greenpower-Telemetry-REPO/tree/main/receiver_agent)
+[![Download Receiver Agent](https://img.shields.io/badge/⬇️_Download-Receiver_Agent-22c55e?style=for-the-badge)](https://download-directory.github.io/?url=https://github.com/SiDaMan1/Greenpower-Telemetry-REPO/tree/main/receiver_agent&filename=greenpower-agent)
 
-1. Click the button above → downloads `receiver_agent.zip`
+1. Click the button above → downloads `greenpower-agent.zip`
 2. Unzip it anywhere
 3. Double-click **`setup.bat`** inside the unzipped folder
+
+The same button also lives on the live dashboard itself (top-right, desktop only).
 
 That's it — it installs its own dependencies, config is already baked in, and it registers itself to start automatically at login. After this one-time setup, using it day to day is just: plug in the receiver, click **Yes** on the notification that pops up.
 
