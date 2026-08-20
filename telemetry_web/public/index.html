@@ -389,8 +389,18 @@
     overflow:hidden;
   }
   .mobile-navbar-tab { display:none; }
+  /* aspect-ratio:1/1, not a fixed width — .mobile-navbar-scroll's
+     align-items:stretch plus this margin gives the height (bar height
+     minus its own border minus this 7px top/bottom margin); a hardcoded
+     width:44px alongside that produced a 44×42 box (an off-by-2 mismatch
+     against whatever the margin math actually landed on), which is exactly
+     what read as an uneven/off-center highlight — asymmetric only because
+     the box itself wasn't quite square, not because the icon or border
+     inside it were actually misaligned. aspect-ratio locks width to
+     whatever height the flex math produces, so it's a true square no
+     matter the bar's exact pixel height. */
   .mobile-navbar-tab.mobile-navbar-tab-primary {
-    flex:0 0 auto; width:44px; margin:7px 0; display:flex; align-items:center; justify-content:center;
+    flex:0 0 auto; aspect-ratio:1/1; margin:7px 0; display:flex; align-items:center; justify-content:center;
     color:var(--muted); cursor:pointer; border-radius:13px; background:transparent;
     transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
   }
@@ -399,14 +409,27 @@
   .mobile-navbar-tab .icon { width:19px; height:19px; }
   .mobile-navbar-divider { flex-shrink:0; width:1px; margin:11px 3px; background:var(--border); }
   .mobile-navbar-expand {
-    flex-shrink:0; width:42px; margin:7px 0; display:flex; align-items:center; justify-content:center;
+    position:relative; flex-shrink:0; aspect-ratio:1/1; margin:7px 0; display:flex; align-items:center; justify-content:center;
     background:none; border:none; color:var(--muted); cursor:pointer; border-radius:13px;
     transition:background .15s var(--ease), color .15s var(--ease), transform .12s var(--ease);
   }
   .mobile-navbar-expand:active { transform:scale(.88); }
   .mobile-navbar-expand.open { color:#fff; background:rgba(99,102,241,.22); }
-  .mobile-navbar-expand .icon { width:18px; height:18px; transition:transform .25s var(--ease); }
-  .mobile-navbar-expand.open .icon { transform:rotate(90deg); }
+  /* Hamburger→X morph, not a plain rotation — rotating a 3-equal-line
+     "menu" glyph 90° looks almost identical to its own resting state (three
+     equal-length lines, just reoriented), so that first attempt read as
+     "no animation happened" even though a transition genuinely fired. Two
+     icons are cross-faded/rotated/scaled on top of each other instead —
+     menu fades+rotates out, X fades+rotates in — which is the standard,
+     unambiguous "this expanded" visual language. */
+  .mobile-navbar-expand .expand-icon {
+    position:absolute; width:18px; height:18px;
+    transition:opacity .22s var(--ease), transform .22s var(--ease);
+  }
+  .mobile-navbar-expand .expand-icon-menu { opacity:1; transform:rotate(0deg) scale(1); }
+  .mobile-navbar-expand .expand-icon-x { opacity:0; transform:rotate(-90deg) scale(.4); }
+  .mobile-navbar-expand.open .expand-icon-menu { opacity:0; transform:rotate(90deg) scale(.4); }
+  .mobile-navbar-expand.open .expand-icon-x { opacity:1; transform:rotate(0deg) scale(1); }
 
   .mobile-navsheet-backdrop {
     position:fixed; inset:0; z-index:14; background:rgba(0,0,0,.45); backdrop-filter:blur(1px);
@@ -524,7 +547,7 @@
        column) are consistent, not just left/right neighbors in one wrapped
        row. */
     #page-overview .stats-row-inner {
-      display:grid; grid-template-columns:repeat(3, 1fr); gap:10px;
+      display:grid; grid-template-columns:repeat(2, 1fr); gap:10px;
     }
     #page-overview .stats-row-inner .stat-card {
       flex:none; aspect-ratio:1/1; padding:10px;
@@ -592,7 +615,8 @@
     </div>
     <div class="mobile-navbar-divider"></div>
     <button class="mobile-navbar-expand" id="mobile-navbar-expand" aria-label="Show all tabs">
-      <span class="icon" data-icon="menu"></span>
+      <span class="icon expand-icon expand-icon-menu" data-icon="menu"></span>
+      <span class="icon expand-icon expand-icon-x" data-icon="x"></span>
     </button>
   </div>
   <div class="mobile-navsheet-backdrop" id="mobile-navsheet-backdrop"></div>
