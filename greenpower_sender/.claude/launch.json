@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "telemetry_web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start", "--prefix", "C:\\Users\\SilasWhitt\\Documents\\GitHub\\Greenpower-Telemetry-REPO\\telemetry_web"],
+      "port": 3000
+    }
+  ]
+}

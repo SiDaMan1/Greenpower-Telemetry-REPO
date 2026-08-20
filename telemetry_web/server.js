@@ -21,7 +21,7 @@ const app = express();
 app.use(express.json({ limit: '10kb' }));   // one telemetry packet is well under 1kb
 
 const PORT = process.env.PORT || 3000;
-const STALE_MS = 10000;   // no update in this long = dashboard shows offline
+const STALE_MS = 2000;    // no update in this long = dashboard shows offline (sender transmits at 5 Hz, so 2s is already 10 missed packets)
 
 // ── API key ─────────────────────────────────────────────────────────
 // Set TELEMETRY_API_KEY in Railway's environment variables for real use.

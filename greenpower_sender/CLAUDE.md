@@ -69,7 +69,7 @@ Produced by `espNowSend()`, must stay field-for-field identical to what `mock_se
 `ESPNOW_PEER_MAC` in `config.h` must match the MAC address `display_receiver` prints on boot. Currently `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` — same value used by `mock_sender`, so the two senders are interchangeable from the receiver's point of view.
 
 ### LoRa and ESP-NOW are independent, but share one timer
-Both fire off `LORA_TX_INTERVAL_MS` (500 ms) in `loop()`, using separate `lastLoraTxMs`/`lastEspNowMs` timestamps — they're two unrelated radios, don't assume one blocks or depends on the other.
+Both fire off `LORA_TX_INTERVAL_MS` (200 ms / 5 Hz) in `loop()`, using separate `lastLoraTxMs`/`lastEspNowMs` timestamps — they're two unrelated radios, don't assume one blocks or depends on the other. This matches `SENSOR_INTERVAL_MS` on purpose, so every sensor update actually gets transmitted rather than some being silently skipped — don't let these two drift apart without a reason.
 
 ### ADS1115 gain is switched per-read — don't assume a fixed gain
 `readDividerVoltage()` sets `GAIN_TWOTHIRDS` (±6.144V FSR) before reading A0/A1; `readCurrentAmps()` sets `GAIN_ONE` (±4.096V FSR) before the A2-A3 differential read. These are deliberately different — the divider channels need the wider range to avoid clipping near 5V, the current channel wants the extra resolution. If you add a new ADS1115 channel, set its own gain explicitly rather than assuming the previous read's gain is still active.
@@ -122,8 +122,8 @@ VEXT power rail is enabled and given time to stabilize *before* I2C init — kee
 
 ## Current State (V3)
 
-- Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 500 ms interval
-- Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 2 Hz
+- Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 200 ms / 5 Hz interval
+- Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 5 Hz (`RPM_CALC_INTERVAL_MS = 200`) — everything in the pipeline runs at the same 5 Hz cadence, on purpose
 - ESP-NOW peer: `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` (steering wheel `display_receiver`)
 - ESC/UART telemetry removed (was present in V1, not part of this breadboard build) — ESP-NOW still sends placeholder ESC fields for format compatibility
 - Voltage and current sensing moved entirely to the ADS1115; the ESP32's internal ADC is no longer used for anything in this sketch (temp probe is 1-Wire digital, not analog)

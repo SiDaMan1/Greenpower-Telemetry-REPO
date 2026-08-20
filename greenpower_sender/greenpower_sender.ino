@@ -17,7 +17,7 @@
 //    • Wheel RPM         — laser-interrupt disc sensor, GPIO3 (CHANGE-edge, polarity-agnostic)
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Transmits telemetry_packet_t every 500 ms
+//           Transmits telemetry_packet_t every 200 ms (5 Hz)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
 //              mock_sender — see espNowSend() below. ESC fields are sent as
@@ -64,7 +64,7 @@
 #define LORA_SCK           9
 #define LORA_MISO         11
 #define LORA_MOSI         10
-#define LORA_TX_INTERVAL_MS  500   // 2 Hz — also paces ESP-NOW TX
+#define LORA_TX_INTERVAL_MS  200   // 5 Hz — also paces ESP-NOW TX; matches SENSOR_INTERVAL_MS so every sensor update actually gets sent
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
 #define GPS_TX_PIN        33   // ESP32 TX  → GPS RX
@@ -149,7 +149,7 @@ static telemetry_packet_t pkt = {};
 // ════════════════════════════════════════════════════════════════════
 
 static const uint32_t SENSOR_INTERVAL_MS   = 200;   // 5 Hz
-static const uint32_t RPM_CALC_INTERVAL_MS = 500;   // recalculate RPM every 500 ms
+static const uint32_t RPM_CALC_INTERVAL_MS = 200;   // 5 Hz — matches SENSOR_INTERVAL_MS so RPM isn't stale between packets
 static uint32_t lastSensorMs = 0;
 static uint32_t lastGyroMs   = 0;
 static uint32_t lastRpmMs    = 0;
