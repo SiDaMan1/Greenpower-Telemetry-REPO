@@ -11,8 +11,9 @@
      a manual action from the Share sheet, see the install-hint JS further
      down for how that's surfaced to iOS users instead). -->
 <link rel="manifest" href="/manifest.json">
-<link rel="icon" href="/icon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta name="theme-color" content="#0a0c11">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -21,6 +22,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Leaflet, for the real satellite-imagery map on the Raceline tab (see
+     the GPS RACELINE section in <script> below) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   /* ── Design tokens ─────────────────────────────────────────────────
      Variable NAMES are load-bearing — the JS reads --speed, --battv, etc.
@@ -108,7 +113,7 @@
   .btn-accent { color:var(--accent2); border-color:rgba(14,165,233,.3); }
   .btn-good { color:var(--accent3); border-color:rgba(16,185,129,.3); }
   .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
-  .btn:active, .tab:active, .mobile-tab:active { transform:scale(.95); }
+  .btn:active, .tab:active { transform:scale(.95); }
 
   /* ── Icons ──────────────────────────────────────────────────────────
      Inline SVG (Feather-style: stroke=currentColor, no fill) filled in at
@@ -164,16 +169,24 @@
   .stats-bar-chevron { font-size:9px; transition:transform .25s var(--ease); }
   .stats-bar.collapsed .stats-bar-chevron { transform:rotate(180deg); }
 
-  /* Deliberately NOT an animated height/grid-row slide. Two different
-     well-established CSS collapse techniques (max-height transition, then
-     grid-template-rows 1fr↔0fr) both produced wrong computed values when
-     tested against the actual browser this was verified in — correctness
-     of the toggle mattered more than chasing that down, so this is a plain
-     display:none swap with a fast opacity fade. It's guaranteed to work
-     everywhere; it just snaps instead of sliding. */
-  .stats-row { padding:0 14px 14px; }
-  .stats-bar.collapsed .stats-row { display:none; }
-  .stats-row-inner { display:flex; flex-wrap:wrap; gap:8px; opacity:0; animation:fadeIn .2s var(--ease) forwards; }
+  /* Animated collapse via the grid-template-rows 1fr↔0fr technique — this
+     handles arbitrary/unknown content height smoothly without hardcoding a
+     max-height guess. An earlier pass concluded this (and max-height
+     transitions generally) "never reach their end state" and fell back to
+     an instant display:none swap; re-investigated during a later pass and
+     traced the real cause to the specific automated browser-preview tool
+     used to verify this page, which only composites frames (runs rAF,
+     applies transitions) while actually displayed/focused — not a real
+     limitation of CSS transitions or of real browsers (see the mobile-
+     sidebar comment elsewhere in this file for the full story and how to
+     verify a transition correctly in that tool). Real animated slide here. */
+  .stats-row {
+    padding:0 14px 14px;
+    display:grid; grid-template-rows:1fr;
+    transition:grid-template-rows .32s var(--ease), padding .32s var(--ease);
+  }
+  .stats-bar.collapsed .stats-row { grid-template-rows:0fr; padding-top:0; padding-bottom:0; }
+  .stats-row-inner { display:flex; flex-wrap:wrap; gap:8px; overflow:hidden; min-height:0; opacity:0; animation:fadeIn .2s var(--ease) forwards; }
   .stats-row-inner .stat-card { flex:1 1 140px; }
 
   #overview-right-wrap { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; min-width:0; }
@@ -237,7 +250,14 @@
   .big-row { display:grid; gap:12px; flex-shrink:0; }
   .chart-row { display:grid; gap:12px; flex:1; min-height:0; }
 
-  #gps-canvas { background:#070a10; border-radius:8px; display:block; width:100%; height:100%; }
+  #gps-map { background:#070a10; border-radius:8px; width:100%; height:100%; }
+  /* Leaflet's own default control chrome (zoom buttons, attribution strip)
+     is white-on-white by default — restyle just enough to sit on this dark
+     theme instead of looking like an unstyled foreign widget. */
+  #gps-map .leaflet-control-zoom a { background:var(--panel-solid); color:var(--text); border-color:var(--border) !important; }
+  #gps-map .leaflet-control-zoom a:hover { background:rgba(255,255,255,.08); }
+  #gps-map .leaflet-control-attribution { background:rgba(13,16,23,.75); color:var(--muted); font-size:10px; }
+  #gps-map .leaflet-control-attribution a { color:var(--muted); }
   #page-raceline.active { flex-direction:row; gap:14px; }
   #raceline-info { width:190px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; }
   #raceline-map { flex:1; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
@@ -301,85 +321,86 @@
      desktop layout/paint even if a selector here is wrong — only the
      (max-width:860px) block at the bottom turns any of it on. Desktop
      keeps using #tabs exactly as before; none of this touches it. */
-  .mobile-sidebar, .mobile-sidebar-backdrop, .install-fab, .install-popover { display:none; }
+  .mobile-navbar, .mobile-navsheet, .mobile-navsheet-backdrop, .install-fab, .install-popover { display:none; }
 
-  /* Sidebar is a slim floating dock, not a full-bleed panel — a few px of
-     margin off every edge plus its own rounded corners/shadow read as "an
-     overlay that sits on top of the page" rather than "a permanent panel
-     that eats part of the screen", which is what made the first pass feel
-     like it was in the way. Width transition IS animated here (unlike the
-     stats-bar collapse elsewhere in this file, which stays an instant
-     display:none swap on purpose — see its own comment). The earlier
-     "transitions never reach their end state" finding was re-tested and
-     traced to the specific automated preview tool used to verify this
-     page: its browser pane only composites frames while actually
-     displayed/focused (confirmed directly — a screenshot call fails with
-     "the Browser pane is not displayed, so the page is not compositing
-     frames" whenever it isn't, and any CSS transition, even a trivial
-     freshly-created-element transform, silently never reaches its end
-     state under that condition, while forcing transition:none makes the
-     same class toggle apply instantly and correctly). That's a property of
-     the verification tool's rendering, not of CSS transitions or of real
-     browsers — a normal, visible browser tab always composites and
-     animates transitions correctly. Kept as a real, real transition. */
-  .mobile-sidebar {
-    position:fixed; top:60px; bottom:14px; left:8px; width:46px; z-index:15;
-    flex-direction:column; align-items:stretch; overflow-y:auto; overflow-x:hidden;
-    background:rgba(15,18,26,.92); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-    border:1px solid var(--border); border-radius:16px; -webkit-overflow-scrolling:touch;
-    box-shadow:0 4px 24px -8px rgba(0,0,0,.5);
-    padding:6px; gap:3px;
-    transition:width .28s var(--ease), box-shadow .28s var(--ease);
+  /* Bottom nav bar (thumb-reachable — the point of moving it off the side)
+     shows every tab as an icon-only button; a dedicated "expand" button
+     opens .mobile-navsheet, a small floating card listing every tab again
+     with its text label, for when the icon alone isn't enough. Icon
+     buttons are single flex-centered children with no reserved label
+     space, so there's no off-center icon in any state — the earlier
+     side-rail design's icon could sit visibly off-center because it shared
+     a flex row with a label whose *reserved gap* stayed even at the
+     label's collapsed (0 width) state; a bare icon button has nothing to
+     be off-center relative to. Width/opacity/transform transitions here
+     are real, animated CSS transitions — see the stats-row comment above
+     for why this preview tool alone can't visibly confirm that, and how to
+     verify structural correctness in it anyway. */
+  .mobile-navbar {
+    position:fixed; left:10px; right:10px; bottom:10px; height:58px; z-index:15;
+    align-items:stretch; padding:0 6px; border-radius:20px;
+    background:rgba(15,18,26,.94); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    border:1px solid var(--border); box-shadow:0 10px 30px -10px rgba(0,0,0,.6);
   }
-  .mobile-sidebar.expanded { width:172px; box-shadow:0 12px 36px -10px rgba(0,0,0,.6); }
-
-  .mobile-sidebar-toggle-btn {
-    flex-shrink:0; height:34px; width:100%; display:flex; align-items:center; justify-content:center;
-    background:none; border:none; color:var(--muted); cursor:pointer; border-radius:10px;
-    margin-bottom:2px; transition:background .15s var(--ease), color .15s var(--ease);
+  .mobile-navbar-scroll {
+    flex:1; min-width:0; display:flex; align-items:stretch; gap:3px;
+    overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -webkit-overflow-scrolling:touch;
   }
-  .mobile-sidebar-toggle-btn:hover { background:rgba(255,255,255,.06); color:var(--text); }
-  .mobile-sidebar-toggle-btn .chevron { width:13px; height:13px; transition:transform .28s var(--ease); }
-  .mobile-sidebar.expanded .mobile-sidebar-toggle-btn .chevron { transform:rotate(180deg); }
-
-  /* Rounded-rectangle chips instead of a full-width highlighted row — each
-     nav item is its own evenly-rounded button with a small gap around it,
-     so the active state reads as "one selected chip in a dock" (a sleek,
-     modern nav pattern) rather than a solid bar segment. */
-  .mobile-tab {
-    display:flex; align-items:center; gap:12px; padding:8px 9px; min-height:34px;
-    color:var(--muted); cursor:pointer; white-space:nowrap; overflow:hidden;
-    border-radius:11px; background:transparent;
+  .mobile-navbar-scroll::-webkit-scrollbar { display:none; }
+  .mobile-navbar-tab {
+    flex:0 0 auto; width:44px; margin:7px 0; display:flex; align-items:center; justify-content:center;
+    color:var(--muted); cursor:pointer; border-radius:13px; background:transparent;
     transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
   }
-  .mobile-tab:active { transform:scale(.93); }
-  .mobile-tab.active { color:#fff; background:linear-gradient(135deg, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
-  .mobile-tab-icon { width:18px; height:18px; flex-shrink:0; }
-  .mobile-tab-label {
-    font-size:12.5px; font-weight:600; max-width:0; opacity:0; overflow:hidden;
-    transition:max-width .24s var(--ease), opacity .18s var(--ease);
+  .mobile-navbar-tab:active { transform:scale(.88); }
+  .mobile-navbar-tab.active { color:#fff; background:linear-gradient(135deg, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
+  .mobile-navbar-tab .icon { width:19px; height:19px; }
+  .mobile-navbar-divider { flex-shrink:0; width:1px; margin:11px 3px; background:var(--border); }
+  .mobile-navbar-expand {
+    flex-shrink:0; width:42px; margin:7px 0; display:flex; align-items:center; justify-content:center;
+    background:none; border:none; color:var(--muted); cursor:pointer; border-radius:13px;
+    transition:background .15s var(--ease), color .15s var(--ease), transform .12s var(--ease);
   }
-  .mobile-sidebar.expanded .mobile-tab-label { max-width:120px; opacity:1; }
+  .mobile-navbar-expand:active { transform:scale(.88); }
+  .mobile-navbar-expand.open { color:#fff; background:rgba(99,102,241,.22); }
+  .mobile-navbar-expand .icon { width:18px; height:18px; }
 
-  .mobile-sidebar-backdrop {
-    position:fixed; inset:0; z-index:14; background:rgba(0,0,0,.42); backdrop-filter:blur(1px);
-    opacity:0; transition:opacity .22s var(--ease);
+  .mobile-navsheet-backdrop {
+    position:fixed; inset:0; z-index:14; background:rgba(0,0,0,.45); backdrop-filter:blur(1px);
   }
-  .mobile-sidebar-backdrop.show { display:block; animation:fadeIn .22s var(--ease) forwards; }
+  .mobile-navsheet-backdrop.show { display:block; animation:fadeIn .2s var(--ease); }
+
+  .mobile-navsheet {
+    position:fixed; left:10px; right:10px; bottom:78px; z-index:16; max-height:min(58vh, 420px);
+    background:var(--panel-solid); border:1px solid var(--border); border-radius:18px;
+    box-shadow:0 18px 44px -14px rgba(0,0,0,.65); padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    transform:translateY(14px) scale(.96); opacity:0; pointer-events:none;
+    transition:transform .22s var(--ease), opacity .18s var(--ease);
+  }
+  .mobile-navsheet.show { transform:translateY(0) scale(1); opacity:1; pointer-events:auto; }
+  .mobile-navsheet-tab {
+    display:flex; align-items:center; gap:14px; padding:12px 13px; min-height:46px;
+    color:var(--muted); cursor:pointer; border-radius:12px;
+    transition:background .15s var(--ease), color .15s var(--ease);
+  }
+  .mobile-navsheet-tab:active { transform:scale(.98); }
+  .mobile-navsheet-tab.active { color:#fff; background:linear-gradient(135deg, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
+  .mobile-navsheet-tab .icon { width:19px; height:19px; flex-shrink:0; }
+  .mobile-navsheet-tab-label { font-size:14px; font-weight:600; }
 
   /* ── Install prompt: small floating action button, not a banner ──────
      A full-width banner ate permanent header space for something most
-     visits don't need. A single icon button anchored bottom-right costs
-     almost nothing until it's tapped, then opens a small popover with the
-     actual install action/instructions right above it. */
+     visits don't need. A single icon button anchored above the bottom nav
+     bar costs almost nothing until it's tapped, then opens a small
+     popover with the actual install action/instructions right above it. */
   .install-fab {
-    position:fixed; right:16px; bottom:16px; z-index:16; width:46px; height:46px; border-radius:50%;
+    position:fixed; right:16px; bottom:82px; z-index:16; width:46px; height:46px; border-radius:50%;
     background:linear-gradient(135deg, var(--accent), var(--accent2)); border:none; color:#fff;
     align-items:center; justify-content:center; cursor:pointer;
     box-shadow:0 6px 20px -4px rgba(99,102,241,.6);
     transition:transform .15s var(--ease), box-shadow .15s var(--ease);
   }
-  .install-fab .icon { width:20px; height:20px; }
+  .install-fab-logo { width:30px; height:30px; border-radius:50%; object-fit:cover; }
   .install-fab:hover { box-shadow:0 8px 26px -4px rgba(99,102,241,.75); }
   .install-fab:active { transform:scale(.92); }
   /* display:flex lives ONLY here, gated on .show — the base rule above must
@@ -394,17 +415,19 @@
   @keyframes fabPulse { 0%,100%{ box-shadow:0 6px 20px -4px rgba(99,102,241,.6); } 50%{ box-shadow:0 6px 26px -2px rgba(99,102,241,.95); } }
 
   .install-popover {
-    position:fixed; right:16px; bottom:70px; z-index:16; width:min(260px, calc(100vw - 32px));
+    position:fixed; right:16px; bottom:136px; z-index:16; width:min(260px, calc(100vw - 32px));
     background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius-sm);
     padding:14px; box-shadow:var(--shadow); font-size:12.5px; font-weight:500; line-height:1.5;
   }
   .install-popover.show { display:block; animation:panelIn .18s var(--ease); }
+  .install-popover-head { display:flex; align-items:center; gap:10px; }
+  .install-popover-logo { width:34px; height:34px; border-radius:9px; flex-shrink:0; }
   .install-popover-actions { display:flex; gap:8px; margin-top:10px; }
 
   @media (max-width: 860px) {
     #tabs { display:none; }
-    .mobile-sidebar { display:flex; }
-    #pages { padding-left:62px; }
+    .mobile-navbar { display:flex; }
+    #pages { padding-left:0; padding-bottom:82px; }
 
     /* No graphs on mobile Overview — numbers only, per design. The bar's
        collapse toggle only makes sense when there's something below it to
@@ -414,7 +437,7 @@
        visible way back — so mobile always shows them, unconditionally. */
     #overview-right-wrap { display:none; }
     .stats-bar-toggle { display:none; }
-    .stats-bar.collapsed .stats-row { display:block; }
+    .stats-bar.collapsed .stats-row { grid-template-rows:1fr !important; padding:0 14px 14px !important; }
 
     /* Overview is numbers-only on mobile (see above) so those numbers ARE
        the page — worth sizing them up a little from the desktop-shared
@@ -453,40 +476,62 @@
     <div class="tab" data-page="raw"><span class="tab-icon icon" data-icon="raw"></span>Raw</div>
   </div>
 
-  <!-- Mobile-only nav: an icon-only rail that expands into a labeled drawer.
-       display:none on desktop (see CSS) — #tabs above is what desktop uses,
-       completely unchanged. Sidebar items share class="tab" so the existing
-       tab-click wiring below picks them up automatically; they're marked
-       "mobile-tab" as well for the sidebar-specific icon/label styling and
-       the auto-collapse-after-navigating behavior. -->
-  <div class="mobile-sidebar" id="mobile-sidebar">
-    <button class="mobile-sidebar-toggle-btn" id="mobile-sidebar-toggle" aria-label="Expand menu">
-      <span class="chevron icon" data-icon="chevron-right"></span>
+  <!-- Mobile-only nav: a bottom bar of icon-only tab buttons (thumb-reachable),
+       plus an "expand" button that opens a small floating sheet listing every
+       tab again with its text label. display:none on desktop (see CSS) —
+       #tabs above is what desktop uses, completely unchanged. Every tab
+       button (bar AND sheet) shares class="tab" so the existing tab-click
+       wiring below picks all of them up automatically and keeps their
+       active state in sync across all three surfaces (desktop tabs, bottom
+       bar, sheet) for free. -->
+  <div class="mobile-navbar" id="mobile-navbar">
+    <div class="mobile-navbar-scroll" id="mobile-navbar-scroll">
+      <div class="tab mobile-navbar-tab active" data-page="overview"><span class="icon" data-icon="overview"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="speed"><span class="icon" data-icon="speed"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="power"><span class="icon" data-icon="power"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="rpm"><span class="icon" data-icon="rpm"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="esc"><span class="icon" data-icon="esc"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="imu"><span class="icon" data-icon="imu"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="link"><span class="icon" data-icon="link"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="multi"><span class="icon" data-icon="multi"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="sessions"><span class="icon" data-icon="sessions"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="raw"><span class="icon" data-icon="raw"></span></div>
+    </div>
+    <div class="mobile-navbar-divider"></div>
+    <button class="mobile-navbar-expand" id="mobile-navbar-expand" aria-label="Show all tabs">
+      <span class="icon" data-icon="menu"></span>
     </button>
-    <div class="tab mobile-tab active" data-page="overview"><span class="mobile-tab-icon icon" data-icon="overview"></span><span class="mobile-tab-label">Overview</span></div>
-    <div class="tab mobile-tab" data-page="speed"><span class="mobile-tab-icon icon" data-icon="speed"></span><span class="mobile-tab-label">Speed</span></div>
-    <div class="tab mobile-tab" data-page="power"><span class="mobile-tab-icon icon" data-icon="power"></span><span class="mobile-tab-label">Power</span></div>
-    <div class="tab mobile-tab" data-page="temperature"><span class="mobile-tab-icon icon" data-icon="temperature"></span><span class="mobile-tab-label">Temp</span></div>
-    <div class="tab mobile-tab" data-page="rpm"><span class="mobile-tab-icon icon" data-icon="rpm"></span><span class="mobile-tab-label">RPM</span></div>
-    <div class="tab mobile-tab" data-page="esc"><span class="mobile-tab-icon icon" data-icon="esc"></span><span class="mobile-tab-label">ESC</span></div>
-    <div class="tab mobile-tab" data-page="imu"><span class="mobile-tab-icon icon" data-icon="imu"></span><span class="mobile-tab-label">IMU</span></div>
-    <div class="tab mobile-tab" data-page="raceline"><span class="mobile-tab-icon icon" data-icon="raceline"></span><span class="mobile-tab-label">Raceline</span></div>
-    <div class="tab mobile-tab" data-page="link"><span class="mobile-tab-icon icon" data-icon="link"></span><span class="mobile-tab-label">Link</span></div>
-    <div class="tab mobile-tab" data-page="multi"><span class="mobile-tab-icon icon" data-icon="multi"></span><span class="mobile-tab-label">Multi</span></div>
-    <div class="tab mobile-tab" data-page="sessions"><span class="mobile-tab-icon icon" data-icon="sessions"></span><span class="mobile-tab-label">Sessions</span></div>
-    <div class="tab mobile-tab" data-page="raw"><span class="mobile-tab-icon icon" data-icon="raw"></span><span class="mobile-tab-label">Raw</span></div>
   </div>
-  <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop"></div>
+  <div class="mobile-navsheet-backdrop" id="mobile-navsheet-backdrop"></div>
+  <div class="mobile-navsheet" id="mobile-navsheet">
+    <div class="tab mobile-navsheet-tab active" data-page="overview"><span class="icon" data-icon="overview"></span><span class="mobile-navsheet-tab-label">Overview</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="speed"><span class="icon" data-icon="speed"></span><span class="mobile-navsheet-tab-label">Speed</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="power"><span class="icon" data-icon="power"></span><span class="mobile-navsheet-tab-label">Power</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span><span class="mobile-navsheet-tab-label">Temp</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="rpm"><span class="icon" data-icon="rpm"></span><span class="mobile-navsheet-tab-label">RPM</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="esc"><span class="icon" data-icon="esc"></span><span class="mobile-navsheet-tab-label">ESC</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="imu"><span class="icon" data-icon="imu"></span><span class="mobile-navsheet-tab-label">IMU</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span><span class="mobile-navsheet-tab-label">Raceline</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="link"><span class="icon" data-icon="link"></span><span class="mobile-navsheet-tab-label">Link</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="multi"><span class="icon" data-icon="multi"></span><span class="mobile-navsheet-tab-label">Multi</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="sessions"><span class="icon" data-icon="sessions"></span><span class="mobile-navsheet-tab-label">Sessions</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="raw"><span class="icon" data-icon="raw"></span><span class="mobile-navsheet-tab-label">Raw</span></div>
+  </div>
 
   <!-- Install-app prompt — small floating button, not a banner (see CSS).
        Android/Chrome gets a real "Install" action in the popover (native
        prompt); iOS Safari has no such API, so it gets instructions instead
        (see JS). Dismissible, persisted via localStorage. -->
   <button class="install-fab" id="install-fab" aria-label="Install app" title="Install app">
-    <span class="icon" data-icon="download"></span>
+    <img src="/icon-192.png" alt="" class="install-fab-logo">
   </button>
   <div class="install-popover" id="install-popover">
-    <div id="install-popover-text">Install this app on your device for quicker access.</div>
+    <div class="install-popover-head">
+      <img src="/icon-192.png" alt="" class="install-popover-logo">
+      <div id="install-popover-text">Install this app on your device for quicker access.</div>
+    </div>
     <div class="install-popover-actions">
       <button class="btn btn-sm btn-accent" id="install-popover-action">Install</button>
       <button class="btn btn-sm" id="install-popover-dismiss">Dismiss</button>
@@ -601,7 +646,7 @@
         <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value size-sm" id="big-pitch_deg" style="color:var(--pitch)">--</div><div class="dedicated-unit">°</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">Yaw</div><div class="dedicated-value size-sm" id="big-yaw_deg" style="color:var(--yaw)">--</div><div class="dedicated-unit">°</div></div></div>
       </div>
-      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
+      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;min-height:220px">
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-roll_deg"></canvas></div></div>
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-pitch_deg"></canvas></div></div>
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-yaw_deg"></canvas></div></div>
@@ -612,7 +657,7 @@
         <div class="dedicated-big-card"><div><div class="dedicated-label">Lateral</div><div class="dedicated-value size-sm" id="big-lateral_g" style="color:var(--lateral)">--</div><div class="dedicated-unit">G</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">Vertical</div><div class="dedicated-value size-sm" id="big-vertical_g" style="color:var(--vertical)">--</div><div class="dedicated-unit">G</div></div></div>
       </div>
-      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
+      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;min-height:220px">
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-accel_g"></canvas></div></div>
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-lateral_g"></canvas></div></div>
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-vertical_g"></canvas></div></div>
@@ -628,7 +673,7 @@
         <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">HDOP</div><div class="stat-value compact" id="rl-hdop">--</div></div>
         <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="rl-speed">--</div><div class="stat-unit">MPH</div></div>
       </div>
-      <div id="raceline-map"><canvas id="gps-canvas"></canvas></div>
+      <div id="raceline-map"><div id="gps-map"></div></div>
     </div>
 
     <div id="page-link" class="page">
@@ -753,6 +798,7 @@ const ICONS = {
   sessions:     `<svg ${ICON_ATTRS}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
   raw:          `<svg ${ICON_ATTRS}><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
   'chevron-right': `<svg ${ICON_ATTRS}><polyline points="9 18 15 12 9 6"/></svg>`,
+  menu:         `<svg ${ICON_ATTRS}><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>`,
   settings:     `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
   x:            `<svg ${ICON_ATTRS}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
   download:     `<svg ${ICON_ATTRS}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
@@ -1027,55 +1073,61 @@ try {
   multiChart = new Chart(mctx,{type:'line',data:{labels:[],datasets:[]},options:mopts});
 } catch(e) { console.warn('Multi chart init failed:', e); }
 
-// ── GPS RACELINE ─────────────────────────────────────────────────────────────
-const gpsCanvas = document.getElementById('gps-canvas');
-const gpsCtx    = gpsCanvas ? gpsCanvas.getContext('2d') : null;
-const gpsTrail  = [];
-const MAX_GPS   = 2000;
+// ── GPS RACELINE (real satellite imagery via Leaflet + Esri World Imagery) ──
+// Was a from-scratch 2D canvas drawing (custom min/max-lat/lon projection,
+// hand-drawn gradient trail) with no actual terrain/imagery underneath it —
+// just a dark box with a line. Replaced with a real Leaflet map so the trail
+// is shown over actual satellite photography instead of blank space. Esri's
+// World_Imagery tile service is used because it's free and keyless for this
+// kind of use (no API key/account to manage, matching how Chart.js/fonts are
+// already pulled from a CDN with no credentials in this file).
+const gpsTrail = [];      // [lat, lon] pairs, still the source of truth for the polyline
+const MAX_GPS  = 2000;
+let gpsMap = null, gpsPolyline = null, gpsMarker = null, gpsHasFix = false;
 
-function resizeGPS() {
+function initGpsMap() {
   try {
-    if (!gpsCanvas) return;
-    const p = gpsCanvas.parentElement;
-    gpsCanvas.width  = Math.max(100, p.clientWidth  - 20);
-    gpsCanvas.height = Math.max(100, p.clientHeight - 20);
-  } catch(e) {}
+    const el = document.getElementById('gps-map');
+    if (!el || typeof L === 'undefined') return;
+    gpsMap = L.map(el, { zoomControl:true, attributionControl:true }).setView([0, 0], 2);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri — Esri, Maxar, Earthstar Geographics'
+    }).addTo(gpsMap);
+    gpsPolyline = L.polyline([], { color:'#0ea5e9', weight:3.5, opacity:.9 }).addTo(gpsMap);
+  } catch(e) { console.warn('GPS map init failed:', e); }
 }
-window.addEventListener('resize', resizeGPS);
-setTimeout(resizeGPS, 100);
+initGpsMap();
 
-function drawGPS() {
-  if (!gpsCtx || !gpsCanvas) return;
+// Called on every valid new GPS fix (see poll()) — extends the trail and
+// keeps the current-position marker + map view following it. First fix ever
+// snaps the view in close (zoom 17); later updates just re-center without
+// changing zoom, so a user who's manually zoomed/panned to inspect the trail
+// doesn't get yanked back out every 200ms.
+function updateGpsMap(lat, lon) {
+  if (!gpsMap) return;
   try {
-    const w=gpsCanvas.width, h=gpsCanvas.height;
-    gpsCtx.fillStyle='#070a10'; gpsCtx.fillRect(0,0,w,h);
-    if (gpsTrail.length < 2) {
-      gpsCtx.fillStyle='#828a9c'; gpsCtx.font='14px Rajdhani'; gpsCtx.textAlign='center';
-      gpsCtx.fillText('Waiting for GPS fix…', w/2, h/2); return;
+    const wasFirstFix = !gpsHasFix;
+    gpsHasFix = true;
+    if (gpsPolyline) gpsPolyline.setLatLngs(gpsTrail);
+    if (!gpsMarker) {
+      gpsMarker = L.circleMarker([lat, lon], {
+        radius:6, color:'#10b981', weight:2, fillColor:'#10b981', fillOpacity:.9
+      }).addTo(gpsMap);
+    } else {
+      gpsMarker.setLatLng([lat, lon]);
     }
-    const lats=gpsTrail.map(p=>p[0]), lons=gpsTrail.map(p=>p[1]);
-    const minLat=Math.min(...lats), maxLat=Math.max(...lats);
-    const minLon=Math.min(...lons), maxLon=Math.max(...lons);
-    const pad=30;
-    const sx=maxLon===minLon?1:(w-2*pad)/(maxLon-minLon);
-    const sy=maxLat===minLat?1:(h-2*pad)/(maxLat-minLat);
-    const toX=lon=>pad+(lon-minLon)*sx;
-    const toY=lat=>h-pad-(lat-minLat)*sy;
-    for (let i=1; i<gpsTrail.length; i++) {
-      const t=i/gpsTrail.length;
-      gpsCtx.strokeStyle=`hsl(${205+t*45},70%,${55+t*20}%)`;
-      gpsCtx.lineWidth=2.5;
-      gpsCtx.beginPath();
-      gpsCtx.moveTo(toX(gpsTrail[i-1][1]),toY(gpsTrail[i-1][0]));
-      gpsCtx.lineTo(toX(gpsTrail[i][1]),toY(gpsTrail[i][0]));
-      gpsCtx.stroke();
+    // Trail/marker data is kept current regardless of which tab is active
+    // (cheap), but the actual view-follow (pan/zoom) only happens while the
+    // raceline tab is the one on screen — panning/zooming a map sitting in a
+    // display:none container measures as 0×0 and just wastes work; the
+    // tab-switch handler catches the view up to the last known position the
+    // moment the user actually arrives on this tab instead.
+    if (activePage === 'raceline') {
+      if (wasFirstFix) gpsMap.setView([lat, lon], 17);
+      else gpsMap.panTo([lat, lon], { animate:true, duration:0.4 });
     }
-    const last=gpsTrail[gpsTrail.length-1];
-    gpsCtx.beginPath();
-    gpsCtx.arc(toX(last[1]),toY(last[0]),5,0,Math.PI*2);
-    gpsCtx.fillStyle='#10b981'; gpsCtx.shadowColor='#10b981'; gpsCtx.shadowBlur=10;
-    gpsCtx.fill(); gpsCtx.shadowBlur=0;
-  } catch(e) { console.warn('GPS draw error:', e); }
+  } catch(e) { console.warn('GPS map update failed:', e); }
 }
 
 // ── TABS ─────────────────────────────────────────────────────────────────────
@@ -1093,9 +1145,11 @@ document.querySelectorAll('.tab').forEach(t => {
       // hidden by the mobile breakpoint's CSS, not actually correct).
       document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.page === activePage));
       document.getElementById('page-'+activePage).classList.add('active');
-      // Selecting a page from the mobile drawer should also close the drawer
-      // — you came here to look at a page, not to keep the nav open.
-      if (t.classList.contains('mobile-tab')) collapseMobileSidebar();
+      // Selecting a page from the mobile nav sheet should also close the
+      // sheet — you came here to look at a page, not to keep the menu open.
+      // The bottom bar's own icons don't need this — there's no drawer over
+      // them to close, they're always visible.
+      if (t.classList.contains('mobile-navsheet-tab')) closeMobileNavSheet();
       // Chart.js's ResizeObserver doesn't reliably fire when a chart's
       // container goes from display:none to visible (a well-known tabbed-UI
       // gotcha) — any chart built while its tab wasn't the active one on
@@ -1115,29 +1169,43 @@ document.querySelectorAll('.tab').forEach(t => {
         if (multiChart) multiChart.resize();
         Object.values(sessionCharts).forEach(ch => ch && ch.resize());
       }, 0);
-      if (activePage==='raceline') { resizeGPS(); drawGPS(); }
+      // Leaflet (like Chart.js) can't correctly size a map built inside a
+      // container that was display:none — invalidateSize() forces it to
+      // re-measure now that the raceline tab is actually visible, then the
+      // view is caught up to wherever the trail ended up while this tab was
+      // in the background (see updateGpsMap()'s own comment on why it skips
+      // pan/setView while this tab isn't the active one).
+      if (activePage==='raceline' && gpsMap) {
+        setTimeout(() => {
+          gpsMap.invalidateSize();
+          if (gpsHasFix && gpsMarker) gpsMap.setView(gpsMarker.getLatLng(), gpsMap.getZoom());
+        }, 0);
+      }
       if (activePage==='sessions') loadSessions();
     } catch(e) { console.warn('Tab switch error:', e); }
   });
 });
 
-// ── MOBILE SIDEBAR (icon rail that expands to a labeled drawer) ─────────────
-// Desktop never touches this — the toggle button and backdrop only exist in
-// the DOM for mobile widths per CSS, so this code is simply inert there.
-function collapseMobileSidebar() {
-  document.getElementById('mobile-sidebar').classList.remove('expanded');
-  document.getElementById('mobile-sidebar-backdrop').classList.remove('show');
+// ── MOBILE NAV SHEET (bottom bar's "expand" button opens a labeled list) ────
+// Desktop never touches this — the bar, expand button, sheet, and backdrop
+// only exist in the DOM at mobile widths per CSS, so this code is simply
+// inert there.
+function closeMobileNavSheet() {
+  document.getElementById('mobile-navsheet').classList.remove('show');
+  document.getElementById('mobile-navsheet-backdrop').classList.remove('show');
+  document.getElementById('mobile-navbar-expand').classList.remove('open');
 }
-function expandMobileSidebar() {
-  document.getElementById('mobile-sidebar').classList.add('expanded');
-  document.getElementById('mobile-sidebar-backdrop').classList.add('show');
+function openMobileNavSheet() {
+  document.getElementById('mobile-navsheet').classList.add('show');
+  document.getElementById('mobile-navsheet-backdrop').classList.add('show');
+  document.getElementById('mobile-navbar-expand').classList.add('open');
 }
-document.getElementById('mobile-sidebar-toggle').addEventListener('click', () => {
-  const sidebar = document.getElementById('mobile-sidebar');
-  if (sidebar.classList.contains('expanded')) collapseMobileSidebar();
-  else expandMobileSidebar();
+document.getElementById('mobile-navbar-expand').addEventListener('click', () => {
+  const sheet = document.getElementById('mobile-navsheet');
+  if (sheet.classList.contains('show')) closeMobileNavSheet();
+  else openMobileNavSheet();
 });
-document.getElementById('mobile-sidebar-backdrop').addEventListener('click', collapseMobileSidebar);
+document.getElementById('mobile-navsheet-backdrop').addEventListener('click', closeMobileNavSheet);
 
 // ── PWA INSTALL PROMPT ───────────────────────────────────────────────────────
 // A small floating icon button (not a banner) — costs almost no screen space
@@ -1298,7 +1366,7 @@ async function viewSession(id) {
     document.getElementById('session-view-title').textContent = `SESSION #${id} — ${rows.length} packets`;
     document.getElementById('session-view-export').href = `/api/sessions/${id}/export.csv`;
 
-    const labels = rows.map(r => new Date(r.received_at).toLocaleTimeString());
+    const labels = rows.map(r => fmtTimeNoSeconds(r.received_at));
 
     SESSION_CHART_KEYS.forEach(k => {
       const canvasId = 'session-chart-'+k;
@@ -1396,7 +1464,12 @@ function applyState(d, online) {
     setStyle('esc-mode',  'color', escOk ? 'var(--escmode)' : 'var(--muted)');
     setStyle('esc-state', 'color', escOk ? 'var(--escmode)' : 'var(--muted)');
 
-    setText('age-badge', online ? 'LIVE' : 'NO SIGNAL');
+    // age-badge is NOT touched here — updateConnStatus() owns it exclusively
+    // (real "Xms ago" latency, or "NO SIGNAL"). This function used to also
+    // set it to a bare 'LIVE'/'NO SIGNAL' on every call, which ran after
+    // updateConnStatus() in poll() and clobbered the real latency value —
+    // the net effect was "LIVE" showing twice at once (here and in
+    // #conn-text) with the actual age-badge latency reading never visible.
   } catch(e) { console.warn('applyState error:', e); }
 }
 
@@ -1413,9 +1486,20 @@ function pushHistory(d) {
   if (historyTimes.length > MAX_POINTS) historyTimes.shift();
 }
 
+// Hour:minute only — no seconds. Chart x-axis labels at 5 Hz would otherwise
+// show the same handful of seconds values wrapping over and over across the
+// visible window, which reads as noisy clutter rather than useful context;
+// dropping seconds here (raw-log timestamps keep them — those genuinely
+// benefit from second-level precision on a packet-by-packet log) leaves just
+// enough to orient by without the visual busyness.
+function fmtTimeNoSeconds(ms) {
+  try { return new Date(ms).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}); }
+  catch(e) { return ''; }
+}
+
 function applyHistory() {
   try {
-    const timeLabels = historyTimes.map(t => new Date(t).toLocaleTimeString());
+    const timeLabels = historyTimes.map(t => fmtTimeNoSeconds(t));
     OVERVIEW_MINI.forEach(k => safeUpdateChart(ovCharts[k], timeLabels, history[k]));
     Object.keys(bigCharts).forEach(k => safeUpdateChart(bigCharts[k], timeLabels, history[k]));
 
@@ -1473,9 +1557,14 @@ async function poll() {
       applyHistory();
       pushRawLine(data);
       if (gpsValid(data.flags) && data.latitude && data.longitude) {
-        gpsTrail.push([+data.latitude, +data.longitude]);
+        const lat = +data.latitude, lon = +data.longitude;
+        gpsTrail.push([lat, lon]);
         if (gpsTrail.length > MAX_GPS) gpsTrail.shift();
-        if (activePage === 'raceline') drawGPS();
+        // Kept updating regardless of which tab is active (cheap — just
+        // array/marker bookkeeping) so the trail is already complete and
+        // the view already caught up the moment the user switches to it,
+        // instead of visibly catching up after arriving on the tab.
+        updateGpsMap(lat, lon);
       }
     }
   } catch(e) {
