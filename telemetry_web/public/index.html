@@ -384,11 +384,16 @@ function resolveColor(cssVar) {
 }
 
 // ── CHART HELPERS ────────────────────────────────────────────────────────────
+// x-axis is always a real wall-clock time axis now, on every chart including
+// the small overview mini-charts — it used to be hidden entirely on minis and
+// was never real time anywhere (an incrementing point-counter, not a
+// timestamp). "big" charts just get a slightly larger tick budget/font since
+// they have more horizontal room than a mini-chart card.
 const BASE_OPTS = {
   responsive:true, maintainAspectRatio:false, animation:false,
   plugins:{legend:{display:false}},
   scales:{
-    x:{display:false},
+    x:{display:true, ticks:{color:'#8899aa',font:{size:8},maxTicksLimit:4,maxRotation:0}, grid:{color:'rgba(74,144,226,.1)'}, border:{color:'#1a3a5f'}},
     y:{grid:{color:'rgba(74,144,226,.15)'},ticks:{color:'#8899aa',font:{size:10}},border:{color:'#1a3a5f'}}
   },
   elements:{point:{radius:0},line:{borderWidth:2,tension:0.3}}
@@ -401,10 +406,7 @@ function safeChart(id, colorVar, label, big=false) {
     const color = resolveColor(colorVar);
     const opts = JSON.parse(JSON.stringify(BASE_OPTS));
     if (big) {
-      opts.scales.x.display=true;
-      opts.scales.x.ticks={color:'#8899aa',font:{size:9},maxTicksLimit:8};
-      opts.scales.x.grid={color:'rgba(74,144,226,.1)'};
-      opts.scales.x.border={color:'#1a3a5f'};
+      opts.scales.x.ticks={color:'#8899aa',font:{size:9},maxTicksLimit:8,maxRotation:0};
     }
     return new Chart(ctx, {
       type:'line',
@@ -640,8 +642,7 @@ document.getElementById('session-view-close').addEventListener('click', () => {
 // ── STATE / HISTORY ──────────────────────────────────────────────────────────
 const history = {};
 Object.keys(METRICS).forEach(k => history[k] = []);
-const historyIndex = [];
-let pointCount = 0;
+const historyTimes = [];   // real epoch-ms timestamps (server-stamped, see server.js), not a point counter
 let lastSeq = null;
 const rawLines = [];
 const MAX_RAW_LINES = 80;
@@ -695,18 +696,22 @@ function pushHistory(d) {
     arr.push(typeof d[k] === 'number' ? d[k] : null);
     if (arr.length > MAX_POINTS) arr.shift();
   });
-  historyIndex.push(pointCount++);
-  if (historyIndex.length > MAX_POINTS) historyIndex.shift();
+  // d.received_at is stamped server-side (see server.js) when the packet
+  // arrived — real wall-clock time, not a client poll-tick guess. Falls back
+  // to Date.now() only if it's ever missing (e.g. an old cached response).
+  historyTimes.push(d.received_at || Date.now());
+  if (historyTimes.length > MAX_POINTS) historyTimes.shift();
 }
 
 function applyHistory() {
   try {
-    OVERVIEW_MINI.forEach(k => safeUpdateChart(ovCharts[k], historyIndex, history[k]));
-    Object.keys(bigCharts).forEach(k => safeUpdateChart(bigCharts[k], historyIndex, history[k]));
+    const timeLabels = historyTimes.map(t => new Date(t).toLocaleTimeString());
+    OVERVIEW_MINI.forEach(k => safeUpdateChart(ovCharts[k], timeLabels, history[k]));
+    Object.keys(bigCharts).forEach(k => safeUpdateChart(bigCharts[k], timeLabels, history[k]));
 
     if (!multiChart) return;
     const visible = Object.keys(METRICS).filter(k => multiVisible[k]);
-    multiChart.data.labels = historyIndex.map(String);
+    multiChart.data.labels = timeLabels;
     multiChart.data.datasets = visible.map(k => {
       const [lo,hi] = METRICS[k].range; const span = (hi-lo)||1;
       const norm = history[k].map(v => v==null ? null : Math.max(0,Math.min(100,(v-lo)/span*100)));
@@ -719,7 +724,10 @@ function applyHistory() {
 }
 
 function pushRawLine(d) {
-  const t = new Date().toLocaleTimeString();
+  // Use the packet's real (server-stamped) receive time, not the browser's
+  // clock at whatever moment this line happens to render — those can drift
+  // apart under poll jitter or a slow tab.
+  const t = new Date(d.received_at || Date.now()).toLocaleTimeString();
   rawLines.push(`[${t}] seq=${d.seq} ${JSON.stringify(d)}`);
   if (rawLines.length > MAX_RAW_LINES) rawLines.shift();
   const el = document.getElementById('raw-log');

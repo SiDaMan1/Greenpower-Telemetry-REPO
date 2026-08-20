@@ -130,8 +130,14 @@ function requireApiKey(req, res, next) {
 
 // receiver_agent posts here — one JSON body per forwarded packet
 app.post('/api/telemetry', requireApiKey, (req, res) => {
-    latest = req.body;
     lastUpdateMs = Date.now();
+    // received_at is stamped here (server receive time), not trusted from the
+    // client — this is what the live dashboard charts plot on their x-axis,
+    // separate from telemetry_points.received_at (a DB column, set at insert
+    // time by Postgres itself) that sessions use. Don't pass this stamped
+    // copy to recordPoint() — the DB's own column is the source of truth for
+    // stored history, this one's only for the in-memory /api/latest response.
+    latest = { ...req.body, received_at: lastUpdateMs };
     recordPoint(req.body);   // fire-and-forget — don't make the agent wait on a DB write
     res.status(204).end();
 });
