@@ -60,9 +60,10 @@
     background:rgba(13,16,23,.85); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
     border-bottom:1px solid var(--border); position:relative; z-index:5;
   }
-  #title { font-family:'Space Grotesk',sans-serif; font-size:clamp(14px,2.2vw,18px); font-weight:700; letter-spacing:.2px;
+  #title { display:flex; align-items:center; gap:7px; white-space:nowrap; }
+  .title-text { font-family:'Space Grotesk',sans-serif; font-size:clamp(14px,2.2vw,18px); font-weight:700; letter-spacing:.2px;
     background:linear-gradient(90deg,var(--accent),var(--accent2));
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent; white-space:nowrap; }
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
   #header-right { display:flex; align-items:center; gap:12px; flex-shrink:0; }
   #conn-status { display:flex; align-items:center; font-family:'Share Tech Mono',monospace; font-size:11px;
     padding:5px 10px; border-radius:999px; background:rgba(255,255,255,.03); border:1px solid var(--border); }
@@ -107,6 +108,22 @@
   .btn-accent { color:var(--accent2); border-color:rgba(14,165,233,.3); }
   .btn-good { color:var(--accent3); border-color:rgba(16,185,129,.3); }
   .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
+  .btn:active, .tab:active, .mobile-tab:active { transform:scale(.95); }
+
+  /* ── Icons ──────────────────────────────────────────────────────────
+     Inline SVG (Feather-style: stroke=currentColor, no fill) filled in at
+     load by applyIcons() from the ICONS map in <script> — every icon spot
+     in the markup is just an empty span with data-icon="name" so the SVG
+     source lives in exactly one place instead of being hand-pasted into
+     the HTML a dozen times. Deliberately not emoji: emoji render
+     inconsistently across platforms/fonts and read as informal; a single
+     matched icon set reads as one coherent design system. */
+  .icon { display:inline-flex; flex-shrink:0; }
+  .icon svg { width:100%; height:100%; display:block; }
+  .title-icon { width:18px; height:18px; color:var(--accent2); filter:drop-shadow(0 0 6px rgba(14,165,233,.45)); }
+  .tab-icon { width:14px; height:14px; margin-right:6px; vertical-align:-3px; }
+  .btn .icon { width:13px; height:13px; }
+  .chart-hide-btn .icon { width:10px; height:10px; }
 
   /* ── Cards ──────────────────────────────────────────────────────── */
   .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
@@ -284,60 +301,110 @@
      desktop layout/paint even if a selector here is wrong — only the
      (max-width:860px) block at the bottom turns any of it on. Desktop
      keeps using #tabs exactly as before; none of this touches it. */
-  .mobile-sidebar, .mobile-sidebar-backdrop, .install-banner { display:none; }
+  .mobile-sidebar, .mobile-sidebar-backdrop, .install-fab, .install-popover { display:none; }
 
-  /* No transition on width/opacity here — deliberately. Every CSS transition
-     tried on this page so far (max-height for the stats bar, grid-template-
-     rows, and width here) was independently confirmed — by class presence,
-     selector .matches(), getBoundingClientRect, AND direct function calls
-     bypassing events entirely — to never actually reach its declared end
-     state in the browser this was verified against, while every NON-
-     transitioned toggle (opacity via plain classList swaps, background
-     colors, etc.) worked correctly every time. Instant class-driven toggles
-     only; see CLAUDE.md-equivalent notes elsewhere in this file for the
-     same call made on the stats bar. */
+  /* Sidebar is a slim floating dock, not a full-bleed panel — a few px of
+     margin off every edge plus its own rounded corners/shadow read as "an
+     overlay that sits on top of the page" rather than "a permanent panel
+     that eats part of the screen", which is what made the first pass feel
+     like it was in the way. Width transition IS animated here (unlike the
+     stats-bar collapse elsewhere in this file, which stays an instant
+     display:none swap on purpose — see its own comment). The earlier
+     "transitions never reach their end state" finding was re-tested and
+     traced to the specific automated preview tool used to verify this
+     page: its browser pane only composites frames while actually
+     displayed/focused (confirmed directly — a screenshot call fails with
+     "the Browser pane is not displayed, so the page is not compositing
+     frames" whenever it isn't, and any CSS transition, even a trivial
+     freshly-created-element transform, silently never reaches its end
+     state under that condition, while forcing transition:none makes the
+     same class toggle apply instantly and correctly). That's a property of
+     the verification tool's rendering, not of CSS transitions or of real
+     browsers — a normal, visible browser tab always composites and
+     animates transitions correctly. Kept as a real, real transition. */
   .mobile-sidebar {
-    position:fixed; top:50px; bottom:0; left:0; width:56px; z-index:15;
+    position:fixed; top:60px; bottom:14px; left:8px; width:46px; z-index:15;
     flex-direction:column; align-items:stretch; overflow-y:auto; overflow-x:hidden;
-    background:rgba(13,16,23,.94); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-    border-right:1px solid var(--border); -webkit-overflow-scrolling:touch;
+    background:rgba(15,18,26,.92); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    border:1px solid var(--border); border-radius:16px; -webkit-overflow-scrolling:touch;
+    box-shadow:0 4px 24px -8px rgba(0,0,0,.5);
+    padding:6px; gap:3px;
+    transition:width .28s var(--ease), box-shadow .28s var(--ease);
   }
-  .mobile-sidebar.expanded { width:210px; box-shadow:6px 0 28px rgba(0,0,0,.45); }
+  .mobile-sidebar.expanded { width:172px; box-shadow:0 12px 36px -10px rgba(0,0,0,.6); }
 
   .mobile-sidebar-toggle-btn {
-    flex-shrink:0; height:48px; width:100%; display:flex; align-items:center; justify-content:center;
-    background:none; border:none; color:var(--muted); cursor:pointer; border-bottom:1px solid var(--border);
+    flex-shrink:0; height:34px; width:100%; display:flex; align-items:center; justify-content:center;
+    background:none; border:none; color:var(--muted); cursor:pointer; border-radius:10px;
+    margin-bottom:2px; transition:background .15s var(--ease), color .15s var(--ease);
   }
-  .mobile-sidebar-toggle-btn .chevron { font-size:11px; }
+  .mobile-sidebar-toggle-btn:hover { background:rgba(255,255,255,.06); color:var(--text); }
+  .mobile-sidebar-toggle-btn .chevron { width:13px; height:13px; transition:transform .28s var(--ease); }
   .mobile-sidebar.expanded .mobile-sidebar-toggle-btn .chevron { transform:rotate(180deg); }
 
+  /* Rounded-rectangle chips instead of a full-width highlighted row — each
+     nav item is its own evenly-rounded button with a small gap around it,
+     so the active state reads as "one selected chip in a dock" (a sleek,
+     modern nav pattern) rather than a solid bar segment. */
   .mobile-tab {
-    display:flex; align-items:center; gap:14px; padding:13px 16px; min-height:48px;
+    display:flex; align-items:center; gap:12px; padding:8px 9px; min-height:34px;
     color:var(--muted); cursor:pointer; white-space:nowrap; overflow:hidden;
-    border-left:2px solid transparent;
+    border-radius:11px; background:transparent;
+    transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
   }
-  .mobile-tab.active { color:#fff; background:rgba(99,102,241,.16); border-left-color:var(--accent); }
-  .mobile-tab-icon { font-size:19px; flex-shrink:0; width:24px; text-align:center; }
-  .mobile-tab-label { font-size:13px; font-weight:600; display:none; }
-  .mobile-sidebar.expanded .mobile-tab-label { display:inline; }
+  .mobile-tab:active { transform:scale(.93); }
+  .mobile-tab.active { color:#fff; background:linear-gradient(135deg, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
+  .mobile-tab-icon { width:18px; height:18px; flex-shrink:0; }
+  .mobile-tab-label {
+    font-size:12.5px; font-weight:600; max-width:0; opacity:0; overflow:hidden;
+    transition:max-width .24s var(--ease), opacity .18s var(--ease);
+  }
+  .mobile-sidebar.expanded .mobile-tab-label { max-width:120px; opacity:1; }
 
   .mobile-sidebar-backdrop {
-    position:fixed; inset:0; top:50px; z-index:14; background:rgba(0,0,0,.5);
+    position:fixed; inset:0; z-index:14; background:rgba(0,0,0,.42); backdrop-filter:blur(1px);
+    opacity:0; transition:opacity .22s var(--ease);
   }
-  .mobile-sidebar-backdrop.show { display:block; }
+  .mobile-sidebar-backdrop.show { display:block; animation:fadeIn .22s var(--ease) forwards; }
 
-  .install-banner {
-    align-items:center; justify-content:space-between; gap:10px;
-    background:var(--panel-solid); border-bottom:1px solid var(--border);
-    padding:10px 14px; flex-shrink:0; font-size:12.5px; font-weight:600;
+  /* ── Install prompt: small floating action button, not a banner ──────
+     A full-width banner ate permanent header space for something most
+     visits don't need. A single icon button anchored bottom-right costs
+     almost nothing until it's tapped, then opens a small popover with the
+     actual install action/instructions right above it. */
+  .install-fab {
+    position:fixed; right:16px; bottom:16px; z-index:16; width:46px; height:46px; border-radius:50%;
+    background:linear-gradient(135deg, var(--accent), var(--accent2)); border:none; color:#fff;
+    align-items:center; justify-content:center; cursor:pointer;
+    box-shadow:0 6px 20px -4px rgba(99,102,241,.6);
+    transition:transform .15s var(--ease), box-shadow .15s var(--ease);
   }
-  .install-banner.show { display:flex; }
-  .install-banner-actions { display:flex; gap:8px; flex-shrink:0; }
+  .install-fab .icon { width:20px; height:20px; }
+  .install-fab:hover { box-shadow:0 8px 26px -4px rgba(99,102,241,.75); }
+  .install-fab:active { transform:scale(.92); }
+  /* display:flex lives ONLY here, gated on .show — the base rule above must
+     stay display:none-only (no display property at all) so the top-of-file
+     "hidden unless .show" default isn't silently overridden by equal-
+     specificity cascade ordering. Caught in testing: an earlier version set
+     display:flex on the base .install-fab rule too, which — being the same
+     specificity as, and declared after, the default-hide rule — won the
+     cascade and made the button permanently visible regardless of .show. */
+  .install-fab.show { display:flex; animation:fabIn .4s var(--ease), fabPulse 1.8s ease-in-out .5s 2; }
+  @keyframes fabIn { from{ opacity:0; transform:scale(.4) translateY(10px); } to{ opacity:1; transform:scale(1) translateY(0); } }
+  @keyframes fabPulse { 0%,100%{ box-shadow:0 6px 20px -4px rgba(99,102,241,.6); } 50%{ box-shadow:0 6px 26px -2px rgba(99,102,241,.95); } }
+
+  .install-popover {
+    position:fixed; right:16px; bottom:70px; z-index:16; width:min(260px, calc(100vw - 32px));
+    background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:14px; box-shadow:var(--shadow); font-size:12.5px; font-weight:500; line-height:1.5;
+  }
+  .install-popover.show { display:block; animation:panelIn .18s var(--ease); }
+  .install-popover-actions { display:flex; gap:8px; margin-top:10px; }
 
   @media (max-width: 860px) {
     #tabs { display:none; }
     .mobile-sidebar { display:flex; }
-    #pages { padding-left:56px; }
+    #pages { padding-left:62px; }
 
     /* No graphs on mobile Overview — numbers only, per design. The bar's
        collapse toggle only makes sense when there's something below it to
@@ -348,13 +415,23 @@
     #overview-right-wrap { display:none; }
     .stats-bar-toggle { display:none; }
     .stats-bar.collapsed .stats-row { display:block; }
+
+    /* Overview is numbers-only on mobile (see above) so those numbers ARE
+       the page — worth sizing them up a little from the desktop-shared
+       defaults instead of leaving them at compact desktop-card size. */
+    #page-overview .stats-row-inner .stat-card { padding:15px 16px 15px 18px; flex:1 1 150px; }
+    #page-overview .stat-label { font-size:11px; letter-spacing:1.6px; }
+    #page-overview .stat-value { font-size:clamp(19px,5.4vw,25px); }
+    #page-overview .stat-value.compact { font-size:clamp(15px,4.2vw,18px); }
+    #page-overview .stat-value.tiny { font-size:clamp(11px,3.2vw,13px); }
+    #page-overview .stat-unit { font-size:11px; }
   }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="header">
-    <div id="title">⚡ Greenpower Telemetry</div>
+    <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
     <div id="header-right">
       <span id="age-badge">-- ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
@@ -362,18 +439,18 @@
     </div>
   </div>
   <div id="tabs">
-    <div class="tab active" data-page="overview">📊 Overview</div>
-    <div class="tab" data-page="speed">🏁 Speed</div>
-    <div class="tab" data-page="power">🔋 Power</div>
-    <div class="tab" data-page="temperature">🌡 Temp</div>
-    <div class="tab" data-page="rpm">🔄 RPM</div>
-    <div class="tab" data-page="esc">🎮 ESC</div>
-    <div class="tab" data-page="imu">📐 IMU</div>
-    <div class="tab" data-page="raceline">🗺 Raceline</div>
-    <div class="tab" data-page="link">📶 Link</div>
-    <div class="tab" data-page="multi">📈 Multi</div>
-    <div class="tab" data-page="sessions">📁 Sessions</div>
-    <div class="tab" data-page="raw">📡 Raw</div>
+    <div class="tab active" data-page="overview"><span class="tab-icon icon" data-icon="overview"></span>Overview</div>
+    <div class="tab" data-page="speed"><span class="tab-icon icon" data-icon="speed"></span>Speed</div>
+    <div class="tab" data-page="power"><span class="tab-icon icon" data-icon="power"></span>Power</div>
+    <div class="tab" data-page="temperature"><span class="tab-icon icon" data-icon="temperature"></span>Temp</div>
+    <div class="tab" data-page="rpm"><span class="tab-icon icon" data-icon="rpm"></span>RPM</div>
+    <div class="tab" data-page="esc"><span class="tab-icon icon" data-icon="esc"></span>ESC</div>
+    <div class="tab" data-page="imu"><span class="tab-icon icon" data-icon="imu"></span>IMU</div>
+    <div class="tab" data-page="raceline"><span class="tab-icon icon" data-icon="raceline"></span>Raceline</div>
+    <div class="tab" data-page="link"><span class="tab-icon icon" data-icon="link"></span>Link</div>
+    <div class="tab" data-page="multi"><span class="tab-icon icon" data-icon="multi"></span>Multi</div>
+    <div class="tab" data-page="sessions"><span class="tab-icon icon" data-icon="sessions"></span>Sessions</div>
+    <div class="tab" data-page="raw"><span class="tab-icon icon" data-icon="raw"></span>Raw</div>
   </div>
 
   <!-- Mobile-only nav: an icon-only rail that expands into a labeled drawer.
@@ -384,31 +461,35 @@
        the auto-collapse-after-navigating behavior. -->
   <div class="mobile-sidebar" id="mobile-sidebar">
     <button class="mobile-sidebar-toggle-btn" id="mobile-sidebar-toggle" aria-label="Expand menu">
-      <span class="chevron">▶</span>
+      <span class="chevron icon" data-icon="chevron-right"></span>
     </button>
-    <div class="tab mobile-tab active" data-page="overview"><span class="mobile-tab-icon">📊</span><span class="mobile-tab-label">Overview</span></div>
-    <div class="tab mobile-tab" data-page="speed"><span class="mobile-tab-icon">🏁</span><span class="mobile-tab-label">Speed</span></div>
-    <div class="tab mobile-tab" data-page="power"><span class="mobile-tab-icon">🔋</span><span class="mobile-tab-label">Power</span></div>
-    <div class="tab mobile-tab" data-page="temperature"><span class="mobile-tab-icon">🌡</span><span class="mobile-tab-label">Temp</span></div>
-    <div class="tab mobile-tab" data-page="rpm"><span class="mobile-tab-icon">🔄</span><span class="mobile-tab-label">RPM</span></div>
-    <div class="tab mobile-tab" data-page="esc"><span class="mobile-tab-icon">🎮</span><span class="mobile-tab-label">ESC</span></div>
-    <div class="tab mobile-tab" data-page="imu"><span class="mobile-tab-icon">📐</span><span class="mobile-tab-label">IMU</span></div>
-    <div class="tab mobile-tab" data-page="raceline"><span class="mobile-tab-icon">🗺</span><span class="mobile-tab-label">Raceline</span></div>
-    <div class="tab mobile-tab" data-page="link"><span class="mobile-tab-icon">📶</span><span class="mobile-tab-label">Link</span></div>
-    <div class="tab mobile-tab" data-page="multi"><span class="mobile-tab-icon">📈</span><span class="mobile-tab-label">Multi</span></div>
-    <div class="tab mobile-tab" data-page="sessions"><span class="mobile-tab-icon">📁</span><span class="mobile-tab-label">Sessions</span></div>
-    <div class="tab mobile-tab" data-page="raw"><span class="mobile-tab-icon">📡</span><span class="mobile-tab-label">Raw</span></div>
+    <div class="tab mobile-tab active" data-page="overview"><span class="mobile-tab-icon icon" data-icon="overview"></span><span class="mobile-tab-label">Overview</span></div>
+    <div class="tab mobile-tab" data-page="speed"><span class="mobile-tab-icon icon" data-icon="speed"></span><span class="mobile-tab-label">Speed</span></div>
+    <div class="tab mobile-tab" data-page="power"><span class="mobile-tab-icon icon" data-icon="power"></span><span class="mobile-tab-label">Power</span></div>
+    <div class="tab mobile-tab" data-page="temperature"><span class="mobile-tab-icon icon" data-icon="temperature"></span><span class="mobile-tab-label">Temp</span></div>
+    <div class="tab mobile-tab" data-page="rpm"><span class="mobile-tab-icon icon" data-icon="rpm"></span><span class="mobile-tab-label">RPM</span></div>
+    <div class="tab mobile-tab" data-page="esc"><span class="mobile-tab-icon icon" data-icon="esc"></span><span class="mobile-tab-label">ESC</span></div>
+    <div class="tab mobile-tab" data-page="imu"><span class="mobile-tab-icon icon" data-icon="imu"></span><span class="mobile-tab-label">IMU</span></div>
+    <div class="tab mobile-tab" data-page="raceline"><span class="mobile-tab-icon icon" data-icon="raceline"></span><span class="mobile-tab-label">Raceline</span></div>
+    <div class="tab mobile-tab" data-page="link"><span class="mobile-tab-icon icon" data-icon="link"></span><span class="mobile-tab-label">Link</span></div>
+    <div class="tab mobile-tab" data-page="multi"><span class="mobile-tab-icon icon" data-icon="multi"></span><span class="mobile-tab-label">Multi</span></div>
+    <div class="tab mobile-tab" data-page="sessions"><span class="mobile-tab-icon icon" data-icon="sessions"></span><span class="mobile-tab-label">Sessions</span></div>
+    <div class="tab mobile-tab" data-page="raw"><span class="mobile-tab-icon icon" data-icon="raw"></span><span class="mobile-tab-label">Raw</span></div>
   </div>
   <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop"></div>
 
-  <!-- Install-app hint — mobile only, dismissible, persisted via localStorage.
-       Android/Chrome gets a real "Install" button (native prompt); iOS Safari
-       has no such API, so it gets instructions instead (see JS). -->
-  <div class="install-banner" id="install-banner">
-    <span id="install-banner-text">📲 Install this app on your device</span>
-    <div class="install-banner-actions">
-      <button class="btn btn-sm btn-accent" id="install-banner-action">Install</button>
-      <button class="btn btn-sm" id="install-banner-dismiss">Dismiss</button>
+  <!-- Install-app prompt — small floating button, not a banner (see CSS).
+       Android/Chrome gets a real "Install" action in the popover (native
+       prompt); iOS Safari has no such API, so it gets instructions instead
+       (see JS). Dismissible, persisted via localStorage. -->
+  <button class="install-fab" id="install-fab" aria-label="Install app" title="Install app">
+    <span class="icon" data-icon="download"></span>
+  </button>
+  <div class="install-popover" id="install-popover">
+    <div id="install-popover-text">Install this app on your device for quicker access.</div>
+    <div class="install-popover-actions">
+      <button class="btn btn-sm btn-accent" id="install-popover-action">Install</button>
+      <button class="btn btn-sm" id="install-popover-dismiss">Dismiss</button>
     </div>
   </div>
 
@@ -417,7 +498,7 @@
     <div id="page-overview" class="page active">
       <div class="stats-bar" id="stats-bar">
         <button class="stats-bar-toggle" id="stats-bar-toggle">
-          <span>📊 Live Numbers</span>
+          <span id="stats-bar-toggle-label"><span class="tab-icon icon" data-icon="overview"></span><span id="stats-bar-toggle-text">Live Numbers</span></span>
           <span class="stats-bar-chevron" id="stats-bar-chevron">▲</span>
         </button>
         <div class="stats-row" id="overview-stats-row">
@@ -442,22 +523,22 @@
         <div class="section-heading">
           Live Charts
           <div class="customize-wrap">
-            <button id="chart-customize-btn" class="btn btn-sm">⚙ Customize</button>
+            <button id="chart-customize-btn" class="btn btn-sm"><span class="icon" data-icon="settings"></span>Customize</button>
             <div id="chart-customize-panel" class="customize-panel">
               <div id="chart-customize-list"></div>
             </div>
           </div>
         </div>
         <div id="overview-right">
-          <div class="mini-chart-card" data-metric="speed_mph"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">SPEED (MPH)</div><div class="chart-canvas-wrap"><canvas id="ovchart-speed_mph"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="batt_volt"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">BATTERY (V)</div><div class="chart-canvas-wrap"><canvas id="ovchart-batt_volt"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="motor_volt"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">MOTOR VOLT (V)</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_volt"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="current_a"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">CURRENT (A)</div><div class="chart-canvas-wrap"><canvas id="ovchart-current_a"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="temp_f"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">TEMP (°F)</div><div class="chart-canvas-wrap"><canvas id="ovchart-temp_f"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="motor_rpm"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">MOTOR RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_rpm"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="wheel_rpm"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">WHEEL RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-wheel_rpm"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="rssi"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">RSSI (dBm)</div><div class="chart-canvas-wrap"><canvas id="ovchart-rssi"></canvas></div></div>
-          <div class="ov-empty-msg" id="overview-empty" style="display:none">All charts hidden.<button class="btn btn-sm" id="ov-empty-customize">⚙ Customize</button></div>
+          <div class="mini-chart-card" data-metric="speed_mph"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">SPEED (MPH)</div><div class="chart-canvas-wrap"><canvas id="ovchart-speed_mph"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="batt_volt"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">BATTERY (V)</div><div class="chart-canvas-wrap"><canvas id="ovchart-batt_volt"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="motor_volt"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">MOTOR VOLT (V)</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_volt"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="current_a"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">CURRENT (A)</div><div class="chart-canvas-wrap"><canvas id="ovchart-current_a"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="temp_f"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">TEMP (°F)</div><div class="chart-canvas-wrap"><canvas id="ovchart-temp_f"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="motor_rpm"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">MOTOR RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_rpm"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="wheel_rpm"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">WHEEL RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-wheel_rpm"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="rssi"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">RSSI (dBm)</div><div class="chart-canvas-wrap"><canvas id="ovchart-rssi"></canvas></div></div>
+          <div class="ov-empty-msg" id="overview-empty" style="display:none">All charts hidden.<button class="btn btn-sm" id="ov-empty-customize"><span class="icon" data-icon="settings"></span>Customize</button></div>
         </div>
       </div>
     </div>
@@ -567,7 +648,7 @@
     </div>
 
     <div id="page-sessions" class="page">
-      <div class="section-heading">Session History <button id="sessions-refresh" class="btn btn-sm">🔄 Refresh</button></div>
+      <div class="section-heading">Session History <button id="sessions-refresh" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Refresh</button></div>
 
       <div id="sessions-list-wrap" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
         <div id="sessions-table-wrap">
@@ -596,8 +677,8 @@
         <div class="section-heading">
           <span id="session-view-title"></span>
           <div style="display:flex;gap:8px">
-            <a id="session-view-export" href="#" class="btn btn-sm btn-good">⬇ Export CSV</a>
-            <button id="session-view-close" class="btn btn-sm">✕ Close</button>
+            <a id="session-view-export" href="#" class="btn btn-sm btn-good"><span class="icon" data-icon="download"></span>Export CSV</a>
+            <button id="session-view-close" class="btn btn-sm"><span class="icon" data-icon="x"></span>Close</button>
           </div>
         </div>
         <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
@@ -612,7 +693,7 @@
     </div>
 
     <div id="page-raw" class="page">
-      <div class="section-heading">Raw Packets <button id="raw-clear" class="btn btn-sm">🗑 Clear</button></div>
+      <div class="section-heading">Raw Packets <button id="raw-clear" class="btn btn-sm"><span class="icon" data-icon="trash"></span>Clear</button></div>
       <div id="raw-log"></div>
     </div>
 
@@ -648,6 +729,43 @@ const METRICS = {
 };
 const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','rssi'];
 const MAX_POINTS = 150;   // ~30s of history at 5 Hz
+
+// ── ICONS ─────────────────────────────────────────────────────────────────────
+// Single source of truth for every icon on the page (Feather-style: 24x24
+// viewBox, stroke=currentColor, no fill) — HTML just marks the spot with an
+// empty <span data-icon="name">, applyIcons() fills in the real markup below.
+// Keeps the SVG source in one place instead of pasted inline a dozen times,
+// and means every icon spot always inherits its container's text color for
+// free (currentColor) instead of needing its own color rule.
+const ICON_ATTRS = 'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+const ICONS = {
+  zap:          `<svg ${ICON_ATTRS}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  overview:     `<svg ${ICON_ATTRS}><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
+  speed:        `<svg ${ICON_ATTRS}><polyline points="3 12 8 12 10 6 14 18 16 12 21 12"/></svg>`,
+  power:        `<svg ${ICON_ATTRS}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  temperature:  `<svg ${ICON_ATTRS}><path d="M14 4a2 2 0 0 0-4 0v10.54a4 4 0 1 0 4 0V4z"/></svg>`,
+  rpm:          `<svg ${ICON_ATTRS}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>`,
+  esc:          `<svg ${ICON_ATTRS}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`,
+  imu:          `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`,
+  raceline:     `<svg ${ICON_ATTRS}><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>`,
+  link:         `<svg ${ICON_ATTRS}><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`,
+  multi:        `<svg ${ICON_ATTRS}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
+  sessions:     `<svg ${ICON_ATTRS}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
+  raw:          `<svg ${ICON_ATTRS}><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+  'chevron-right': `<svg ${ICON_ATTRS}><polyline points="9 18 15 12 9 6"/></svg>`,
+  settings:     `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+  x:            `<svg ${ICON_ATTRS}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+  download:     `<svg ${ICON_ATTRS}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+  refresh:      `<svg ${ICON_ATTRS}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>`,
+  trash:        `<svg ${ICON_ATTRS}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+};
+function applyIcons(root=document) {
+  root.querySelectorAll('[data-icon]').forEach(el => {
+    const svg = ICONS[el.dataset.icon];
+    if (svg) el.innerHTML = svg;
+  });
+}
+applyIcons();
 
 // ── SAFE DOM HELPERS ─────────────────────────────────────────────────────────
 function setText(id, val) { try { const el=document.getElementById(id); if(el) el.textContent=val; } catch(e) {} }
@@ -685,17 +803,41 @@ function resolveColor(cssVar) {
 // charts — animating every 200ms redraw looks laggy, not smooth); the "smooth"
 // feel instead comes from the line's own tension/curve and the surrounding
 // UI's transitions.
+// Tooltip is enabled with mode:'index'/intersect:false rather than the
+// Chart.js default (intersect:true) — the line's own points are drawn at
+// radius 0 (see elements.point below), so an intersect-based hover would
+// need to land exactly on an invisible point and would never actually fire.
+// index+intersect:false instead fires from anywhere along the chart's x
+// position, which is also what makes this work as a touch/tap gesture on
+// mobile (Chart.js listens for touchstart/touchmove by default) and not
+// just a desktop mouse-hover.
+const TOOLTIP_OPTS = {
+  enabled:true, mode:'index', intersect:false,
+  backgroundColor:'rgba(18,21,29,.95)', titleColor:'#e7ebf3', bodyColor:'#e7ebf3',
+  borderColor:'rgba(255,255,255,.12)', borderWidth:1, padding:9, cornerRadius:8,
+  displayColors:false,
+  titleFont:{family:"'Share Tech Mono',monospace", size:10},
+  bodyFont:{family:"'Space Grotesk',sans-serif", size:12, weight:'600'},
+};
 const BASE_OPTS = {
   responsive:true, maintainAspectRatio:false, animation:false,
-  plugins:{legend:{display:false}},
+  interaction:{mode:'index', intersect:false},
+  plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
   scales:{
     x:{display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
     y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#828a9c',font:{size:10}},border:{color:'rgba(255,255,255,.07)'}}
   },
-  elements:{point:{radius:0},line:{borderWidth:2,tension:0.35}}
+  elements:{point:{radius:0,hoverRadius:4,hitRadius:8},line:{borderWidth:2,tension:0.35}}
 };
 
-function safeChart(id, colorVar, label, big=false) {
+// metricKey (when given) seeds the y-axis with the metric's known plausible
+// range as suggestedMin/suggestedMax — a *suggestion*, not a hard clamp, so
+// real values outside it still expand the axis normally. Without this, a
+// brand-new chart with only 1-2 real points (the rest still null placeholders
+// from initHistory()) auto-fits tightly to just those points and visibly
+// lurches every time the next real point arrives and forces a rescale; a
+// sane starting range makes that first-data-arrival settle instead of jump.
+function safeChart(id, colorVar, label, big=false, metricKey=null) {
   try {
     const ctx = document.getElementById(id);
     if (!ctx) return null;
@@ -703,6 +845,11 @@ function safeChart(id, colorVar, label, big=false) {
     const opts = JSON.parse(JSON.stringify(BASE_OPTS));
     if (big) {
       opts.scales.x.ticks={color:'#828a9c',font:{size:9},maxTicksLimit:8,maxRotation:0};
+    }
+    if (metricKey && METRICS[metricKey]) {
+      const [lo,hi] = METRICS[metricKey].range;
+      opts.scales.y.suggestedMin = lo;
+      opts.scales.y.suggestedMax = hi;
     }
     return new Chart(ctx, {
       type:'line',
@@ -723,10 +870,10 @@ function safeUpdateChart(chart, labels, data) {
 
 // ── BUILD CHARTS FROM THE METRIC REGISTRY ───────────────────────────────────
 const ovCharts = {};
-OVERVIEW_MINI.forEach(k => { ovCharts[k] = safeChart('ovchart-'+k, METRICS[k].color, METRICS[k].label); });
+OVERVIEW_MINI.forEach(k => { ovCharts[k] = safeChart('ovchart-'+k, METRICS[k].color, METRICS[k].label, false, k); });
 
 const bigCharts = {};
-Object.keys(METRICS).forEach(k => { bigCharts[k] = safeChart('chart-'+k, METRICS[k].color, METRICS[k].label, true); });
+Object.keys(METRICS).forEach(k => { bigCharts[k] = safeChart('chart-'+k, METRICS[k].color, METRICS[k].label, true, k); });
 
 // ── STATS BAR COLLAPSE (persisted) ───────────────────────────────────────────
 // Collapsing the numbers bar changes how much vertical room the chart grid
@@ -744,7 +891,7 @@ const statsBarChevron = document.getElementById('stats-bar-chevron');
 function setStatsBarCollapsed(collapsed, persist=true) {
   statsBar.classList.toggle('collapsed', collapsed);
   statsBarChevron.textContent = collapsed ? '▼' : '▲';
-  statsBarToggle.querySelector('span').textContent = collapsed ? 'Show Numbers' : '📊 Live Numbers';
+  document.getElementById('stats-bar-toggle-text').textContent = collapsed ? 'Show Numbers' : 'Live Numbers';
   if (persist) { try { localStorage.setItem(STATS_BAR_KEY, collapsed ? '1' : '0'); } catch(e) {} }
   // Wait for the collapse/expand transition (.3s) to finish before resizing
   // charts against the new final height, not a mid-animation one.
@@ -876,7 +1023,7 @@ try {
   mopts.responsive=true; mopts.maintainAspectRatio=false;
   mopts.scales.x={display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
   mopts.scales.y={display:true,min:-5,max:110,title:{display:true,text:'NORMALISED (%)',color:'#828a9c',font:{size:11}},ticks:{color:'#828a9c'},grid:{color:'rgba(255,255,255,.05)'},border:{color:'rgba(255,255,255,.07)'}};
-  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10}}}};
+  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10}}}, tooltip:TOOLTIP_OPTS};
   multiChart = new Chart(mctx,{type:'line',data:{labels:[],datasets:[]},options:mopts});
 } catch(e) { console.warn('Multi chart init failed:', e); }
 
@@ -993,10 +1140,13 @@ document.getElementById('mobile-sidebar-toggle').addEventListener('click', () =>
 document.getElementById('mobile-sidebar-backdrop').addEventListener('click', collapseMobileSidebar);
 
 // ── PWA INSTALL PROMPT ───────────────────────────────────────────────────────
+// A small floating icon button (not a banner) — costs almost no screen space
+// until tapped, then opens a compact popover with the real action/instructions
+// right above it. First appearance gets a brief pop-in + couple of pulses
+// (see .install-fab.show in CSS) so it's noticeable without being a banner
+// permanently sitting in the header.
 // Android/Chrome: capture the browser's own install prompt and trigger it
-// from our own button instead of Chrome's default mini-infobar — same
-// result, but it fits the app's own UI instead of looking like a browser
-// chrome element.
+// from our own popover's button instead of Chrome's default mini-infobar.
 // iOS Safari: there is no beforeinstallprompt API at all, and no way to
 // trigger "Add to Home Screen" programmatically — the best a web page can
 // do is tell the user how, via the Share sheet. Detected by user agent
@@ -1005,47 +1155,66 @@ document.getElementById('mobile-sidebar-backdrop').addEventListener('click', col
 const INSTALL_DISMISS_KEY = 'gp_install_dismissed';
 let deferredInstallPrompt = null;
 
-function installBannerDismissed() {
+function installDismissed() {
   try { return localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; } catch(e) { return false; }
 }
-function dismissInstallBanner() {
+function hideInstallUi() {
+  document.getElementById('install-fab').classList.remove('show');
+  document.getElementById('install-popover').classList.remove('show');
+}
+function dismissInstall() {
   try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch(e) {}
-  document.getElementById('install-banner').classList.remove('show');
+  hideInstallUi();
+}
+function showInstallFab() {
+  if (installDismissed()) return;
+  document.getElementById('install-fab').classList.add('show');
 }
 
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  if (!installBannerDismissed()) {
-    document.getElementById('install-banner-text').textContent = '📲 Install this app on your device';
-    document.getElementById('install-banner-action').style.display = '';
-    document.getElementById('install-banner').classList.add('show');
-  }
+  document.getElementById('install-popover-text').textContent = 'Install this app on your device for quicker access.';
+  document.getElementById('install-popover-action').style.display = '';
+  showInstallFab();
 });
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
-  document.getElementById('install-banner').classList.remove('show');
+  hideInstallUi();
 });
 
-document.getElementById('install-banner-action').addEventListener('click', async () => {
+document.getElementById('install-fab').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('install-popover').classList.toggle('show');
+});
+
+document.getElementById('install-popover-action').addEventListener('click', async () => {
   if (!deferredInstallPrompt) return;
   deferredInstallPrompt.prompt();
   await deferredInstallPrompt.userChoice.catch(() => {});
   deferredInstallPrompt = null;
-  document.getElementById('install-banner').classList.remove('show');
+  hideInstallUi();
 });
 
-document.getElementById('install-banner-dismiss').addEventListener('click', dismissInstallBanner);
+document.getElementById('install-popover-dismiss').addEventListener('click', dismissInstall);
+
+document.addEventListener('click', (e) => {
+  const popover = document.getElementById('install-popover');
+  const fab = document.getElementById('install-fab');
+  if (popover.classList.contains('show') && !popover.contains(e.target) && !fab.contains(e.target)) {
+    popover.classList.remove('show');
+  }
+});
 
 (function checkIosInstallHint() {
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const isStandalone = window.navigator.standalone === true
     || window.matchMedia('(display-mode: standalone)').matches;
-  if (isIos && !isStandalone && !installBannerDismissed()) {
-    document.getElementById('install-banner-text').textContent = '📲 Add to Home Screen: tap Share, then "Add to Home Screen"';
-    document.getElementById('install-banner-action').style.display = 'none';   // no programmatic install on iOS
-    document.getElementById('install-banner').classList.add('show');
+  if (isIos && !isStandalone) {
+    document.getElementById('install-popover-text').textContent = 'Add to Home Screen: tap Share, then "Add to Home Screen".';
+    document.getElementById('install-popover-action').style.display = 'none';   // no programmatic install on iOS
+    showInstallFab();
   }
 })();
 
@@ -1144,7 +1313,8 @@ async function viewSession(id) {
         data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3 }] },
         options:{
           responsive:true, maintainAspectRatio:false, animation:false,
-          plugins:{legend:{display:false}},
+          interaction:{mode:'index', intersect:false},
+          plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
           scales:{
             x:{display:true, ticks:{color:'#828a9c', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
             y:{grid:{color:'rgba(255,255,255,.05)'}, ticks:{color:'#828a9c', font:{size:10}}, border:{color:'rgba(255,255,255,.07)'}}
@@ -1164,9 +1334,24 @@ document.getElementById('session-view-close').addEventListener('click', () => {
 });
 
 // ── STATE / HISTORY ──────────────────────────────────────────────────────────
+// Pre-filled to MAX_POINTS with nulls/backdated placeholder timestamps
+// rather than starting empty and growing to MAX_POINTS over the first ~30s.
+// An empty→growing chart auto-fits its axes to whatever handful of points
+// exist so far, so every single new point visibly yanks the whole chart's
+// scale around ("the graphs expand rapidly") until it finally fills up.
+// Starting pre-filled means the x-axis already spans the full window and
+// (combined with the per-metric y suggestedMin/Max in safeChart()) the axes
+// are stable from the very first real data point — Chart.js just draws a
+// null-gap line that fills in from the right as real points arrive, instead
+// of a shrinking/rescaling one.
 const history = {};
-Object.keys(METRICS).forEach(k => history[k] = []);
+Object.keys(METRICS).forEach(k => history[k] = new Array(MAX_POINTS).fill(null));
 const historyTimes = [];   // real epoch-ms timestamps (server-stamped, see server.js), not a point counter
+const SENSOR_INTERVAL_MS_GUESS = 200;   // matches the sender's 5 Hz cadence — only used to space out the initial placeholder timestamps below
+(function seedHistoryTimes() {
+  const now = Date.now();
+  for (let i = MAX_POINTS - 1; i >= 0; i--) historyTimes.push(now - i * SENSOR_INTERVAL_MS_GUESS);
+})();
 let lastSeq = null;
 const rawLines = [];
 const MAX_RAW_LINES = 80;
@@ -1297,6 +1482,12 @@ async function poll() {
     updateConnStatus(false, null);
   }
 }
+// Paint the pre-filled (all-null) history window immediately so every chart
+// already shows its full, stable time axis before the first live packet
+// ever arrives — real data then fills in from the right on top of it,
+// rather than the chart building its axes up from a single first point.
+applyHistory();
+
 poll();
 setInterval(poll, 200);
 </script>
