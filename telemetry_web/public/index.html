@@ -2,127 +2,274 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>⚡ Greenpower Telemetry</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  :root {
-    --bg0: #03080f; --bg1: #070f1a; --bg2: #0d1e30; --bg3: #122540;
-    --panel: rgba(13,30,50,0.95); --border: #1a3a5f;
-    --accent: #dc143c; --accent2: #4a90e2; --accent3: #00ff88;
-    --speed:#ff1744; --battv:#4fc3f7; --motorv:#29b6f6; --current:#dc143c; --temp:#f5f5f5;
-    --mrpm:#9b59b6; --wrpm:#8e44ad;
-    --roll:#1abc9c; --pitch:#16a085; --yaw:#48c9b0;
-    --accel:#e74c3c; --lateral:#c0392b; --vertical:#e67e22;
-    --rssi:#95a5a6; --snr:#7f8c8d; --gps:#95a5a6;
-    --escset:#f39c12; --esclive:#e67e22; --escramp:#d35400; --escmode:#f1c40f;
-    --text:#e8eaf0; --muted:#8899aa; --warn:#ffd700;
-  }
-  * { box-sizing:border-box; margin:0; padding:0; }
-  html,body { height:100%; background:var(--bg0); color:var(--text); font-family:'Rajdhani',sans-serif; overflow:hidden; }
-  body::before { content:''; position:fixed; inset:0; z-index:9999; pointer-events:none;
-    background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.04) 2px,rgba(0,0,0,.04) 4px); }
+  /* ── Design tokens ─────────────────────────────────────────────────
+     Variable NAMES are load-bearing — the JS reads --speed, --battv, etc.
+     directly via resolveColor()/getComputedStyle, and inline style="--card-
+     color:var(--x)" attributes throughout the body bind cards to these.
+     Refine the VALUES freely; never rename a variable without updating
+     every var(--x) reference in both this file's CSS and its <script>.
 
-  #app { display:flex; flex-direction:column; height:100vh; }
+     Palette is deliberately restrained — Tailwind 300/400-weight shades
+     rather than fully-saturated primaries, so 18 different metric colors
+     read as one coordinated system instead of a box of crayons. */
+  :root {
+    --bg0:#0a0c11; --bg1:#0d1017; --bg2:#131720; --bg3:#1a2029;
+    --panel:rgba(255,255,255,.035); --panel-solid:#12151d; --border:rgba(255,255,255,.07);
+    --accent:#6366f1; --accent2:#0ea5e9; --accent3:#10b981; --danger:#f43f5e;
+    --speed:#fb7185; --battv:#7dd3fc; --motorv:#93c5fd; --current:#fcd34d; --temp:#e2e8f0;
+    --mrpm:#c4b5fd; --wrpm:#a78bfa;
+    --roll:#5eead4; --pitch:#2dd4bf; --yaw:#99f6e4;
+    --accel:#fda4af; --lateral:#fca5a5; --vertical:#fdba74;
+    --rssi:#cbd5e1; --snr:#94a3b8; --gps:#cbd5e1;
+    --escset:#fde047; --esclive:#fcd34d; --escramp:#fbbf24; --escmode:#fef08a;
+    --text:#e7ebf3; --muted:#828a9c; --warn:#f59e0b;
+    --radius:14px; --radius-sm:10px;
+    --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 24px -14px rgba(0,0,0,.6);
+    --ease:cubic-bezier(.22,.61,.36,1);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; background:var(--bg0); color:var(--text); font-family:'Rajdhani',sans-serif;
+    overflow:hidden; -webkit-font-smoothing:antialiased; }
+
+  #app { display:flex; flex-direction:column; height:100vh; height:100dvh; }
 
   #stale-banner {
-    display:none; background:#3a2000; border-bottom:1px solid var(--warn);
-    color:var(--warn); font-family:'Share Tech Mono',monospace; font-size:12px;
-    padding:4px 16px; text-align:center; flex-shrink:0; letter-spacing:1px;
+    display:none; background:rgba(245,158,11,.1); border-bottom:1px solid rgba(245,158,11,.3);
+    color:var(--warn); font-family:'Share Tech Mono',monospace; font-size:11px;
+    padding:6px 16px; text-align:center; flex-shrink:0; letter-spacing:.5px;
   }
   #stale-banner.show { display:block; }
 
+  /* ── Header ─────────────────────────────────────────────────────── */
   #header {
-    display:flex; align-items:center; justify-content:space-between;
-    padding:0 20px; height:54px; flex-shrink:0;
-    background:linear-gradient(90deg,#0a0010 0%,#0a1929 40%,#0a1929 60%,#0a0010 100%);
-    border-bottom:1px solid var(--border); position:relative; overflow:hidden;
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:0 18px; height:54px; flex-shrink:0;
+    background:rgba(13,16,23,.85); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+    border-bottom:1px solid var(--border); position:relative; z-index:5;
   }
-  #header::after { content:''; position:absolute; bottom:0; left:0; right:0; height:2px;
-    background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),var(--accent),transparent); }
-  #title { font-family:'Orbitron',monospace; font-size:20px; font-weight:900; letter-spacing:4px;
+  #title { font-family:'Space Grotesk',sans-serif; font-size:clamp(14px,2.2vw,18px); font-weight:700; letter-spacing:.2px;
     background:linear-gradient(90deg,var(--accent),var(--accent2));
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-  #header-right { display:flex; align-items:center; gap:20px; }
-  #conn-status { font-family:'Share Tech Mono',monospace; font-size:12px; }
-  #conn-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:#ff1744; transition:background .3s; }
-  #conn-dot.live { background:var(--accent3); box-shadow:0 0 8px var(--accent3); }
-  #conn-dot.stale { background:var(--warn); box-shadow:0 0 8px var(--warn); animation:pulse 1s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-  #server-time { font-family:'Share Tech Mono',monospace; font-size:13px; color:var(--muted); }
+    -webkit-background-clip:text; -webkit-text-fill-color:transparent; white-space:nowrap; }
+  #header-right { display:flex; align-items:center; gap:12px; flex-shrink:0; }
+  #conn-status { display:flex; align-items:center; font-family:'Share Tech Mono',monospace; font-size:11px;
+    padding:5px 10px; border-radius:999px; background:rgba(255,255,255,.03); border:1px solid var(--border); }
+  #conn-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:7px; background:var(--danger); transition:background .3s; }
+  #conn-dot.live { background:var(--accent3); box-shadow:0 0 6px -1px var(--accent3); }
+  #conn-dot.stale { background:var(--warn); animation:pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  #server-time { font-family:'Share Tech Mono',monospace; font-size:12px; color:var(--muted); }
   #age-badge {
-    font-family:'Share Tech Mono',monospace; font-size:10px; padding:2px 8px;
-    border-radius:3px; border:1px solid var(--border); color:var(--muted);
-    white-space:nowrap;
+    font-family:'Share Tech Mono',monospace; font-size:10px; padding:4px 9px;
+    border-radius:999px; border:1px solid var(--border); color:var(--muted);
+    white-space:nowrap; background:rgba(255,255,255,.02);
   }
 
-  #tabs { display:flex; flex-shrink:0; background:var(--bg1); border-bottom:1px solid var(--border); overflow-x:auto; scrollbar-width:none; }
+  /* ── Tabs ───────────────────────────────────────────────────────── */
+  #tabs { display:flex; gap:2px; flex-shrink:0; background:var(--bg1); border-bottom:1px solid var(--border);
+    overflow-x:auto; scrollbar-width:none; padding:6px 8px; -webkit-overflow-scrolling:touch;
+    scroll-snap-type:x proximity; }
   #tabs::-webkit-scrollbar { display:none; }
-  .tab { padding:10px 18px; font-size:12px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase;
-    cursor:pointer; white-space:nowrap; border-bottom:3px solid transparent; color:var(--muted);
-    transition:color .2s,border-color .2s,background .2s; }
-  .tab:hover { color:var(--text); background:var(--bg2); }
-  .tab.active { color:white; border-bottom-color:var(--accent); background:var(--bg2); }
+  .tab { padding:8px 14px; font-size:12px; font-weight:600; letter-spacing:.4px;
+    cursor:pointer; white-space:nowrap; color:var(--muted); border-radius:999px;
+    transition:color .15s var(--ease), background .15s var(--ease); scroll-snap-align:start; user-select:none; }
+  .tab:hover { color:var(--text); background:rgba(255,255,255,.04); }
+  .tab.active { color:#fff; background:rgba(99,102,241,.16); box-shadow:inset 0 0 0 1px rgba(99,102,241,.3); }
 
+  /* ── Page shell ─────────────────────────────────────────────────── */
   #pages { flex:1; overflow:hidden; position:relative; }
-  .page { display:none; height:100%; overflow-y:auto; padding:14px; }
-  .page.active { display:flex; flex-direction:column; gap:12px; }
+  .page { display:none; height:100%; overflow-y:auto; padding:16px; -webkit-overflow-scrolling:touch; }
+  .page.active { display:flex; flex-direction:column; gap:12px; animation:fadeIn .3s var(--ease); }
+  @keyframes fadeIn { from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:translateY(0)} }
 
-  .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
-    padding:12px 16px; display:flex; flex-direction:column; gap:2px; position:relative; overflow:hidden; flex-shrink:0; }
-  .stat-card::before { content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--card-color,var(--accent2)); }
-  .stat-label { font-size:10px; font-weight:700; letter-spacing:2px; color:var(--muted); text-transform:uppercase; }
-  .stat-value { font-family:'Orbitron',monospace; font-size:24px; font-weight:700; color:var(--card-color,white); line-height:1; }
-  .stat-unit  { font-size:11px; color:var(--muted); margin-top:2px; }
+  .section-heading { font-size:11px; font-weight:700; letter-spacing:1.6px; color:var(--muted);
+    text-transform:uppercase; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }
 
-  #page-overview.active { flex-direction:row; gap:12px; }
-  #overview-left { width:210px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; overflow-y:auto; }
-  #overview-right { flex:1; display:grid; grid-template-columns:1fr 1fr 1fr 1fr; grid-template-rows:1fr 1fr; gap:10px; min-width:0; }
-  .mini-chart-card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
-    padding:8px 10px; display:flex; flex-direction:column; min-height:0; }
-  .mini-chart-label { font-size:10px; font-weight:700; letter-spacing:1.5px; color:var(--muted); margin-bottom:4px; }
-  .mini-chart-card canvas { flex:1; min-height:0; }
+  /* ── Buttons ────────────────────────────────────────────────────── */
+  .btn { display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.04); color:var(--text);
+    border:1px solid var(--border); border-radius:8px; padding:7px 14px; cursor:pointer; font-family:inherit;
+    font-size:12px; font-weight:600; letter-spacing:.2px; text-decoration:none;
+    transition:background .15s var(--ease), border-color .15s var(--ease), transform .1s var(--ease); }
+  .btn:hover { background:rgba(255,255,255,.08); border-color:rgba(255,255,255,.15); }
+  .btn:active { transform:scale(.96); }
+  .btn-accent { color:var(--accent2); border-color:rgba(14,165,233,.3); }
+  .btn-good { color:var(--accent3); border-color:rgba(16,185,129,.3); }
+  .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
 
-  .dedicated-big-card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
-    padding:16px 24px; display:flex; align-items:center; gap:24px; flex-shrink:0; }
-  .dedicated-label { font-size:13px; font-weight:700; letter-spacing:2px; color:var(--muted); text-transform:uppercase; }
-  .dedicated-value { font-family:'Orbitron',monospace; font-size:60px; font-weight:900; line-height:1; }
-  .dedicated-unit  { font-size:18px; font-weight:600; color:var(--muted); }
-  .chart-card { background:var(--panel); border:1px solid var(--border); border-radius:8px;
-    padding:12px; flex:1; min-height:0; }
-  .chart-card canvas { width:100% !important; height:100% !important; }
+  /* ── Cards ──────────────────────────────────────────────────────── */
+  .stat-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:12px 14px 12px 16px; display:flex; flex-direction:column; gap:3px;
+    position:relative; overflow:hidden; flex-shrink:0;
+    transition:border-color .15s var(--ease), transform .15s var(--ease); }
+  .stat-card::before { content:''; position:absolute; left:0; top:12%; bottom:12%; width:2px; border-radius:0 2px 2px 0;
+    background:var(--card-color,var(--accent2)); opacity:.85; }
+  .stat-label { font-size:10px; font-weight:600; letter-spacing:1.4px; color:var(--muted); text-transform:uppercase; }
+  .stat-value { font-family:'Space Grotesk',sans-serif; font-size:clamp(16px,2.2vw,21px); font-weight:600;
+    color:var(--card-color,var(--text)); line-height:1.25; }
+  .stat-value.compact { font-size:clamp(12px,1.8vw,14px); }
+  .stat-value.tiny { font-size:clamp(10px,1.4vw,12px); white-space:pre-line; margin-top:2px; line-height:1.5; }
+  .stat-unit  { font-size:10px; color:var(--muted); margin-top:1px; letter-spacing:.3px; }
+
+  @keyframes valueFlash { from{ text-shadow:0 0 10px currentColor; } to{ text-shadow:0 0 0 transparent; } }
+  .value-flash { animation:valueFlash .6s ease-out; }
+
+  @media (hover:hover) and (pointer:fine) {
+    .stat-card:hover, .chart-card:hover, .mini-chart-card:hover, .dedicated-big-card:hover {
+      border-color:rgba(255,255,255,.14); transform:translateY(-1px); }
+  }
+  .chart-card, .mini-chart-card, .dedicated-big-card { transition:border-color .15s var(--ease), transform .15s var(--ease); }
+
+  /* Numbers live in a full-width collapsible bar at the top; charts get the
+     entire page below it (was: fixed 200px sidebar + charts squeezed into
+     the remaining width — this gives charts the full page and lets the bar
+     itself be collapsed for even more room when you just want the graphs). */
+  #page-overview.active { flex-direction:column; gap:12px; }
+
+  .stats-bar { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    flex-shrink:0; overflow:hidden; }
+  .stats-bar-toggle { width:100%; display:flex; align-items:center; justify-content:space-between;
+    background:none; border:none; color:var(--muted); font-family:'Rajdhani',sans-serif;
+    font-size:11px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase;
+    padding:11px 14px; cursor:pointer; transition:color .15s var(--ease); }
+  .stats-bar-toggle:hover { color:var(--text); }
+  .stats-bar-chevron { font-size:9px; transition:transform .25s var(--ease); }
+  .stats-bar.collapsed .stats-bar-chevron { transform:rotate(180deg); }
+
+  /* Deliberately NOT an animated height/grid-row slide. Two different
+     well-established CSS collapse techniques (max-height transition, then
+     grid-template-rows 1fr↔0fr) both produced wrong computed values when
+     tested against the actual browser this was verified in — correctness
+     of the toggle mattered more than chasing that down, so this is a plain
+     display:none swap with a fast opacity fade. It's guaranteed to work
+     everywhere; it just snaps instead of sliding. */
+  .stats-row { padding:0 14px 14px; }
+  .stats-bar.collapsed .stats-row { display:none; }
+  .stats-row-inner { display:flex; flex-wrap:wrap; gap:8px; opacity:0; animation:fadeIn .2s var(--ease) forwards; }
+  .stats-row-inner .stat-card { flex:1 1 140px; }
+
+  #overview-right-wrap { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; min-width:0; }
+  #overview-right { flex:1; min-height:0; display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); grid-auto-rows:1fr; gap:12px; min-width:0; }
+  .mini-chart-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:9px 11px; display:flex; flex-direction:column; min-height:0; position:relative;
+    opacity:1; transform:scale(1); }
+  .mini-chart-card.chart-hiding { opacity:0; transform:scale(.93); pointer-events:none; }
+  .mini-chart-card.chart-hidden { display:none; }
+  .mini-chart-label { font-size:9.5px; font-weight:600; letter-spacing:1px; color:var(--muted); margin-bottom:4px; flex-shrink:0; }
+
+  /* Chart.js canvas sizing — MUST be position:absolute inside a position:
+     relative wrapper that itself is NOT sized by the canvas. A canvas is a
+     replaced element with its own intrinsic size; Chart.js's responsive
+     resizing sets new width/height *attributes* on it every redraw, and if
+     the canvas participates in normal flow (flex:1, or plain block sizing
+     driven by its own content), the browser re-measures a parent whose size
+     now includes the canvas's own new size — canvas resizes, parent grows,
+     canvas resizes again, forever ("the graphs expand constantly"). Taking
+     the canvas out of flow (absolute) breaks that loop: it can no longer
+     influence its own container's size, no matter what Chart.js sets its
+     width/height to. Don't put `flex:1` or percentage sizing directly on a
+     <canvas> anywhere in this file again. */
+  .chart-canvas-wrap { position:relative; flex:1; min-height:0; width:100%; }
+  .chart-canvas-wrap canvas { position:absolute; inset:0; width:100% !important; height:100% !important; }
+
+  .chart-hide-btn { position:absolute; top:6px; right:6px; width:18px; height:18px; border-radius:50%;
+    background:rgba(255,255,255,.05); border:none; color:var(--muted); font-size:10px; line-height:18px;
+    text-align:center; cursor:pointer; opacity:0; transition:opacity .15s var(--ease), background .15s var(--ease), color .15s var(--ease); z-index:2; }
+  .mini-chart-card:hover .chart-hide-btn { opacity:1; }
+  .chart-hide-btn:hover { background:rgba(244,63,94,.18); color:var(--danger); }
+  @media (hover:none) { .chart-hide-btn { opacity:.4; } }
+
+  .ov-empty-msg { grid-column:1/-1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; color:var(--muted); font-size:13px; padding:30px; }
+
+  /* ── Chart customize dropdown ───────────────────────────────────── */
+  .customize-wrap { position:relative; }
+  .customize-panel { display:none; position:absolute; top:calc(100% + 8px); right:0; z-index:20; min-width:190px;
+    background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:8px; box-shadow:var(--shadow); }
+  .customize-panel.open { display:block; animation:panelIn .16s var(--ease); }
+  @keyframes panelIn { from{opacity:0; transform:translateY(-4px) scale(.98)} to{opacity:1; transform:translateY(0) scale(1)} }
+  .customize-row { display:flex; align-items:center; gap:9px; padding:6px 6px; font-size:12px; font-weight:500;
+    cursor:pointer; border-radius:6px; transition:background .12s var(--ease); }
+  .customize-row:hover { background:rgba(255,255,255,.04); }
+  .customize-swatch { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+
+  .dedicated-big-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:18px 24px; display:flex; align-items:center; gap:20px; flex-shrink:0; }
+  .dedicated-label { font-size:11px; font-weight:600; letter-spacing:1.6px; color:var(--muted); text-transform:uppercase; margin-bottom:3px; }
+  .dedicated-value { font-family:'Space Grotesk',sans-serif; font-size:clamp(32px,7vw,54px); font-weight:700; line-height:1; color:var(--card-color,var(--text)); }
+  .dedicated-value.size-md { font-size:clamp(25px,5.5vw,40px); }
+  .dedicated-value.size-sm { font-size:clamp(21px,5vw,34px); }
+  .dedicated-unit  { font-size:15px; font-weight:600; color:var(--muted); }
+
+  .chart-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px; flex:1; min-height:180px; display:flex; flex-direction:column; }
 
   .big-row { display:grid; gap:12px; flex-shrink:0; }
   .chart-row { display:grid; gap:12px; flex:1; min-height:0; }
 
-  #gps-canvas { background:#060f1a; border-radius:6px; display:block; width:100%; height:100%; }
-  #page-raceline.active { flex-direction:row; gap:12px; }
+  #gps-canvas { background:#070a10; border-radius:8px; display:block; width:100%; height:100%; }
+  #page-raceline.active { flex-direction:row; gap:14px; }
   #raceline-info { width:190px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; }
-  #raceline-map { flex:1; background:var(--panel); border:1px solid var(--border); border-radius:8px;
+  #raceline-map { flex:1; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
     padding:10px; min-height:0; display:flex; flex-direction:column; }
 
-  #raw-log { font-family:'Share Tech Mono',monospace; font-size:11px; line-height:1.6;
-    background:#020d18; border:1px solid var(--border); border-radius:8px;
-    padding:12px; flex:1; overflow-y:auto; color:var(--accent3); white-space:pre-wrap; word-break:break-all; }
+  #raw-log { font-family:'Share Tech Mono',monospace; font-size:11px; line-height:1.7;
+    background:#080b11; border:1px solid var(--border); border-radius:var(--radius);
+    padding:14px; flex:1; overflow-y:auto; color:var(--accent3); white-space:pre-wrap; word-break:break-all; }
 
-  #multi-controls { display:flex; flex-wrap:wrap; gap:8px; padding:10px 14px; background:var(--panel);
-    border:1px solid var(--border); border-radius:8px; flex-shrink:0; }
-  .multi-toggle { padding:5px 12px; border-radius:4px; border:1px solid; cursor:pointer;
-    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:700; letter-spacing:1px;
-    transition:opacity .2s; opacity:0.4; background:transparent; }
-  .multi-toggle.on { opacity:1; }
+  #multi-controls { display:flex; flex-wrap:wrap; gap:8px; padding:12px 14px; background:var(--panel);
+    border:1px solid var(--border); border-radius:var(--radius); flex-shrink:0; }
+  .multi-toggle { padding:6px 12px; border-radius:999px; border:1px solid; cursor:pointer;
+    font-family:'Rajdhani',sans-serif; font-size:11px; font-weight:700; letter-spacing:.6px;
+    transition:opacity .2s var(--ease),background .2s var(--ease); opacity:0.35; background:transparent; }
+  .multi-toggle.on { opacity:1; background:rgba(255,255,255,.05); }
 
-  ::-webkit-scrollbar { width:4px; height:4px; }
-  ::-webkit-scrollbar-track { background:var(--bg1); }
-  ::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+  /* ── Sessions table ─────────────────────────────────────────────── */
+  #sessions-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; border-radius:var(--radius);
+    border:1px solid var(--border); background:var(--panel); }
+  #sessions-table { width:100%; border-collapse:collapse; font-family:'Share Tech Mono',monospace; font-size:12px; min-width:520px; }
+  #sessions-table thead tr { text-align:left; color:var(--muted); border-bottom:1px solid var(--border); }
+  #sessions-table th { padding:10px 12px; font-weight:600; }
+  #sessions-table td { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.04); }
+  #sessions-table tbody tr:hover { background:rgba(255,255,255,.02); }
 
-  @media (max-width: 900px) {
-    #overview-right { grid-template-columns:1fr 1fr; grid-template-rows:auto; }
-    #page-overview.active, #page-raceline.active { flex-direction:column; }
-    #overview-left, #raceline-info { width:auto; flex-direction:row; flex-wrap:wrap; }
-    .overview-left .stat-card { flex:1 1 140px; }
+  ::-webkit-scrollbar { width:5px; height:5px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.1); border-radius:3px; }
+
+  /* ── Responsive ─────────────────────────────────────────────────── */
+  @media (max-width: 1024px) {
+    .big-row, .chart-row { grid-template-columns:1fr 1fr !important; }
+  }
+  @media (max-width: 860px) {
+    #header { padding:0 12px; height:50px; }
+    #server-time { display:none; }
+    #header-right { gap:8px; }
+    #tabs { padding:5px 6px; }
+    .tab { padding:8px 12px; font-size:11px; }
+    .page { padding:10px; gap:10px; }
+
+    #page-raceline.active { flex-direction:column; }
+    #overview-right { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+    .mini-chart-card { min-height:130px; }
+
+    #raceline-info { width:auto; flex-direction:row; flex-wrap:wrap; }
+    #raceline-info .stat-card { flex:1 1 130px; }
+    #raceline-map { min-height:280px; }
+
+    .big-row, .chart-row { grid-template-columns:1fr !important; }
+    .dedicated-big-card { padding:16px 18px; }
+    .chart-card { min-height:200px; }
+  }
+  @media (max-width: 480px) {
+    #age-badge { display:none; }
+    .dedicated-big-card { gap:14px; padding:14px 16px; }
   }
 </style>
 </head>
@@ -154,54 +301,74 @@
   <div id="pages">
 
     <div id="page-overview" class="page active">
-      <div id="overview-left">
-        <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="ov-speed_mph">--</div><div class="stat-unit">MPH</div></div>
-        <div class="stat-card" style="--card-color:var(--battv)"><div class="stat-label">Battery</div><div class="stat-value" id="ov-batt_volt">--</div><div class="stat-unit">Volts</div></div>
-        <div class="stat-card" style="--card-color:var(--motorv)"><div class="stat-label">Motor Volt</div><div class="stat-value" id="ov-motor_volt">--</div><div class="stat-unit">Volts</div></div>
-        <div class="stat-card" style="--card-color:var(--current)"><div class="stat-label">Current</div><div class="stat-value" id="ov-current_a">--</div><div class="stat-unit">Amps</div></div>
-        <div class="stat-card" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
-        <div class="stat-card" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
-        <div class="stat-card" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
-        <div class="stat-card" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value" id="ov-roll_deg" style="font-size:18px">--</div><div class="stat-unit">°</div></div>
-        <div class="stat-card" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value" id="ov-pitch_deg" style="font-size:18px">--</div><div class="stat-unit">°</div></div>
-        <div class="stat-card" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value" id="ov-yaw_deg" style="font-size:18px">--</div><div class="stat-unit">°</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS</div><div class="stat-value" id="ov-gps" style="font-size:11px;padding-top:4px">NO FIX</div></div>
-        <div class="stat-card" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value" id="ov-link" style="font-size:14px">--</div></div>
-        <div class="stat-card" style="--card-color:#555"><div class="stat-label">Packet #</div><div class="stat-value" id="ov-seq" style="font-size:16px">0</div></div>
+      <div class="stats-bar" id="stats-bar">
+        <button class="stats-bar-toggle" id="stats-bar-toggle">
+          <span>📊 Live Numbers</span>
+          <span class="stats-bar-chevron" id="stats-bar-chevron">▲</span>
+        </button>
+        <div class="stats-row" id="overview-stats-row">
+        <div class="stats-row-inner">
+          <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="ov-speed_mph">--</div><div class="stat-unit">MPH</div></div>
+          <div class="stat-card" style="--card-color:var(--battv)"><div class="stat-label">Battery</div><div class="stat-value" id="ov-batt_volt">--</div><div class="stat-unit">Volts</div></div>
+          <div class="stat-card" style="--card-color:var(--motorv)"><div class="stat-label">Motor Volt</div><div class="stat-value" id="ov-motor_volt">--</div><div class="stat-unit">Volts</div></div>
+          <div class="stat-card" style="--card-color:var(--current)"><div class="stat-label">Current</div><div class="stat-value" id="ov-current_a">--</div><div class="stat-unit">Amps</div></div>
+          <div class="stat-card" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
+          <div class="stat-card" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
+          <div class="stat-card" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
+          <div class="stat-card" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value compact" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value compact" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value compact" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS</div><div class="stat-value tiny" id="ov-gps">NO FIX</div></div>
+          <div class="stat-card" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value compact" id="ov-link">--</div></div>
+          <div class="stat-card" style="--card-color:#64748b"><div class="stat-label">Packet #</div><div class="stat-value compact" id="ov-seq">0</div></div>
+        </div>
+        </div>
       </div>
-      <div id="overview-right">
-        <div class="mini-chart-card"><div class="mini-chart-label">SPEED (MPH)</div><canvas id="ovchart-speed_mph"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">BATTERY (V)</div><canvas id="ovchart-batt_volt"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">MOTOR VOLT (V)</div><canvas id="ovchart-motor_volt"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">CURRENT (A)</div><canvas id="ovchart-current_a"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">TEMP (°F)</div><canvas id="ovchart-temp_f"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">MOTOR RPM</div><canvas id="ovchart-motor_rpm"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">WHEEL RPM</div><canvas id="ovchart-wheel_rpm"></canvas></div>
-        <div class="mini-chart-card"><div class="mini-chart-label">RSSI (dBm)</div><canvas id="ovchart-rssi"></canvas></div>
+      <div id="overview-right-wrap">
+        <div class="section-heading">
+          Live Charts
+          <div class="customize-wrap">
+            <button id="chart-customize-btn" class="btn btn-sm">⚙ Customize</button>
+            <div id="chart-customize-panel" class="customize-panel">
+              <div id="chart-customize-list"></div>
+            </div>
+          </div>
+        </div>
+        <div id="overview-right">
+          <div class="mini-chart-card" data-metric="speed_mph"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">SPEED (MPH)</div><div class="chart-canvas-wrap"><canvas id="ovchart-speed_mph"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="batt_volt"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">BATTERY (V)</div><div class="chart-canvas-wrap"><canvas id="ovchart-batt_volt"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="motor_volt"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">MOTOR VOLT (V)</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_volt"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="current_a"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">CURRENT (A)</div><div class="chart-canvas-wrap"><canvas id="ovchart-current_a"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="temp_f"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">TEMP (°F)</div><div class="chart-canvas-wrap"><canvas id="ovchart-temp_f"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="motor_rpm"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">MOTOR RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_rpm"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="wheel_rpm"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">WHEEL RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-wheel_rpm"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="rssi"><button class="chart-hide-btn" title="Hide">✕</button><div class="mini-chart-label">RSSI (dBm)</div><div class="chart-canvas-wrap"><canvas id="ovchart-rssi"></canvas></div></div>
+          <div class="ov-empty-msg" id="overview-empty" style="display:none">All charts hidden.<button class="btn btn-sm" id="ov-empty-customize">⚙ Customize</button></div>
+        </div>
       </div>
     </div>
 
     <div id="page-speed" class="page">
       <div class="dedicated-big-card"><div><div class="dedicated-label">Current Speed</div><div class="dedicated-value" id="big-speed_mph" style="color:var(--speed)">--</div><div class="dedicated-unit">MPH</div></div></div>
-      <div class="chart-card"><canvas id="chart-speed_mph"></canvas></div>
+      <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-speed_mph"></canvas></div></div>
     </div>
 
     <div id="page-power" class="page">
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Battery</div><div class="dedicated-value" id="big-batt_volt" style="color:var(--battv);font-size:44px">--</div><div class="dedicated-unit">VOLTS</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Motor Volt</div><div class="dedicated-value" id="big-motor_volt" style="color:var(--motorv);font-size:44px">--</div><div class="dedicated-unit">VOLTS</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Current</div><div class="dedicated-value" id="big-current_a" style="color:var(--current);font-size:44px">--</div><div class="dedicated-unit">AMPS</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Battery</div><div class="dedicated-value size-md" id="big-batt_volt" style="color:var(--battv)">--</div><div class="dedicated-unit">VOLTS</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Motor Volt</div><div class="dedicated-value size-md" id="big-motor_volt" style="color:var(--motorv)">--</div><div class="dedicated-unit">VOLTS</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Current</div><div class="dedicated-value size-md" id="big-current_a" style="color:var(--current)">--</div><div class="dedicated-unit">AMPS</div></div></div>
       </div>
       <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="chart-card"><canvas id="chart-batt_volt"></canvas></div>
-        <div class="chart-card"><canvas id="chart-motor_volt"></canvas></div>
-        <div class="chart-card"><canvas id="chart-current_a"></canvas></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-batt_volt"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-motor_volt"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-current_a"></canvas></div></div>
       </div>
     </div>
 
     <div id="page-temperature" class="page">
       <div class="dedicated-big-card"><div><div class="dedicated-label">Temperature</div><div class="dedicated-value" id="big-temp_f" style="color:var(--temp)">--</div><div class="dedicated-unit">°F</div></div></div>
-      <div class="chart-card"><canvas id="chart-temp_f"></canvas></div>
+      <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-temp_f"></canvas></div></div>
     </div>
 
     <div id="page-rpm" class="page">
@@ -210,60 +377,60 @@
         <div class="dedicated-big-card"><div><div class="dedicated-label">Wheel RPM</div><div class="dedicated-value" id="big-wheel_rpm" style="color:var(--wrpm)">--</div><div class="dedicated-unit">RPM</div></div></div>
       </div>
       <div class="chart-row" style="grid-template-columns:1fr 1fr">
-        <div class="chart-card"><canvas id="chart-motor_rpm"></canvas></div>
-        <div class="chart-card"><canvas id="chart-wheel_rpm"></canvas></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-motor_rpm"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-wheel_rpm"></canvas></div></div>
       </div>
     </div>
 
     <div id="page-esc" class="page">
       <div class="big-row" style="grid-template-columns:1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Mode</div><div class="dedicated-value" id="esc-mode" style="color:var(--escmode);font-size:40px">--</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">State</div><div class="dedicated-value" id="esc-state" style="color:var(--escmode);font-size:40px">--</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Mode</div><div class="dedicated-value size-sm" id="esc-mode" style="color:var(--escmode)">--</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">State</div><div class="dedicated-value size-sm" id="esc-state" style="color:var(--escmode)">--</div></div></div>
       </div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Setpoint</div><div class="dedicated-value" id="big-esc_setpoint_pct" style="color:var(--escset);font-size:44px">--</div><div class="dedicated-unit">%</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Live Output</div><div class="dedicated-value" id="big-esc_live_pct" style="color:var(--esclive);font-size:44px">--</div><div class="dedicated-unit">%</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Ramp</div><div class="dedicated-value" id="big-esc_ramp_pct" style="color:var(--escramp);font-size:44px">--</div><div class="dedicated-unit">%</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Setpoint</div><div class="dedicated-value size-md" id="big-esc_setpoint_pct" style="color:var(--escset)">--</div><div class="dedicated-unit">%</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Live Output</div><div class="dedicated-value size-md" id="big-esc_live_pct" style="color:var(--esclive)">--</div><div class="dedicated-unit">%</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Ramp</div><div class="dedicated-value size-md" id="big-esc_ramp_pct" style="color:var(--escramp)">--</div><div class="dedicated-unit">%</div></div></div>
       </div>
       <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="chart-card"><canvas id="chart-esc_setpoint_pct"></canvas></div>
-        <div class="chart-card"><canvas id="chart-esc_live_pct"></canvas></div>
-        <div class="chart-card"><canvas id="chart-esc_ramp_pct"></canvas></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-esc_setpoint_pct"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-esc_live_pct"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-esc_ramp_pct"></canvas></div></div>
       </div>
     </div>
 
     <div id="page-imu" class="page">
-      <div class="mini-chart-label" style="font-size:12px;letter-spacing:2px;color:var(--accent2)">ORIENTATION</div>
+      <div class="section-heading">Orientation</div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Roll</div><div class="dedicated-value" id="big-roll_deg" style="color:var(--roll);font-size:40px">--</div><div class="dedicated-unit">°</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value" id="big-pitch_deg" style="color:var(--pitch);font-size:40px">--</div><div class="dedicated-unit">°</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Yaw</div><div class="dedicated-value" id="big-yaw_deg" style="color:var(--yaw);font-size:40px">--</div><div class="dedicated-unit">°</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Roll</div><div class="dedicated-value size-sm" id="big-roll_deg" style="color:var(--roll)">--</div><div class="dedicated-unit">°</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value size-sm" id="big-pitch_deg" style="color:var(--pitch)">--</div><div class="dedicated-unit">°</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Yaw</div><div class="dedicated-value size-sm" id="big-yaw_deg" style="color:var(--yaw)">--</div><div class="dedicated-unit">°</div></div></div>
       </div>
       <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
-        <div class="chart-card"><canvas id="chart-roll_deg"></canvas></div>
-        <div class="chart-card"><canvas id="chart-pitch_deg"></canvas></div>
-        <div class="chart-card"><canvas id="chart-yaw_deg"></canvas></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-roll_deg"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-pitch_deg"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-yaw_deg"></canvas></div></div>
       </div>
-      <div class="mini-chart-label" style="font-size:12px;letter-spacing:2px;color:var(--accent2)">G-FORCE</div>
+      <div class="section-heading">G-Force</div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Accel</div><div class="dedicated-value" id="big-accel_g" style="color:var(--accel);font-size:40px">--</div><div class="dedicated-unit">G</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Lateral</div><div class="dedicated-value" id="big-lateral_g" style="color:var(--lateral);font-size:40px">--</div><div class="dedicated-unit">G</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Vertical</div><div class="dedicated-value" id="big-vertical_g" style="color:var(--vertical);font-size:40px">--</div><div class="dedicated-unit">G</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Accel</div><div class="dedicated-value size-sm" id="big-accel_g" style="color:var(--accel)">--</div><div class="dedicated-unit">G</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Lateral</div><div class="dedicated-value size-sm" id="big-lateral_g" style="color:var(--lateral)">--</div><div class="dedicated-unit">G</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Vertical</div><div class="dedicated-value size-sm" id="big-vertical_g" style="color:var(--vertical)">--</div><div class="dedicated-unit">G</div></div></div>
       </div>
       <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
-        <div class="chart-card"><canvas id="chart-accel_g"></canvas></div>
-        <div class="chart-card"><canvas id="chart-lateral_g"></canvas></div>
-        <div class="chart-card"><canvas id="chart-vertical_g"></canvas></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-accel_g"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-lateral_g"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-vertical_g"></canvas></div></div>
       </div>
     </div>
 
     <div id="page-raceline" class="page">
       <div id="raceline-info">
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS Fix</div><div class="stat-value" id="rl-fix" style="font-size:14px">NO FIX</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Latitude</div><div class="stat-value" id="rl-lat" style="font-size:14px">--</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Longitude</div><div class="stat-value" id="rl-lon" style="font-size:14px">--</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Satellites</div><div class="stat-value" id="rl-sat" style="font-size:18px">--</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">HDOP</div><div class="stat-value" id="rl-hdop" style="font-size:18px">--</div></div>
+        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS Fix</div><div class="stat-value compact" id="rl-fix">NO FIX</div></div>
+        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Latitude</div><div class="stat-value compact" id="rl-lat">--</div></div>
+        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Longitude</div><div class="stat-value compact" id="rl-lon">--</div></div>
+        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Satellites</div><div class="stat-value compact" id="rl-sat">--</div></div>
+        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">HDOP</div><div class="stat-value compact" id="rl-hdop">--</div></div>
         <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="rl-speed">--</div><div class="stat-unit">MPH</div></div>
       </div>
       <div id="raceline-map"><canvas id="gps-canvas"></canvas></div>
@@ -275,35 +442,34 @@
         <div class="dedicated-big-card"><div><div class="dedicated-label">SNR</div><div class="dedicated-value" id="big-snr" style="color:var(--snr)">--</div><div class="dedicated-unit">dB</div></div></div>
       </div>
       <div class="chart-row" style="grid-template-columns:1fr 1fr">
-        <div class="chart-card"><canvas id="chart-rssi"></canvas></div>
-        <div class="chart-card"><canvas id="chart-snr"></canvas></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-rssi"></canvas></div></div>
+        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-snr"></canvas></div></div>
       </div>
     </div>
 
     <div id="page-multi" class="page">
       <div id="multi-controls"></div>
-      <div class="chart-card" style="flex:1;min-height:0"><canvas id="chart-multi"></canvas></div>
+      <div class="chart-card" style="flex:1;min-height:0"><div class="chart-canvas-wrap"><canvas id="chart-multi"></canvas></div></div>
     </div>
 
     <div id="page-sessions" class="page">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
-        <span style="font-size:14px;font-weight:700;letter-spacing:2px;color:var(--accent2)">📁 SESSION HISTORY</span>
-        <button id="sessions-refresh" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px">🔄 REFRESH</button>
-      </div>
+      <div class="section-heading">Session History <button id="sessions-refresh" class="btn btn-sm">🔄 Refresh</button></div>
 
-      <div id="sessions-list-wrap" style="flex:1;overflow-y:auto">
-        <table id="sessions-table" style="width:100%;border-collapse:collapse;font-family:'Share Tech Mono',monospace;font-size:12px">
-          <thead>
-            <tr style="text-align:left;color:var(--muted);border-bottom:1px solid var(--border)">
-              <th style="padding:8px">Session</th>
-              <th style="padding:8px">Started</th>
-              <th style="padding:8px">Duration</th>
-              <th style="padding:8px">Packets</th>
-              <th style="padding:8px"></th>
-            </tr>
-          </thead>
-          <tbody id="sessions-tbody"></tbody>
-        </table>
+      <div id="sessions-list-wrap" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
+        <div id="sessions-table-wrap">
+          <table id="sessions-table">
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>Started</th>
+                <th>Duration</th>
+                <th>Packets</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="sessions-tbody"></tbody>
+          </table>
+        </div>
         <div id="sessions-empty" style="display:none;padding:24px;color:var(--muted);text-align:center">
           No sessions recorded yet. Sessions are created automatically once a receiver starts forwarding data — this also requires a database to be configured (see README.md).
         </div>
@@ -313,29 +479,26 @@
       </div>
 
       <div id="session-view" style="display:none;flex-direction:column;gap:12px;flex:1;min-height:0">
-        <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
-          <span id="session-view-title" style="font-size:13px;font-weight:700;letter-spacing:1px;color:var(--accent2)"></span>
+        <div class="section-heading">
+          <span id="session-view-title"></span>
           <div style="display:flex;gap:8px">
-            <a id="session-view-export" href="#" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px;text-decoration:none">⬇ EXPORT CSV</a>
-            <button id="session-view-close" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px">✕ CLOSE</button>
+            <a id="session-view-export" href="#" class="btn btn-sm btn-good">⬇ Export CSV</a>
+            <button id="session-view-close" class="btn btn-sm">✕ Close</button>
           </div>
         </div>
         <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
-          <div class="chart-card"><div class="mini-chart-label">SPEED (MPH)</div><canvas id="session-chart-speed_mph"></canvas></div>
-          <div class="chart-card"><div class="mini-chart-label">BATTERY (V)</div><canvas id="session-chart-batt_volt"></canvas></div>
-          <div class="chart-card"><div class="mini-chart-label">CURRENT (A)</div><canvas id="session-chart-current_a"></canvas></div>
-          <div class="chart-card"><div class="mini-chart-label">MOTOR RPM</div><canvas id="session-chart-motor_rpm"></canvas></div>
-          <div class="chart-card"><div class="mini-chart-label">WHEEL RPM</div><canvas id="session-chart-wheel_rpm"></canvas></div>
-          <div class="chart-card"><div class="mini-chart-label">ESC LIVE (%)</div><canvas id="session-chart-esc_live_pct"></canvas></div>
+          <div class="chart-card"><div class="mini-chart-label">SPEED (MPH)</div><div class="chart-canvas-wrap"><canvas id="session-chart-speed_mph"></canvas></div></div>
+          <div class="chart-card"><div class="mini-chart-label">BATTERY (V)</div><div class="chart-canvas-wrap"><canvas id="session-chart-batt_volt"></canvas></div></div>
+          <div class="chart-card"><div class="mini-chart-label">CURRENT (A)</div><div class="chart-canvas-wrap"><canvas id="session-chart-current_a"></canvas></div></div>
+          <div class="chart-card"><div class="mini-chart-label">MOTOR RPM</div><div class="chart-canvas-wrap"><canvas id="session-chart-motor_rpm"></canvas></div></div>
+          <div class="chart-card"><div class="mini-chart-label">WHEEL RPM</div><div class="chart-canvas-wrap"><canvas id="session-chart-wheel_rpm"></canvas></div></div>
+          <div class="chart-card"><div class="mini-chart-label">ESC LIVE (%)</div><div class="chart-canvas-wrap"><canvas id="session-chart-esc_live_pct"></canvas></div></div>
         </div>
       </div>
     </div>
 
     <div id="page-raw" class="page">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
-        <span style="font-size:14px;font-weight:700;letter-spacing:2px;color:var(--accent2)">📡 RAW PACKETS</span>
-        <button id="raw-clear" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px">🗑 CLEAR</button>
-      </div>
+      <div class="section-heading">Raw Packets <button id="raw-clear" class="btn btn-sm">🗑 Clear</button></div>
       <div id="raw-log"></div>
     </div>
 
@@ -374,29 +537,48 @@ const MAX_POINTS = 150;   // ~30s of history at 5 Hz
 
 // ── SAFE DOM HELPERS ─────────────────────────────────────────────────────────
 function setText(id, val) { try { const el=document.getElementById(id); if(el) el.textContent=val; } catch(e) {} }
+// Same as setText, but for live telemetry readouts specifically — triggers a
+// brief glow (.value-flash) only when the displayed value actually changes,
+// giving a tangible "this is live" cue without animating text that isn't
+// changing (e.g. a parked car shouldn't visibly pulse).
+function setValueText(id, val) {
+  try {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const str = String(val);
+    if (el.textContent !== str) {
+      el.textContent = str;
+      el.classList.remove('value-flash');
+      void el.offsetWidth;   // restart the CSS animation
+      el.classList.add('value-flash');
+    }
+  } catch(e) {}
+}
 function setStyle(id, prop, val) { try { const el=document.getElementById(id); if(el) el.style[prop]=val; } catch(e) {} }
 function setClass(id, cls, on) { try { const el=document.getElementById(id); if(el) el.classList.toggle(cls, on); } catch(e) {} }
 function fv(v, dec=1) { try { return (v!=null && !Number.isNaN(v)) ? (+v).toFixed(dec) : '--'; } catch(e) { return '--'; } }
 function resolveColor(cssVar) {
   // Chart.js needs a real color string, not a CSS custom-property reference
-  try { return getComputedStyle(document.documentElement).getPropertyValue(cssVar.replace('var(','').replace(')','')).trim() || '#4a90e2'; }
-  catch(e) { return '#4a90e2'; }
+  try { return getComputedStyle(document.documentElement).getPropertyValue(cssVar.replace('var(','').replace(')','')).trim() || '#0ea5e9'; }
+  catch(e) { return '#0ea5e9'; }
 }
 
 // ── CHART HELPERS ────────────────────────────────────────────────────────────
-// x-axis is always a real wall-clock time axis now, on every chart including
-// the small overview mini-charts — it used to be hidden entirely on minis and
-// was never real time anywhere (an incrementing point-counter, not a
-// timestamp). "big" charts just get a slightly larger tick budget/font since
-// they have more horizontal room than a mini-chart card.
+// x-axis is always a real wall-clock time axis, on every chart including the
+// small overview mini-charts. "big" charts just get a slightly larger tick
+// budget/font since they have more horizontal room than a mini-chart card.
+// animation stays OFF for live data updates (industry-standard for streaming
+// charts — animating every 200ms redraw looks laggy, not smooth); the "smooth"
+// feel instead comes from the line's own tension/curve and the surrounding
+// UI's transitions.
 const BASE_OPTS = {
   responsive:true, maintainAspectRatio:false, animation:false,
   plugins:{legend:{display:false}},
   scales:{
-    x:{display:true, ticks:{color:'#8899aa',font:{size:8},maxTicksLimit:4,maxRotation:0}, grid:{color:'rgba(74,144,226,.1)'}, border:{color:'#1a3a5f'}},
-    y:{grid:{color:'rgba(74,144,226,.15)'},ticks:{color:'#8899aa',font:{size:10}},border:{color:'#1a3a5f'}}
+    x:{display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
+    y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#828a9c',font:{size:10}},border:{color:'rgba(255,255,255,.07)'}}
   },
-  elements:{point:{radius:0},line:{borderWidth:2,tension:0.3}}
+  elements:{point:{radius:0},line:{borderWidth:2,tension:0.35}}
 };
 
 function safeChart(id, colorVar, label, big=false) {
@@ -406,11 +588,11 @@ function safeChart(id, colorVar, label, big=false) {
     const color = resolveColor(colorVar);
     const opts = JSON.parse(JSON.stringify(BASE_OPTS));
     if (big) {
-      opts.scales.x.ticks={color:'#8899aa',font:{size:9},maxTicksLimit:8,maxRotation:0};
+      opts.scales.x.ticks={color:'#828a9c',font:{size:9},maxTicksLimit:8,maxRotation:0};
     }
     return new Chart(ctx, {
       type:'line',
-      data:{labels:[],datasets:[{label,data:[],borderColor:color,backgroundColor:color+'22',fill:true}]},
+      data:{labels:[],datasets:[{label,data:[],borderColor:color,backgroundColor:color+'1c',fill:true}]},
       options:opts
     });
   } catch(e) { console.warn('Chart init failed:', id, e); return null; }
@@ -431,6 +613,126 @@ OVERVIEW_MINI.forEach(k => { ovCharts[k] = safeChart('ovchart-'+k, METRICS[k].co
 
 const bigCharts = {};
 Object.keys(METRICS).forEach(k => { bigCharts[k] = safeChart('chart-'+k, METRICS[k].color, METRICS[k].label, true); });
+
+// ── STATS BAR COLLAPSE (persisted) ───────────────────────────────────────────
+// Collapsing the numbers bar changes how much vertical room the chart grid
+// below it gets, so every ovChart needs an explicit resize() afterwards —
+// same reasoning as the tab-switch resize fix: Chart.js's own ResizeObserver
+// doesn't reliably catch every "my container just changed size" case, and a
+// CSS max-height transition in particular reports intermediate sizes while
+// it's animating, which we don't want charts reacting to mid-transition.
+// setTimeout (not requestAnimationFrame) — see the tab-switch handler for why.
+const STATS_BAR_KEY = 'gp_overview_stats_collapsed';
+const statsBar = document.getElementById('stats-bar');
+const statsBarToggle = document.getElementById('stats-bar-toggle');
+const statsBarChevron = document.getElementById('stats-bar-chevron');
+
+function setStatsBarCollapsed(collapsed, persist=true) {
+  statsBar.classList.toggle('collapsed', collapsed);
+  statsBarChevron.textContent = collapsed ? '▼' : '▲';
+  statsBarToggle.querySelector('span').textContent = collapsed ? 'Show Numbers' : '📊 Live Numbers';
+  if (persist) { try { localStorage.setItem(STATS_BAR_KEY, collapsed ? '1' : '0'); } catch(e) {} }
+  // Wait for the collapse/expand transition (.3s) to finish before resizing
+  // charts against the new final height, not a mid-animation one.
+  setTimeout(() => { Object.values(ovCharts).forEach(ch => ch && ch.resize()); }, 320);
+}
+
+(function initStatsBar() {
+  let collapsed = false;
+  try { collapsed = localStorage.getItem(STATS_BAR_KEY) === '1'; } catch(e) {}
+  setStatsBarCollapsed(collapsed, false);
+})();
+
+statsBarToggle.addEventListener('click', () => setStatsBarCollapsed(!statsBar.classList.contains('collapsed')));
+
+// ── OVERVIEW CHART VISIBILITY (hide/show + persisted) ────────────────────────
+// Lets the user declutter the Overview page by hiding mini-charts they don't
+// care about right now. Purely a display toggle — hidden charts keep updating
+// in the background (cheap for 8 line charts at 5 Hz) so they're instantly
+// current again the moment they're re-shown, no "catching up" delay.
+const OV_VIS_KEY = 'gp_overview_chart_visibility';
+let ovVisible = {};
+(function loadOvVisibility() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(OV_VIS_KEY) || '{}'); } catch(e) {}
+  OVERVIEW_MINI.forEach(k => { ovVisible[k] = saved[k] !== undefined ? !!saved[k] : true; });
+})();
+
+function saveOvVisibility() {
+  try { localStorage.setItem(OV_VIS_KEY, JSON.stringify(ovVisible)); } catch(e) {}
+}
+
+function ovCard(key) { return document.querySelector(`.mini-chart-card[data-metric="${key}"]`); }
+
+function updateOvEmptyState() {
+  const anyVisible = OVERVIEW_MINI.some(k => ovVisible[k]);
+  const el = document.getElementById('overview-empty');
+  if (el) el.style.display = anyVisible ? 'none' : 'flex';
+}
+
+// Applies saved state on page load — instant, no transition (nothing to
+// animate away from on first paint).
+function applyOvVisibilityInitial() {
+  OVERVIEW_MINI.forEach(k => { if (!ovVisible[k]) { const c = ovCard(k); if (c) c.classList.add('chart-hidden'); } });
+  updateOvEmptyState();
+}
+
+// User-triggered toggle — animates the card out/in rather than snapping,
+// since this happens in direct response to a click and should feel responsive.
+function setOvVisible(key, visible) {
+  ovVisible[key] = visible;
+  saveOvVisibility();
+  const card = ovCard(key);
+  if (card) {
+    if (visible) {
+      card.classList.remove('chart-hidden');
+      requestAnimationFrame(() => card.classList.remove('chart-hiding'));
+    } else {
+      card.classList.add('chart-hiding');
+      setTimeout(() => { if (!ovVisible[key]) card.classList.add('chart-hidden'); }, 200);
+    }
+  }
+  updateOvEmptyState();
+  renderCustomizePanel();
+}
+
+function renderCustomizePanel() {
+  const list = document.getElementById('chart-customize-list');
+  if (!list) return;
+  list.innerHTML = OVERVIEW_MINI.map(k => {
+    const m = METRICS[k];
+    return `<label class="customize-row">
+      <input type="checkbox" data-key="${k}" ${ovVisible[k] ? 'checked' : ''}>
+      <span class="customize-swatch" style="background:${resolveColor(m.color)}"></span>
+      ${m.label}
+    </label>`;
+  }).join('');
+  list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => setOvVisible(cb.dataset.key, cb.checked));
+  });
+}
+
+applyOvVisibilityInitial();
+renderCustomizePanel();
+
+document.getElementById('overview-right').addEventListener('click', (e) => {
+  const btn = e.target.closest('.chart-hide-btn');
+  if (!btn) return;
+  const card = btn.closest('.mini-chart-card');
+  if (card) setOvVisible(card.dataset.metric, false);
+});
+
+function toggleCustomizePanel() {
+  document.getElementById('chart-customize-panel').classList.toggle('open');
+}
+document.getElementById('chart-customize-btn').addEventListener('click', (e) => { e.stopPropagation(); toggleCustomizePanel(); });
+document.getElementById('ov-empty-customize')?.addEventListener('click', (e) => { e.stopPropagation(); toggleCustomizePanel(); });
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('chart-customize-panel');
+  if (panel && panel.classList.contains('open') && !panel.contains(e.target) && e.target.id !== 'chart-customize-btn') {
+    panel.classList.remove('open');
+  }
+});
 
 // ── MULTI-COMPARE CHART (built from METRICS, no hand-duplicated lists) ──────
 let multiVisible = {};
@@ -458,9 +760,9 @@ try {
   const mctx = document.getElementById('chart-multi');
   const mopts = JSON.parse(JSON.stringify(BASE_OPTS));
   mopts.responsive=true; mopts.maintainAspectRatio=false;
-  mopts.scales.x={display:true,ticks:{color:'#8899aa',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(74,144,226,.1)'},border:{color:'#1a3a5f'}};
-  mopts.scales.y={display:true,min:-5,max:110,title:{display:true,text:'NORMALISED (%)',color:'#8899aa',font:{size:11}},ticks:{color:'#8899aa'},grid:{color:'rgba(74,144,226,.15)'},border:{color:'#1a3a5f'}};
-  mopts.plugins={legend:{display:true,labels:{color:'white',font:{size:10}}}};
+  mopts.scales.x={display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
+  mopts.scales.y={display:true,min:-5,max:110,title:{display:true,text:'NORMALISED (%)',color:'#828a9c',font:{size:11}},ticks:{color:'#828a9c'},grid:{color:'rgba(255,255,255,.05)'},border:{color:'rgba(255,255,255,.07)'}};
+  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10}}}};
   multiChart = new Chart(mctx,{type:'line',data:{labels:[],datasets:[]},options:mopts});
 } catch(e) { console.warn('Multi chart init failed:', e); }
 
@@ -485,9 +787,9 @@ function drawGPS() {
   if (!gpsCtx || !gpsCanvas) return;
   try {
     const w=gpsCanvas.width, h=gpsCanvas.height;
-    gpsCtx.fillStyle='#060f1a'; gpsCtx.fillRect(0,0,w,h);
+    gpsCtx.fillStyle='#070a10'; gpsCtx.fillRect(0,0,w,h);
     if (gpsTrail.length < 2) {
-      gpsCtx.fillStyle='#8899aa'; gpsCtx.font='14px Rajdhani'; gpsCtx.textAlign='center';
+      gpsCtx.fillStyle='#828a9c'; gpsCtx.font='14px Rajdhani'; gpsCtx.textAlign='center';
       gpsCtx.fillText('Waiting for GPS fix…', w/2, h/2); return;
     }
     const lats=gpsTrail.map(p=>p[0]), lons=gpsTrail.map(p=>p[1]);
@@ -500,7 +802,7 @@ function drawGPS() {
     const toY=lat=>h-pad-(lat-minLat)*sy;
     for (let i=1; i<gpsTrail.length; i++) {
       const t=i/gpsTrail.length;
-      gpsCtx.strokeStyle=`hsl(${200+t*60},80%,${40+t*30}%)`;
+      gpsCtx.strokeStyle=`hsl(${205+t*45},70%,${55+t*20}%)`;
       gpsCtx.lineWidth=2.5;
       gpsCtx.beginPath();
       gpsCtx.moveTo(toX(gpsTrail[i-1][1]),toY(gpsTrail[i-1][0]));
@@ -510,7 +812,7 @@ function drawGPS() {
     const last=gpsTrail[gpsTrail.length-1];
     gpsCtx.beginPath();
     gpsCtx.arc(toX(last[1]),toY(last[0]),5,0,Math.PI*2);
-    gpsCtx.fillStyle='#00ff88'; gpsCtx.shadowColor='#00ff88'; gpsCtx.shadowBlur=10;
+    gpsCtx.fillStyle='#10b981'; gpsCtx.shadowColor='#10b981'; gpsCtx.shadowBlur=10;
     gpsCtx.fill(); gpsCtx.shadowBlur=0;
   } catch(e) { console.warn('GPS draw error:', e); }
 }
@@ -525,6 +827,25 @@ document.querySelectorAll('.tab').forEach(t => {
       t.classList.add('active');
       activePage = t.dataset.page;
       document.getElementById('page-'+activePage).classList.add('active');
+      // Chart.js's ResizeObserver doesn't reliably fire when a chart's
+      // container goes from display:none to visible (a well-known tabbed-UI
+      // gotcha) — any chart built while its tab wasn't the active one on
+      // page load is otherwise stuck at 0×0 forever. Force every chart on
+      // the newly-active page to recompute its size now that its container
+      // actually has real dimensions. Cheap enough to just do for all of
+      // them rather than maintaining a page→chart-keys map.
+      // setTimeout, not requestAnimationFrame — rAF is paused entirely while
+      // the document isn't visible/painting, which defeats the point here in
+      // at least one real scenario (browser automation/testing tools), and
+      // buys nothing over setTimeout for an actual user (a tab can only be
+      // clicked on a page that's already visible, so there's no "wake up
+      // when visible" behavior being relied on either way).
+      setTimeout(() => {
+        Object.values(ovCharts).forEach(ch => ch && ch.resize());
+        Object.values(bigCharts).forEach(ch => ch && ch.resize());
+        if (multiChart) multiChart.resize();
+        Object.values(sessionCharts).forEach(ch => ch && ch.resize());
+      }, 0);
       if (activePage==='raceline') { resizeGPS(); drawGPS(); }
       if (activePage==='sessions') loadSessions();
     } catch(e) { console.warn('Tab switch error:', e); }
@@ -579,14 +900,14 @@ async function loadSessions() {
       const started = new Date(s.started_at);
       const ended = new Date(s.ended_at);
       const dur = fmtDuration(ended - started);
-      return `<tr style="border-bottom:1px solid rgba(26,58,95,.4)">
-        <td style="padding:8px">#${s.id}</td>
-        <td style="padding:8px">${started.toLocaleString()}</td>
-        <td style="padding:8px">${dur}</td>
-        <td style="padding:8px">${s.packet_count}</td>
-        <td style="padding:8px;text-align:right">
-          <button class="multi-toggle on" style="color:var(--accent2);border-color:var(--accent2)" onclick="viewSession(${s.id})">VIEW</button>
-          <a class="multi-toggle on" style="color:var(--accent3);border-color:var(--accent3);text-decoration:none;display:inline-block" href="/api/sessions/${s.id}/export.csv">CSV</a>
+      return `<tr>
+        <td>#${s.id}</td>
+        <td>${started.toLocaleString()}</td>
+        <td>${dur}</td>
+        <td>${s.packet_count}</td>
+        <td style="text-align:right;white-space:nowrap">
+          <button class="btn btn-sm btn-accent" onclick="viewSession(${s.id})">View</button>
+          <a class="btn btn-sm btn-good" href="/api/sessions/${s.id}/export.csv">CSV</a>
         </td>
       </tr>`;
     }).join('');
@@ -617,13 +938,13 @@ async function viewSession(id) {
       const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
       sessionCharts[k] = new Chart(ctx, {
         type:'line',
-        data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'22', fill:true, borderWidth:1.5, pointRadius:0, tension:0.25 }] },
+        data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3 }] },
         options:{
           responsive:true, maintainAspectRatio:false, animation:false,
           plugins:{legend:{display:false}},
           scales:{
-            x:{display:true, ticks:{color:'#8899aa', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(74,144,226,.1)'}, border:{color:'#1a3a5f'}},
-            y:{grid:{color:'rgba(74,144,226,.15)'}, ticks:{color:'#8899aa', font:{size:10}}, border:{color:'#1a3a5f'}}
+            x:{display:true, ticks:{color:'#828a9c', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
+            y:{grid:{color:'rgba(255,255,255,.05)'}, ticks:{color:'#828a9c', font:{size:10}}, border:{color:'rgba(255,255,255,.07)'}}
           }
         }
       });
@@ -636,7 +957,7 @@ async function viewSession(id) {
 document.getElementById('sessions-refresh').addEventListener('click', loadSessions);
 document.getElementById('session-view-close').addEventListener('click', () => {
   document.getElementById('session-view').style.display = 'none';
-  document.getElementById('sessions-list-wrap').style.display = 'block';
+  document.getElementById('sessions-list-wrap').style.display = 'flex';
 });
 
 // ── STATE / HISTORY ──────────────────────────────────────────────────────────
@@ -656,33 +977,34 @@ function applyState(d, online) {
   try {
     Object.keys(METRICS).forEach(k => {
       const v = fv(d[k], METRICS[k].dec);
-      setText('ov-'+k, v);
-      setText('big-'+k, v);
+      setValueText('ov-'+k, v);
+      setValueText('big-'+k, v);
     });
 
     const fix = gpsValid(d.flags);
     const gpsEl = document.getElementById('ov-gps');
     if (gpsEl) {
-      gpsEl.textContent = fix ? `${fv(d.latitude,4)}\n${fv(d.longitude,4)}` : 'NO FIX';
+      const gpsStr = fix ? `${fv(d.latitude,4)}\n${fv(d.longitude,4)}` : 'NO FIX';
+      if (gpsEl.textContent !== gpsStr) gpsEl.textContent = gpsStr;
       gpsEl.style.color = fix ? 'var(--accent3)' : 'var(--muted)';
     }
-    setText('rl-fix', fix ? '✅ FIXED' : '❌ NO FIX');
-    setStyle('rl-fix','color', fix ? 'var(--accent3)' : '#ff1744');
-    setText('rl-lat', fix ? fv(d.latitude,5) : '--');
-    setText('rl-lon', fix ? fv(d.longitude,5) : '--');
-    setText('rl-sat', d.satellites!=null ? d.satellites : '--');
-    setText('rl-hdop', fv(d.hdop,1));
-    setText('rl-speed', fv(d.speed_mph,1));
+    setValueText('rl-fix', fix ? '✅ FIXED' : '❌ NO FIX');
+    setStyle('rl-fix','color', fix ? 'var(--accent3)' : 'var(--danger)');
+    setValueText('rl-lat', fix ? fv(d.latitude,5) : '--');
+    setValueText('rl-lon', fix ? fv(d.longitude,5) : '--');
+    setValueText('rl-sat', d.satellites!=null ? d.satellites : '--');
+    setValueText('rl-hdop', fv(d.hdop,1));
+    setValueText('rl-speed', fv(d.speed_mph,1));
 
-    setText('ov-link', (d.rssi!=null && d.snr!=null) ? `${Math.round(d.rssi)}dBm / ${fv(d.snr,1)}dB` : '--');
-    setText('ov-seq', d.seq!=null ? d.seq : 0);
+    setValueText('ov-link', (d.rssi!=null && d.snr!=null) ? `${Math.round(d.rssi)}dBm / ${fv(d.snr,1)}dB` : '--');
+    setValueText('ov-seq', d.seq!=null ? d.seq : 0);
 
     // ESC mode/state are strings, not chartable numbers — handled separately
     // from the METRICS-driven loop above, same reason GPS fix gets special
     // treatment instead of living in METRICS.
     const escOk = escValid(d.flags);
-    setText('esc-mode',  escOk ? (d.esc_mode  || '--') : '--');
-    setText('esc-state', escOk ? (d.esc_state || '--') : '--');
+    setValueText('esc-mode',  escOk ? (d.esc_mode  || '--') : '--');
+    setValueText('esc-state', escOk ? (d.esc_state || '--') : '--');
     setStyle('esc-mode',  'color', escOk ? 'var(--escmode)' : 'var(--muted)');
     setStyle('esc-state', 'color', escOk ? 'var(--escmode)' : 'var(--muted)');
 
@@ -717,7 +1039,7 @@ function applyHistory() {
       const norm = history[k].map(v => v==null ? null : Math.max(0,Math.min(100,(v-lo)/span*100)));
       const color = resolveColor(METRICS[k].color);
       return {label:METRICS[k].label.toUpperCase(), data:norm, borderColor:color,
-              backgroundColor:color+'18', fill:false, borderWidth:1.8, pointRadius:0, tension:0.3};
+              backgroundColor:color+'14', fill:false, borderWidth:1.8, pointRadius:0, tension:0.3};
     });
     multiChart.update('none');
   } catch(e) { console.warn('applyHistory error:', e); }
@@ -739,7 +1061,6 @@ function updateConnStatus(online, ageMs) {
   setClass('conn-dot','live', !!online);
   setClass('conn-dot','stale', !online);
   setText('conn-text', online ? 'LIVE' : 'OFFLINE');
-  setClass('stale-banner-el','show', !online);
   const banner = document.getElementById('stale-banner');
   if (banner) banner.classList.toggle('show', !online);
   if (ageMs != null) setText('age-badge', online ? `${ageMs}ms ago` : 'NO SIGNAL');
