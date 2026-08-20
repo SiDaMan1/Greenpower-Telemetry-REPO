@@ -17,7 +17,10 @@ The three-part system: `greenpower_receiver` (ESP32, LoRa → USB serial) → `r
 | File | Role | May be edited? |
 |------|------|----------------|
 | `server.js` | Express app — `/api/telemetry` (POST, authenticated), `/api/latest` (GET, public), session endpoints (GET, public), serves `public/` | **Yes — primary target** |
-| `public/index.html` | Dashboard — polls `/api/latest` 5x/sec for live data, fetches session data on demand (not polled), single self-contained file (no build step) | **Yes** |
+| `public/index.html` | Dashboard — polls `/api/latest` 5x/sec for live data, fetches session data on demand (not polled), single self-contained file (no build step). Same file serves both desktop and mobile layouts via CSS media queries + a mobile-only sidebar, not a separate page — see PWA/mobile rules below | **Yes** |
+| `public/manifest.json` | PWA manifest — name, icons, `display:standalone`, theme colors | **Yes** |
+| `public/sw.js` | Minimal service worker — installability only, no caching (see rule below) | **Yes, but keep it caching-free unless offline support is a deliberate feature decision** |
+| `public/icon.svg`, `public/icon-maskable.svg` | App icons referenced by `manifest.json` — `icon-maskable.svg` has the bolt shrunk into the safe zone with a full-bleed background | **Yes** |
 | `package.json` | Dependencies (`express`, `pg`) | **Yes, if adding a real dependency** |
 | `CLAUDE.md` | This file | **Yes — update after significant changes** |
 
@@ -80,10 +83,21 @@ Adding a new field to `telemetry_packet_t` that should appear on the dashboard m
 ### Colors are CSS custom properties, resolved at chart-creation time
 Chart.js needs real color strings, not `var(--foo)` references — `resolveColor()` reads the computed CSS variable once when each chart is built. If the theme's CSS variables are ever changed dynamically (e.g. a light/dark toggle) rather than just at load time, charts built before the change won't pick up new colors without being recreated — this isn't wired up for live theme switching.
 
+### Mobile is a layout mode of the same page, not a separate build
+Below `860px` wide, a `@media` block hides the desktop `#tabs` bar and shows `.mobile-sidebar` instead (fixed-position icon rail, `56px` collapsed / `210px` expanded via a `.expanded` class toggle on click), and hides `#overview-right-wrap` (the Overview graph grid) — mobile Overview shows only the stats-bar numbers, never the charts, per an explicit design choice to keep the mobile Overview lightweight. All 12 tabs (`overview`/`speed`/`power`/`temperature`/`rpm`/`esc`/`imu`/`raceline`/`link`/`multi`/`sessions`/`raw`) are duplicated as `.mobile-tab` elements with the same `data-page` values as the desktop `.tab` elements, and the shared click handler keeps both sets' `.active` class in sync — don't add a new tab to only one of the two tab lists, or that page becomes unreachable from whichever UI mode was skipped. Selecting a mobile tab also calls `collapseMobileSidebar()` so the rail snaps back to icon-only after navigating.
+
+### No CSS `transition` on the mobile sidebar's width/label — same reason as the stats-bar collapse
+`.mobile-sidebar.expanded` and `.mobile-tab-label` change `width`/`display` instantly, with **no** `transition` property. This mirrors the earlier, deliberate fix to the Overview stats-bar collapse (`.stats-row{display:none}` instead of an animated `max-height`/`grid-template-rows`): CSS-transitioned state changes on this page have repeatedly failed to reliably reach their declared end-state, while instant class-driven toggles have not. If a future edit wants to animate the sidebar, verify the end-state actually applies (computed width, not just class presence) before trusting it — don't re-add a bare `transition:` and assume it works.
+
+### PWA installability — manifest + service worker, deliberately no offline caching
+`public/manifest.json`, `public/sw.js`, and the icon SVGs exist solely to satisfy the browser's install criteria (Chrome/Android requires a registered service worker with a `fetch` listener before firing `beforeinstallprompt`). `sw.js` intentionally never calls `event.respondWith()` — this is a live-telemetry dashboard, and caching API responses or the page shell risks silently serving stale readings, which would undermine the entire point of the tool. The install banner (`#install-banner` in `index.html`) captures `beforeinstallprompt` on Chrome/Android, UA-sniffs + checks `navigator.standalone` for iOS (which has no install-prompt API at all and needs manual "Add to Home Screen" instructions instead), and remembers a user's dismissal via the `gp_install_dismissed` localStorage key. If real offline behavior is ever wanted, that's a deliberate feature to design (e.g. an explicit "stale/offline" state), not something to fall into by adding a cache to `sw.js`.
+
 ---
 
-## Current State (V3 — persistent sessions added)
+## Current State (V3.1 — mobile PWA + sidebar nav added)
 
+- **Mobile layout added**: below `860px` width, `.mobile-sidebar` (icon rail, tap to expand) replaces the desktop `#tabs` bar and the Overview page's graph grid (`#overview-right-wrap`) is hidden — stats-bar numbers only. Desktop layout (≥860px) is unchanged. Same `index.html`, no separate build/route.
+- **Installable as a PWA**: `public/manifest.json` + `public/sw.js` (no caching, installability only) + `public/icon.svg`/`icon-maskable.svg`, plus an in-page install banner (`beforeinstallprompt` on Chrome/Android, manual instructions via UA-sniff on iOS)
 - Live path unchanged: in-memory `latest`/`lastUpdateMs`, `STALE_MS = 2000` (tuned for the 5 Hz cadence — ~10 missed packets before flagging offline)
 - **Persistent path added**: optional Postgres (`DATABASE_URL`, a Railway plugin — not configured by default, degrades gracefully without it) storing every packet as JSONB, auto-grouped into sessions on a 60s gap (`SESSION_GAP_MS`)
 - New endpoints: `GET /api/sessions`, `GET /api/sessions/:id/points`, `GET /api/sessions/:id/export.csv` — all public reads, same reasoning as `/api/latest` (nothing sensitive in a telemetry reading)

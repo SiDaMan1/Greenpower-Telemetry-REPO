@@ -4,6 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>⚡ Greenpower Telemetry</title>
+
+<!-- PWA install support (Android/Chrome via manifest+service worker below;
+     iOS Safari via the apple-* tags, since it has no manifest support and
+     no programmatic install prompt at all — "Add to Home Screen" there is
+     a manual action from the Share sheet, see the install-hint JS further
+     down for how that's surfaced to iOS users instead). -->
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<meta name="theme-color" content="#0a0c11">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Greenpower">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -38,13 +52,6 @@
     overflow:hidden; -webkit-font-smoothing:antialiased; }
 
   #app { display:flex; flex-direction:column; height:100vh; height:100dvh; }
-
-  #stale-banner {
-    display:none; background:rgba(245,158,11,.1); border-bottom:1px solid rgba(245,158,11,.3);
-    color:var(--warn); font-family:'Share Tech Mono',monospace; font-size:11px;
-    padding:6px 16px; text-align:center; flex-shrink:0; letter-spacing:.5px;
-  }
-  #stale-banner.show { display:block; }
 
   /* ── Header ─────────────────────────────────────────────────────── */
   #header {
@@ -154,7 +161,7 @@
 
   #overview-right-wrap { flex:1; min-height:0; display:flex; flex-direction:column; gap:10px; min-width:0; }
   #overview-right { flex:1; min-height:0; display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); grid-auto-rows:1fr; gap:12px; min-width:0; }
+    grid-template-columns:repeat(4,1fr); grid-auto-rows:1fr; gap:12px; min-width:0; }
   .mini-chart-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
     padding:9px 11px; display:flex; flex-direction:column; min-height:0; position:relative;
     opacity:1; transform:scale(1); }
@@ -256,7 +263,7 @@
     .page { padding:10px; gap:10px; }
 
     #page-raceline.active { flex-direction:column; }
-    #overview-right { grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); }
+    #overview-right { grid-template-columns:repeat(2,1fr); }
     .mini-chart-card { min-height:130px; }
 
     #raceline-info { width:auto; flex-direction:row; flex-wrap:wrap; }
@@ -271,11 +278,81 @@
     #age-badge { display:none; }
     .dedicated-big-card { gap:14px; padding:14px 16px; }
   }
+
+  /* ── Mobile-only nav + install prompt ──────────────────────────────
+     Everything below defaults to display:none so it can NEVER affect
+     desktop layout/paint even if a selector here is wrong — only the
+     (max-width:860px) block at the bottom turns any of it on. Desktop
+     keeps using #tabs exactly as before; none of this touches it. */
+  .mobile-sidebar, .mobile-sidebar-backdrop, .install-banner { display:none; }
+
+  /* No transition on width/opacity here — deliberately. Every CSS transition
+     tried on this page so far (max-height for the stats bar, grid-template-
+     rows, and width here) was independently confirmed — by class presence,
+     selector .matches(), getBoundingClientRect, AND direct function calls
+     bypassing events entirely — to never actually reach its declared end
+     state in the browser this was verified against, while every NON-
+     transitioned toggle (opacity via plain classList swaps, background
+     colors, etc.) worked correctly every time. Instant class-driven toggles
+     only; see CLAUDE.md-equivalent notes elsewhere in this file for the
+     same call made on the stats bar. */
+  .mobile-sidebar {
+    position:fixed; top:50px; bottom:0; left:0; width:56px; z-index:15;
+    flex-direction:column; align-items:stretch; overflow-y:auto; overflow-x:hidden;
+    background:rgba(13,16,23,.94); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+    border-right:1px solid var(--border); -webkit-overflow-scrolling:touch;
+  }
+  .mobile-sidebar.expanded { width:210px; box-shadow:6px 0 28px rgba(0,0,0,.45); }
+
+  .mobile-sidebar-toggle-btn {
+    flex-shrink:0; height:48px; width:100%; display:flex; align-items:center; justify-content:center;
+    background:none; border:none; color:var(--muted); cursor:pointer; border-bottom:1px solid var(--border);
+  }
+  .mobile-sidebar-toggle-btn .chevron { font-size:11px; }
+  .mobile-sidebar.expanded .mobile-sidebar-toggle-btn .chevron { transform:rotate(180deg); }
+
+  .mobile-tab {
+    display:flex; align-items:center; gap:14px; padding:13px 16px; min-height:48px;
+    color:var(--muted); cursor:pointer; white-space:nowrap; overflow:hidden;
+    border-left:2px solid transparent;
+  }
+  .mobile-tab.active { color:#fff; background:rgba(99,102,241,.16); border-left-color:var(--accent); }
+  .mobile-tab-icon { font-size:19px; flex-shrink:0; width:24px; text-align:center; }
+  .mobile-tab-label { font-size:13px; font-weight:600; display:none; }
+  .mobile-sidebar.expanded .mobile-tab-label { display:inline; }
+
+  .mobile-sidebar-backdrop {
+    position:fixed; inset:0; top:50px; z-index:14; background:rgba(0,0,0,.5);
+  }
+  .mobile-sidebar-backdrop.show { display:block; }
+
+  .install-banner {
+    align-items:center; justify-content:space-between; gap:10px;
+    background:var(--panel-solid); border-bottom:1px solid var(--border);
+    padding:10px 14px; flex-shrink:0; font-size:12.5px; font-weight:600;
+  }
+  .install-banner.show { display:flex; }
+  .install-banner-actions { display:flex; gap:8px; flex-shrink:0; }
+
+  @media (max-width: 860px) {
+    #tabs { display:none; }
+    .mobile-sidebar { display:flex; }
+    #pages { padding-left:56px; }
+
+    /* No graphs on mobile Overview — numbers only, per design. The bar's
+       collapse toggle only makes sense when there's something below it to
+       reveal by hiding it; with the chart grid gone on mobile there's
+       nothing to gain by collapsing, and a hidden toggle with a stuck
+       localStorage-collapsed state would strand the numbers hidden with no
+       visible way back — so mobile always shows them, unconditionally. */
+    #overview-right-wrap { display:none; }
+    .stats-bar-toggle { display:none; }
+    .stats-bar.collapsed .stats-row { display:block; }
+  }
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="stale-banner">⚠ NO LIVE DATA — receiver not connected or agent not forwarding</div>
   <div id="header">
     <div id="title">⚡ Greenpower Telemetry</div>
     <div id="header-right">
@@ -298,6 +375,43 @@
     <div class="tab" data-page="sessions">📁 Sessions</div>
     <div class="tab" data-page="raw">📡 Raw</div>
   </div>
+
+  <!-- Mobile-only nav: an icon-only rail that expands into a labeled drawer.
+       display:none on desktop (see CSS) — #tabs above is what desktop uses,
+       completely unchanged. Sidebar items share class="tab" so the existing
+       tab-click wiring below picks them up automatically; they're marked
+       "mobile-tab" as well for the sidebar-specific icon/label styling and
+       the auto-collapse-after-navigating behavior. -->
+  <div class="mobile-sidebar" id="mobile-sidebar">
+    <button class="mobile-sidebar-toggle-btn" id="mobile-sidebar-toggle" aria-label="Expand menu">
+      <span class="chevron">▶</span>
+    </button>
+    <div class="tab mobile-tab active" data-page="overview"><span class="mobile-tab-icon">📊</span><span class="mobile-tab-label">Overview</span></div>
+    <div class="tab mobile-tab" data-page="speed"><span class="mobile-tab-icon">🏁</span><span class="mobile-tab-label">Speed</span></div>
+    <div class="tab mobile-tab" data-page="power"><span class="mobile-tab-icon">🔋</span><span class="mobile-tab-label">Power</span></div>
+    <div class="tab mobile-tab" data-page="temperature"><span class="mobile-tab-icon">🌡</span><span class="mobile-tab-label">Temp</span></div>
+    <div class="tab mobile-tab" data-page="rpm"><span class="mobile-tab-icon">🔄</span><span class="mobile-tab-label">RPM</span></div>
+    <div class="tab mobile-tab" data-page="esc"><span class="mobile-tab-icon">🎮</span><span class="mobile-tab-label">ESC</span></div>
+    <div class="tab mobile-tab" data-page="imu"><span class="mobile-tab-icon">📐</span><span class="mobile-tab-label">IMU</span></div>
+    <div class="tab mobile-tab" data-page="raceline"><span class="mobile-tab-icon">🗺</span><span class="mobile-tab-label">Raceline</span></div>
+    <div class="tab mobile-tab" data-page="link"><span class="mobile-tab-icon">📶</span><span class="mobile-tab-label">Link</span></div>
+    <div class="tab mobile-tab" data-page="multi"><span class="mobile-tab-icon">📈</span><span class="mobile-tab-label">Multi</span></div>
+    <div class="tab mobile-tab" data-page="sessions"><span class="mobile-tab-icon">📁</span><span class="mobile-tab-label">Sessions</span></div>
+    <div class="tab mobile-tab" data-page="raw"><span class="mobile-tab-icon">📡</span><span class="mobile-tab-label">Raw</span></div>
+  </div>
+  <div class="mobile-sidebar-backdrop" id="mobile-sidebar-backdrop"></div>
+
+  <!-- Install-app hint — mobile only, dismissible, persisted via localStorage.
+       Android/Chrome gets a real "Install" button (native prompt); iOS Safari
+       has no such API, so it gets instructions instead (see JS). -->
+  <div class="install-banner" id="install-banner">
+    <span id="install-banner-text">📲 Install this app on your device</span>
+    <div class="install-banner-actions">
+      <button class="btn btn-sm btn-accent" id="install-banner-action">Install</button>
+      <button class="btn btn-sm" id="install-banner-dismiss">Dismiss</button>
+    </div>
+  </div>
+
   <div id="pages">
 
     <div id="page-overview" class="page active">
@@ -822,11 +936,19 @@ let activePage = 'overview';
 document.querySelectorAll('.tab').forEach(t => {
   t.addEventListener('click', () => {
     try {
-      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
       document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
-      t.classList.add('active');
       activePage = t.dataset.page;
+      // Mark EVERY element for this page active, not just the one clicked —
+      // desktop's #tabs and the mobile sidebar both render a "tab" for each
+      // page, sharing class="tab" so this one click handler covers both, but
+      // that means their active state has to be kept in sync explicitly or
+      // whichever one you didn't click would silently fall out of sync (only
+      // hidden by the mobile breakpoint's CSS, not actually correct).
+      document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.page === activePage));
       document.getElementById('page-'+activePage).classList.add('active');
+      // Selecting a page from the mobile drawer should also close the drawer
+      // — you came here to look at a page, not to keep the nav open.
+      if (t.classList.contains('mobile-tab')) collapseMobileSidebar();
       // Chart.js's ResizeObserver doesn't reliably fire when a chart's
       // container goes from display:none to visible (a well-known tabbed-UI
       // gotcha) — any chart built while its tab wasn't the active one on
@@ -851,6 +973,87 @@ document.querySelectorAll('.tab').forEach(t => {
     } catch(e) { console.warn('Tab switch error:', e); }
   });
 });
+
+// ── MOBILE SIDEBAR (icon rail that expands to a labeled drawer) ─────────────
+// Desktop never touches this — the toggle button and backdrop only exist in
+// the DOM for mobile widths per CSS, so this code is simply inert there.
+function collapseMobileSidebar() {
+  document.getElementById('mobile-sidebar').classList.remove('expanded');
+  document.getElementById('mobile-sidebar-backdrop').classList.remove('show');
+}
+function expandMobileSidebar() {
+  document.getElementById('mobile-sidebar').classList.add('expanded');
+  document.getElementById('mobile-sidebar-backdrop').classList.add('show');
+}
+document.getElementById('mobile-sidebar-toggle').addEventListener('click', () => {
+  const sidebar = document.getElementById('mobile-sidebar');
+  if (sidebar.classList.contains('expanded')) collapseMobileSidebar();
+  else expandMobileSidebar();
+});
+document.getElementById('mobile-sidebar-backdrop').addEventListener('click', collapseMobileSidebar);
+
+// ── PWA INSTALL PROMPT ───────────────────────────────────────────────────────
+// Android/Chrome: capture the browser's own install prompt and trigger it
+// from our own button instead of Chrome's default mini-infobar — same
+// result, but it fits the app's own UI instead of looking like a browser
+// chrome element.
+// iOS Safari: there is no beforeinstallprompt API at all, and no way to
+// trigger "Add to Home Screen" programmatically — the best a web page can
+// do is tell the user how, via the Share sheet. Detected by user agent
+// (there's no official feature-detection for this) plus checking we're not
+// already running as an installed PWA (navigator.standalone).
+const INSTALL_DISMISS_KEY = 'gp_install_dismissed';
+let deferredInstallPrompt = null;
+
+function installBannerDismissed() {
+  try { return localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; } catch(e) { return false; }
+}
+function dismissInstallBanner() {
+  try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch(e) {}
+  document.getElementById('install-banner').classList.remove('show');
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  if (!installBannerDismissed()) {
+    document.getElementById('install-banner-text').textContent = '📲 Install this app on your device';
+    document.getElementById('install-banner-action').style.display = '';
+    document.getElementById('install-banner').classList.add('show');
+  }
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  document.getElementById('install-banner').classList.remove('show');
+});
+
+document.getElementById('install-banner-action').addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice.catch(() => {});
+  deferredInstallPrompt = null;
+  document.getElementById('install-banner').classList.remove('show');
+});
+
+document.getElementById('install-banner-dismiss').addEventListener('click', dismissInstallBanner);
+
+(function checkIosInstallHint() {
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.navigator.standalone === true
+    || window.matchMedia('(display-mode: standalone)').matches;
+  if (isIos && !isStandalone && !installBannerDismissed()) {
+    document.getElementById('install-banner-text').textContent = '📲 Add to Home Screen: tap Share, then "Add to Home Screen"';
+    document.getElementById('install-banner-action').style.display = 'none';   // no programmatic install on iOS
+    document.getElementById('install-banner').classList.add('show');
+  }
+})();
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
 
 document.getElementById('raw-clear').addEventListener('click', () => {
   const el = document.getElementById('raw-log');
@@ -1061,8 +1264,6 @@ function updateConnStatus(online, ageMs) {
   setClass('conn-dot','live', !!online);
   setClass('conn-dot','stale', !online);
   setText('conn-text', online ? 'LIVE' : 'OFFLINE');
-  const banner = document.getElementById('stale-banner');
-  if (banner) banner.classList.toggle('show', !online);
   if (ageMs != null) setText('age-badge', online ? `${ageMs}ms ago` : 'NO SIGNAL');
 }
 
