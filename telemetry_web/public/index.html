@@ -148,6 +148,7 @@
     <div class="tab" data-page="raceline">🗺 Raceline</div>
     <div class="tab" data-page="link">📶 Link</div>
     <div class="tab" data-page="multi">📈 Multi</div>
+    <div class="tab" data-page="sessions">📁 Sessions</div>
     <div class="tab" data-page="raw">📡 Raw</div>
   </div>
   <div id="pages">
@@ -282,6 +283,52 @@
     <div id="page-multi" class="page">
       <div id="multi-controls"></div>
       <div class="chart-card" style="flex:1;min-height:0"><canvas id="chart-multi"></canvas></div>
+    </div>
+
+    <div id="page-sessions" class="page">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+        <span style="font-size:14px;font-weight:700;letter-spacing:2px;color:var(--accent2)">📁 SESSION HISTORY</span>
+        <button id="sessions-refresh" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px">🔄 REFRESH</button>
+      </div>
+
+      <div id="sessions-list-wrap" style="flex:1;overflow-y:auto">
+        <table id="sessions-table" style="width:100%;border-collapse:collapse;font-family:'Share Tech Mono',monospace;font-size:12px">
+          <thead>
+            <tr style="text-align:left;color:var(--muted);border-bottom:1px solid var(--border)">
+              <th style="padding:8px">Session</th>
+              <th style="padding:8px">Started</th>
+              <th style="padding:8px">Duration</th>
+              <th style="padding:8px">Packets</th>
+              <th style="padding:8px"></th>
+            </tr>
+          </thead>
+          <tbody id="sessions-tbody"></tbody>
+        </table>
+        <div id="sessions-empty" style="display:none;padding:24px;color:var(--muted);text-align:center">
+          No sessions recorded yet. Sessions are created automatically once a receiver starts forwarding data — this also requires a database to be configured (see README.md).
+        </div>
+        <div id="sessions-disabled" style="display:none;padding:24px;color:var(--warn);text-align:center">
+          Session history is unavailable — no database is configured for this deployment (DATABASE_URL not set).
+        </div>
+      </div>
+
+      <div id="session-view" style="display:none;flex-direction:column;gap:12px;flex:1;min-height:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+          <span id="session-view-title" style="font-size:13px;font-weight:700;letter-spacing:1px;color:var(--accent2)"></span>
+          <div style="display:flex;gap:8px">
+            <a id="session-view-export" href="#" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px;text-decoration:none">⬇ EXPORT CSV</a>
+            <button id="session-view-close" style="background:var(--bg2);color:white;border:1px solid var(--border);border-radius:5px;padding:5px 14px;cursor:pointer;font-family:inherit;font-size:12px">✕ CLOSE</button>
+          </div>
+        </div>
+        <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
+          <div class="chart-card"><div class="mini-chart-label">SPEED (MPH)</div><canvas id="session-chart-speed_mph"></canvas></div>
+          <div class="chart-card"><div class="mini-chart-label">BATTERY (V)</div><canvas id="session-chart-batt_volt"></canvas></div>
+          <div class="chart-card"><div class="mini-chart-label">CURRENT (A)</div><canvas id="session-chart-current_a"></canvas></div>
+          <div class="chart-card"><div class="mini-chart-label">MOTOR RPM</div><canvas id="session-chart-motor_rpm"></canvas></div>
+          <div class="chart-card"><div class="mini-chart-label">WHEEL RPM</div><canvas id="session-chart-wheel_rpm"></canvas></div>
+          <div class="chart-card"><div class="mini-chart-label">ESC LIVE (%)</div><canvas id="session-chart-esc_live_pct"></canvas></div>
+        </div>
+      </div>
     </div>
 
     <div id="page-raw" class="page">
@@ -477,6 +524,7 @@ document.querySelectorAll('.tab').forEach(t => {
       activePage = t.dataset.page;
       document.getElementById('page-'+activePage).classList.add('active');
       if (activePage==='raceline') { resizeGPS(); drawGPS(); }
+      if (activePage==='sessions') loadSessions();
     } catch(e) { console.warn('Tab switch error:', e); }
   });
 });
@@ -484,6 +532,109 @@ document.querySelectorAll('.tab').forEach(t => {
 document.getElementById('raw-clear').addEventListener('click', () => {
   const el = document.getElementById('raw-log');
   if (el) el.textContent = '';
+});
+
+// ── SESSIONS (persistent history, from Postgres via server.js) ──────────────
+// Unlike everything else on this page, session data is NOT live-polled —
+// it's fetched once when the tab is opened / refresh is clicked, and the
+// per-session charts are built once from the full dataset, not updated
+// incrementally. This is historical data, it doesn't change underneath you.
+const SESSION_CHART_KEYS = ['speed_mph','batt_volt','current_a','motor_rpm','wheel_rpm','esc_live_pct'];
+let sessionCharts = {};   // built lazily, destroyed/rebuilt each time a session is viewed
+
+function fmtDuration(ms) {
+  if (ms < 0) ms = 0;
+  const s = Math.floor(ms/1000);
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = s%60;
+  return h>0 ? `${h}h ${m}m ${sec}s` : m>0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+async function loadSessions() {
+  const tbody = document.getElementById('sessions-tbody');
+  const empty = document.getElementById('sessions-empty');
+  const disabled = document.getElementById('sessions-disabled');
+  if (!tbody) return;
+
+  try {
+    const res = await fetch('/api/sessions', { cache:'no-store' });
+    if (res.status === 503) {
+      tbody.innerHTML = '';
+      empty.style.display = 'none';
+      disabled.style.display = 'block';
+      return;
+    }
+    const sessions = await res.json();
+    disabled.style.display = 'none';
+
+    if (!sessions.length) {
+      tbody.innerHTML = '';
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+
+    tbody.innerHTML = sessions.map(s => {
+      const started = new Date(s.started_at);
+      const ended = new Date(s.ended_at);
+      const dur = fmtDuration(ended - started);
+      return `<tr style="border-bottom:1px solid rgba(26,58,95,.4)">
+        <td style="padding:8px">#${s.id}</td>
+        <td style="padding:8px">${started.toLocaleString()}</td>
+        <td style="padding:8px">${dur}</td>
+        <td style="padding:8px">${s.packet_count}</td>
+        <td style="padding:8px;text-align:right">
+          <button class="multi-toggle on" style="color:var(--accent2);border-color:var(--accent2)" onclick="viewSession(${s.id})">VIEW</button>
+          <a class="multi-toggle on" style="color:var(--accent3);border-color:var(--accent3);text-decoration:none;display:inline-block" href="/api/sessions/${s.id}/export.csv">CSV</a>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    console.warn('loadSessions error:', e);
+  }
+}
+
+async function viewSession(id) {
+  try {
+    const res = await fetch(`/api/sessions/${id}/points`, { cache:'no-store' });
+    const rows = await res.json();
+
+    document.getElementById('sessions-list-wrap').style.display = 'none';
+    document.getElementById('session-view').style.display = 'flex';
+    document.getElementById('session-view-title').textContent = `SESSION #${id} — ${rows.length} packets`;
+    document.getElementById('session-view-export').href = `/api/sessions/${id}/export.csv`;
+
+    const labels = rows.map(r => new Date(r.received_at).toLocaleTimeString());
+
+    SESSION_CHART_KEYS.forEach(k => {
+      const canvasId = 'session-chart-'+k;
+      if (sessionCharts[k]) { try { sessionCharts[k].destroy(); } catch(e) {} }
+      const ctx = document.getElementById(canvasId);
+      if (!ctx) return;
+      const metric = METRICS[k];
+      const color = resolveColor(metric ? metric.color : 'var(--accent2)');
+      const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
+      sessionCharts[k] = new Chart(ctx, {
+        type:'line',
+        data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'22', fill:true, borderWidth:1.5, pointRadius:0, tension:0.25 }] },
+        options:{
+          responsive:true, maintainAspectRatio:false, animation:false,
+          plugins:{legend:{display:false}},
+          scales:{
+            x:{display:true, ticks:{color:'#8899aa', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(74,144,226,.1)'}, border:{color:'#1a3a5f'}},
+            y:{grid:{color:'rgba(74,144,226,.15)'}, ticks:{color:'#8899aa', font:{size:10}}, border:{color:'#1a3a5f'}}
+          }
+        }
+      });
+    });
+  } catch(e) {
+    console.warn('viewSession error:', e);
+  }
+}
+
+document.getElementById('sessions-refresh').addEventListener('click', loadSessions);
+document.getElementById('session-view-close').addEventListener('click', () => {
+  document.getElementById('session-view').style.display = 'none';
+  document.getElementById('sessions-list-wrap').style.display = 'block';
 });
 
 // ── STATE / HISTORY ──────────────────────────────────────────────────────────
