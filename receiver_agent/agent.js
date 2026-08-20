@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const { SerialPort } = require('serialport');
 const notifier = require('node-notifier');
+const SysTray = require('systray').default;
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -57,9 +58,16 @@ function cleanupPidFile() {
         }
     } catch (e) { /* non-fatal — file may already be gone */ }
 }
+// tray is declared further down (after config load) but not referenced
+// until one of these fires, by which point it's already been assigned —
+// safe despite the temporal-dead-zone-looking forward reference.
+function cleanupTray() {
+    try { if (tray) tray.kill(false); } catch (e) { /* non-fatal */ }
+}
 process.on('exit', cleanupPidFile);
-process.on('SIGINT', () => { cleanupPidFile(); process.exit(); });
-process.on('SIGTERM', () => { cleanupPidFile(); process.exit(); });
+process.on('exit', cleanupTray);
+process.on('SIGINT', () => { cleanupPidFile(); cleanupTray(); process.exit(); });
+process.on('SIGTERM', () => { cleanupPidFile(); cleanupTray(); process.exit(); });
 
 // ── Config ──────────────────────────────────────────────────────────
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -95,6 +103,53 @@ const knownPorts = new Map();   // path -> 'pending' | 'ours' | 'not-ours'
 
 log('[READY] Greenpower receiver agent running — watching for USB connections...');
 log(`        Forwarding target: ${WEBSITE_URL}`);
+
+// ── System tray icon ────────────────────────────────────────────────
+// The agent runs with no console window at all (see setup.bat's hidden VBS
+// launcher) — without this, there's no visible sign the background process
+// is even alive short of opening Task Manager. A tray icon plus a one-item
+// "Stop Agent" menu gives a visible "yes, it's running" indicator and an
+// obvious, discoverable way to end it, without needing a console/taskbar
+// window. tray-icon.ico must stay a real .ico (not .png) — Windows tray
+// icons specifically expect that format; see systray's own README for why
+// the format differs per-OS.
+let tray = null;
+try {
+    const iconBase64 = fs.readFileSync(path.join(__dirname, 'tray-icon.ico')).toString('base64');
+    tray = new SysTray({
+        menu: {
+            icon: iconBase64,
+            title: 'Greenpower Receiver Agent',
+            tooltip: 'Greenpower Receiver Agent — running',
+            items: [
+                // Non-clickable status line — there's no separate "label" item
+                // type in this library, so a disabled item does that job.
+                { title: 'Greenpower Agent — Running', tooltip: '', checked: false, enabled: false },
+                { title: 'Stop Agent', tooltip: 'Stop forwarding and exit', checked: false, enabled: true },
+            ],
+        },
+        debug: false,
+        copyDir: true,
+    });
+
+    tray.onClick((action) => {
+        if (action.seq_id === 1) {
+            log('[INFO] Stop requested from tray icon — exiting.');
+            // cleanupPidFile()/cleanupTray() both already run via the
+            // process 'exit' handlers registered above — process.exit()
+            // alone is enough here, no need to duplicate that cleanup.
+            process.exit(0);
+        }
+    });
+
+    tray.onError((err) => {
+        // Non-fatal by design — losing the tray icon shouldn't take down
+        // actual telemetry forwarding, which is this agent's real job.
+        log(`[WARN] Tray icon error: ${err.message}`);
+    });
+} catch (e) {
+    log(`[WARN] Could not start tray icon (continuing without one): ${e.message}`);
+}
 
 setInterval(scanPorts, SCAN_MS);
 scanPorts();

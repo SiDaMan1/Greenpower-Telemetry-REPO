@@ -21,9 +21,10 @@ This is meant to run continuously in the background (e.g. started at login), not
 | `agent.js` | Entire agent — port scanning, device identification, prompt, forwarding | **Yes — primary target** |
 | `setup.bat` | One-time Windows setup: `npm install`, prompts for config if missing, registers hidden auto-start at login, starts it immediately | **Yes** |
 | `config.example.json` | Template for local config — copy to `config.json` and fill in real values (or let `setup.bat` do it) | **Yes, as a template** |
-| `config.json` | Real config (gitignored — contains the API key) | **User-created, not checked in** |
+| `config.json` | Real config, **now committed with real values** (the repo owner explicitly asked for this, after being told the repo is public and the key would be publicly visible — see git history) — no longer gitignored. `setup.bat`'s prompt-and-write flow only ever triggers if this file is ever deleted. | **Yes, but real credentials — coordinate before changing** |
+| `tray-icon.ico` | System tray icon (32×32, generated from the Greenpower badge logo) | **Yes, regenerate from the same source logo if it ever changes** |
 | `agent.log` | Runtime log (gitignored) — the only visibility into the agent once it's running hidden via `setup.bat` | **Generated, not checked in** |
-| `package.json` | Dependencies (`serialport`, `node-notifier`) | **Yes, if adding a real dependency** |
+| `package.json` | Dependencies (`serialport`, `node-notifier`, `systray`) | **Yes, if adding a real dependency** |
 | `CLAUDE.md` | This file | **Yes — update after significant changes** |
 
 ---
@@ -60,18 +61,28 @@ Needed for real diagnosis — a burst of identical errors within milliseconds (e
 ### `agent.log` is truncated fresh on every start, not appended forever
 By design — this agent deliberately doesn't log per-packet forwarding activity (only state changes: found/prompted/forwarding/errors), so log volume per run stays small and a fresh-per-run log is simpler than rotation. Don't add per-packet logging to `forwardLine()`'s success path — that would both spam `agent.log` and make the file grow unbounded on an agent left running for weeks.
 
+### The tray icon is a genuine npm package named `systray`, not `node-systray` or `node-systray-v2`
+Confirmed by actually installing it — `node-systray`/`node-systray-v2` are the GitHub repo/fork names (and what a lot of copy-pasted READMEs/tutorials show as the import), but the package actually published to npm is called `systray` (`npm i systray`). It's a CommonJS default export, so `require('systray').default`, not `require('systray')` directly (verified empirically — `require('systray')` returns `{ default: SysTrayClass }`). Menu items need all four fields (`title`/`tooltip`/`checked`/`enabled`) — they're non-optional in the type. `action.seq_id` in `onClick()` is the item's index in the `items` array (index 0 = the disabled "Running" status line, index 1 = "Stop Agent" here). `kill(false)` stops the tray helper process without also calling `process.exit()` itself — this agent already has its own `process.on('exit', ...)` cleanup (PID file + tray) shared by every exit path, so the click handler just calls `process.exit(0)` and lets that shared cleanup run once, rather than duplicating it inline.
+
+### Tray icon failures are non-fatal — losing the tray icon must never take down forwarding
+`new SysTray(...)` and its `onError` handler are wrapped so a tray-init failure (e.g. running on a Windows build/permission setup where the tray helper binary can't launch) only logs a `[WARN]` and continues — actual telemetry forwarding is this agent's real job and shouldn't depend on a status icon succeeding. If the tray ever needs to become load-bearing for something, that's a deliberate design change, not a refactor.
+
+### Restarting the agent is required to pick up agent.js changes — it doesn't hot-reload
+Obvious in hindsight but worth stating: a code change here (like the tray icon addition) only affects the *next* time the agent starts (re-run `setup.bat`, or `taskkill` the old `node.exe` per `agent.pid` and start it again) — an already-running instance keeps running the code it loaded at its own startup.
+
 ### `setup.bat`'s config-write block avoids delayed-expansion pitfalls on purpose
 The `set /p` + config.json write logic uses `goto`/labels instead of nesting inside an `if (...)` parenthesized block — batch expands `%VAR%` at parse time for a whole parenthesized block, so a variable set with `set /p` earlier in the *same* block reads back empty. If you touch `setup.bat`, keep variable-set-then-use sequences as separate top-level lines (or add `setlocal enabledelayedexpansion` + `!VAR!` if you reintroduce a block) rather than reintroducing this bug.
 
 ---
 
-## Current State (V1.1 — one-click setup)
+## Current State (V1.2 — tray icon added)
 
 - Windows-focused (development/testing done on Windows); other platforms untested
 - No persistent "remember this device" — every unplug/replug re-prompts
 - No retry/queue on forward failure — a failed POST to `telemetry_web` is logged and dropped, not retried
 - One-time setup is `setup.bat`: installs deps, prompts for config if missing, registers a hidden auto-start launcher in the user's Startup folder (`%APPDATA%\...\Startup\GreenpowerReceiverAgent.vbs`), and starts it immediately. After that, normal use is plug-in + one notification click — no terminal, no manual `npm start`.
 - Runs hidden (no console window) once auto-started; `agent.log` (truncated per run) is the only runtime visibility
+- **System tray icon added**: shows a Greenpower badge icon in the taskbar tray for as long as the agent process is alive (whether or not anything is currently forwarding), with a right-click menu (`Greenpower Agent — Running` status line + `Stop Agent`) — see the `systray` rules above for the exact package/API gotchas. `config.json` is now committed with real credentials (previously gitignored) at the repo owner's explicit request.
 
 ---
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>⚡ Greenpower Telemetry</title>
+<title>Greenpower Telemetry</title>
 
 <!-- PWA install support (Android/Chrome via manifest+service worker below;
      iOS Safari via the apple-* tags, since it has no manifest support and
@@ -376,12 +376,20 @@
     background:rgba(15,18,26,.94); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
     border:1px solid var(--border); box-shadow:0 10px 30px -10px rgba(0,0,0,.6);
   }
+  /* No scroll here on purpose — the bar shows a fixed, non-scrolling set
+     of the most-used tabs (marked in HTML with .mobile-navbar-tab-primary;
+     the rest of the 12 exist in the DOM for the shared click-handler/active-
+     sync wiring but are display:none inside the bar specifically), and the
+     expand button is the ONLY way to reach the rest. A scrollable bar meant
+     "the other 7 tabs" were reachable two different, inconsistent ways
+     (swipe OR the expand sheet); this makes the sheet the one real answer
+     to "where are the other tabs", with the bar itself simple and fixed. */
   .mobile-navbar-scroll {
-    flex:1; min-width:0; display:flex; align-items:stretch; gap:3px;
-    overflow-x:auto; overflow-y:hidden; scrollbar-width:none; -webkit-overflow-scrolling:touch;
+    flex:1; min-width:0; display:flex; align-items:stretch; justify-content:space-evenly;
+    overflow:hidden;
   }
-  .mobile-navbar-scroll::-webkit-scrollbar { display:none; }
-  .mobile-navbar-tab {
+  .mobile-navbar-tab { display:none; }
+  .mobile-navbar-tab.mobile-navbar-tab-primary {
     flex:0 0 auto; width:44px; margin:7px 0; display:flex; align-items:center; justify-content:center;
     color:var(--muted); cursor:pointer; border-radius:13px; background:transparent;
     transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
@@ -397,7 +405,8 @@
   }
   .mobile-navbar-expand:active { transform:scale(.88); }
   .mobile-navbar-expand.open { color:#fff; background:rgba(99,102,241,.22); }
-  .mobile-navbar-expand .icon { width:18px; height:18px; }
+  .mobile-navbar-expand .icon { width:18px; height:18px; transition:transform .25s var(--ease); }
+  .mobile-navbar-expand.open .icon { transform:rotate(90deg); }
 
   .mobile-navsheet-backdrop {
     position:fixed; inset:0; z-index:14; background:rgba(0,0,0,.45); backdrop-filter:blur(1px);
@@ -471,6 +480,17 @@
   .install-popover-logo { width:34px; height:34px; border-radius:9px; flex-shrink:0; }
   .install-popover-actions { display:flex; gap:8px; margin-top:10px; }
 
+  /* Install prompt is mobile-only, full stop — desktop Chrome/Edge also
+     support installable PWAs and can fire beforeinstallprompt there too,
+     but nothing else on this page offers a desktop "app" experience worth
+     prompting for (no mobile-only bottom nav to speak of, no touch-first
+     layout), so force it hidden above the mobile breakpoint regardless of
+     .show/localStorage state — !important because .show's own display:flex/
+     block must not win here. */
+  @media (min-width: 861px) {
+    .install-fab, .install-popover { display:none !important; }
+  }
+
   @media (max-width: 860px) {
     #tabs { display:none; }
     .mobile-navbar { display:flex; }
@@ -484,12 +504,33 @@
        visible way back — so mobile always shows them, unconditionally. */
     #overview-right-wrap { display:none; }
     .stats-bar-toggle { display:none; }
-    .stats-bar.collapsed .stats-row { grid-template-rows:1fr !important; padding:0 14px 14px !important; }
+    /* Equal 14px on every side — the desktop rule (padding:0 14px 14px) is
+       deliberately top-flush there because .stats-bar-toggle sits directly
+       above .stats-row and already provides that visual gap on its own; on
+       mobile the toggle is hidden entirely (nothing else on the page
+       provides that top gap), so without a top value here the first row of
+       cards sits flush against the bar's top edge while the other three
+       sides keep their 14px — the exact "not equal at the top" mismatch.
+       !important since .collapsed can still be true here from a value
+       saved on a previous DESKTOP session (localStorage isn't per-viewport)
+       even though mobile's own toggle to set it is hidden. */
+    .stats-row { padding:14px !important; }
+    .stats-bar.collapsed .stats-row { grid-template-rows:1fr !important; padding:14px !important; }
 
     /* Overview is numbers-only on mobile (see above) so those numbers ARE
-       the page — worth sizing them up a little from the desktop-shared
-       defaults instead of leaving them at compact desktop-card size. */
-    #page-overview .stats-row-inner .stat-card { padding:15px 16px 15px 18px; flex:1 1 150px; }
+       the page — square tiles in a fixed-column grid instead of the
+       desktop's flex-wrap of variable-width rectangles, so both the tile
+       shape and the gap between every tile (row-to-row AND column-to-
+       column) are consistent, not just left/right neighbors in one wrapped
+       row. */
+    #page-overview .stats-row-inner {
+      display:grid; grid-template-columns:repeat(3, 1fr); gap:10px;
+    }
+    #page-overview .stats-row-inner .stat-card {
+      flex:none; aspect-ratio:1/1; padding:10px;
+      display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:4px;
+    }
+    #page-overview .stat-card::before { left:50%; top:auto; bottom:6px; width:22px; height:2px; transform:translateX(-50%); }
     #page-overview .stat-label { font-size:11px; letter-spacing:1.6px; }
     #page-overview .stat-value { font-size:clamp(19px,5.4vw,25px); }
     #page-overview .stat-value.compact { font-size:clamp(15px,4.2vw,18px); }
@@ -536,12 +577,12 @@
        bar, sheet) for free. -->
   <div class="mobile-navbar" id="mobile-navbar">
     <div class="mobile-navbar-scroll" id="mobile-navbar-scroll">
-      <div class="tab mobile-navbar-tab active" data-page="overview"><span class="icon" data-icon="overview"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="speed"><span class="icon" data-icon="speed"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="power"><span class="icon" data-icon="power"></span></div>
+      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary active" data-page="overview"><span class="icon" data-icon="overview"></span></div>
+      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="speed"><span class="icon" data-icon="speed"></span></div>
+      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="power"><span class="icon" data-icon="power"></span></div>
+      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="rpm"><span class="icon" data-icon="rpm"></span></div>
+      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="esc"><span class="icon" data-icon="esc"></span></div>
       <div class="tab mobile-navbar-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="rpm"><span class="icon" data-icon="rpm"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="esc"><span class="icon" data-icon="esc"></span></div>
       <div class="tab mobile-navbar-tab" data-page="imu"><span class="icon" data-icon="imu"></span></div>
       <div class="tab mobile-navbar-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span></div>
       <div class="tab mobile-navbar-tab" data-page="link"><span class="icon" data-icon="link"></span></div>
