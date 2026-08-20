@@ -38,17 +38,18 @@
 
 // ════════════════════════════════════════════════════════════════════
 //  SHARED TELEMETRY PACKET  (binary, sender → receiver over LoRa)
-//  Both sides must include this header — 66 bytes, no padding.
+//  Both sides must include this header — 94 bytes, no padding.
 // ════════════════════════════════════════════════════════════════════
 
 
 #define PKT_FLAG_GPS_VALID  0x01
 #define PKT_FLAG_IMU_VALID  0x02
 #define PKT_FLAG_CUR_VALID  0x04
+#define PKT_FLAG_ESC_VALID  0x08   // set once a UART line has actually been parsed from the ESC
 
 
 typedef struct __attribute__((packed)) {
-    uint8_t  flags;         // bit0=GPS valid, bit1=IMU valid, bit2=current valid
+    uint8_t  flags;         // bit0=GPS valid, bit1=IMU valid, bit2=current valid, bit3=ESC valid
     float    speed_mph;
     float    latitude;
     float    longitude;
@@ -66,7 +67,12 @@ typedef struct __attribute__((packed)) {
     float    vertical_g;
     float    motor_rpm;
     float    wheel_rpm;
-} telemetry_packet_t;       // 2×uint8 + 16×float = 2 + 64 = 66 bytes
+    char     esc_mode[8];        // "ECO"/"NORMAL"/"SPORT" — ESC truncates to 7 chars + null
+    char     esc_state[8];       // "IDLE"/"REENG"/"RAMP"/"HOLD" — same truncation
+    float    esc_setpoint_pct;   // pot target, from ESC controller
+    float    esc_live_pct;       // live output %, from ESC controller
+    float    esc_ramp_pct;       // ramp/re-engage tracker %, from ESC controller
+} telemetry_packet_t;       // 2×uint8 + 16×float + 2×char[8] + 3×float = 2+64+16+12 = 94 bytes
 
 
 #endif // CONFIG_H

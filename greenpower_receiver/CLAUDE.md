@@ -6,7 +6,7 @@
 
 ## What This Project Is
 
-A pure **LoRa → USB serial relay**. It listens for `telemetry_packet_t` frames transmitted by [`greenpower_sender`](../greenpower_sender/CLAUDE.md) over the on-board SX1262 and prints each one to USB serial as it arrives. No ESP-NOW, no display, no onward transmission of any kind — this is meant to sit on a laptop/base-station desk, plugged in over USB, either read directly in a serial monitor or parsed by another program watching that port.
+A pure **LoRa → USB serial relay**. It listens for `telemetry_packet_t` frames transmitted by [`greenpower_sender`](../greenpower_sender/CLAUDE.md) over the on-board SX1262 and prints each one to USB serial as it arrives — as of V1.1, that includes real ESC data (mode/state/setpoint%/live%/ramp%), not just the sensor fields. No ESP-NOW, no display, no onward transmission of any kind — this is meant to sit on a laptop/base-station desk, plugged in over USB, either read directly in a serial monitor or parsed by another program watching that port.
 
 This is a **different device** from [`steering_wheel_display`](../steering_wheel_display/CLAUDE.md), which receives over ESP-NOW (not LoRa) and drives a physical dashboard. The two receivers serve different purposes and don't share code.
 
@@ -44,7 +44,9 @@ This is two independently-maintained copies of the same file, not a shared inclu
 This happens unconditionally at the bottom of `loop()`, including after CRC errors and other read failures — skipping it on the error paths would leave the radio in a finished-RX state that never hears another packet. Don't add an early `return` on an error branch without restarting receive first.
 
 ### Serial protocol is a contract with `receiver_agent` — don't change it silently
-Added in the V1.1 pass to support the local forwarder agent (`../receiver_agent`): a `DEVICE_ID` beacon (`GREENPOWER_RX_V1`) printed once at boot and on-demand in response to `ID?\n`, plus a `JSON:`-prefixed machine-readable line after every successfully decoded packet (exact behavior is documented in the header comment block at the top of the .ino). `receiver_agent` parses both of these — if the JSON field set changes, bump the `DEVICE_ID` version suffix and update the agent in the same change, since it means the agent's parser needs to change too.
+Added in the V1.1 pass to support the local forwarder agent (`../receiver_agent`): a `DEVICE_ID` beacon (`GREENPOWER_RX_V1`) printed once at boot and on-demand in response to `ID?\n`, plus a `JSON:`-prefixed machine-readable line after every successfully decoded packet (exact behavior is documented in the header comment block at the top of the .ino).
+
+`receiver_agent` only parses the `JSON:` line generically (`JSON.parse()` + forward the whole object, no per-field schema) — it does NOT hardcode field names, so **purely additive** JSON changes (new fields alongside all existing ones, like the ESC fields added in this same pass) don't need a `DEVICE_ID` bump. Only bump the version suffix — and update the agent's matching `DEVICE_ID` constant in the same change — for a change the agent's *handshake* itself would care about, i.e. anything that isn't purely additive to the JSON payload.
 
 ### RSSI/SNR are receiver-only diagnostics
 `radio.getRSSI()`/`radio.getSNR()` reflect this device's radio, not anything in `telemetry_packet_t` — they're printed per-packet as link-quality info, not part of the sender's data. Don't confuse the two when adding new printed fields.
@@ -54,11 +56,12 @@ Added in the V1.1 pass to support the local forwarder agent (`../receiver_agent`
 
 ---
 
-## Current State (V1)
+## Current State (V1.1)
 
 - LoRa RX only — no ESP-NOW, no display, no packet forwarding beyond USB serial
 - Interrupt-driven receive via RadioLib (`setPacketReceivedAction` + `startReceive()`), not blocking/polled
 - Prints full packet contents plus RSSI/SNR/packet count on every successful receive; CRC mismatches and other read errors are counted and logged, not silently dropped
+- `telemetry_packet_t` is now 94 bytes (was 66) — ESC fields (`esc_mode`, `esc_state`, `esc_setpoint_pct`, `esc_live_pct`, `esc_ramp_pct`, `PKT_FLAG_ESC_VALID`) added to match `greenpower_sender`'s restored ESC UART link; both the pretty dump and the `JSON:` line include them
 - Assumes a second Heltec ESP32-S3 LoRa WiFi V4 as the host board — **unconfirmed**, see Hardware section
 - Speaks a small serial protocol to `../receiver_agent`: `DEVICE_ID` beacon/handshake (`GREENPOWER_RX_V1`) + a `JSON:` line per packet
 

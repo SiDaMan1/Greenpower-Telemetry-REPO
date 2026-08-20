@@ -49,18 +49,22 @@ Since `server.js` only ever holds the single latest packet (see "No persistence"
 ### `METRICS` is the single source of truth for every telemetry field shown
 Adding a new field to `telemetry_packet_t` that should appear on the dashboard means adding one entry to the `METRICS` object in `index.html` (label, unit, color, decimals, normalization range for the Multi tab, and whether it's on by default there) — the overview mini-charts, dedicated per-metric chart pages, stat cards, and Multi-tab toggle buttons are all generated from that one object, not hand-duplicated per field. Don't add a new metric's markup by copy-pasting an existing tab's HTML; add it to `METRICS` and (if it needs its own tab rather than just showing in Overview/Multi) add the tab markup referencing the same field key so the existing JS wiring picks it up automatically (`ov-<key>`, `big-<key>`, `chart-<key>`, `ovchart-<key>` id conventions).
 
-### GPS/IMU validity comes from `flags`, not from checking for non-zero values
-`gpsValid()`/`imuValid()` read bit 0 / bit 1 of the packet's `flags` byte (matching `PKT_FLAG_GPS_VALID`/`PKT_FLAG_IMU_VALID` in the firmware's `config.h`) rather than guessing validity from whether `latitude`/`roll_deg` etc. happen to be zero — a real reading can legitimately be zero (e.g. sitting still at a roll of exactly 0°), so a zero-check would misreport a valid reading as invalid. Only push a GPS point onto the raceline trail when `gpsValid()` is true.
+### GPS/IMU/ESC validity comes from `flags`, not from checking for non-zero values
+`gpsValid()`/`imuValid()`/`escValid()` read bit 0 / bit 1 / bit 3 of the packet's `flags` byte (matching `PKT_FLAG_GPS_VALID`/`PKT_FLAG_IMU_VALID`/`PKT_FLAG_ESC_VALID` in the firmware's `config.h` — note bit 2 / `0x04` is the current-sensor flag, not ESC, easy to mix up) rather than guessing validity from whether `latitude`/`roll_deg`/`esc_setpoint_pct` etc. happen to be zero — a real reading can legitimately be zero (e.g. sitting still at a roll of exactly 0°, or the ESC's setpoint genuinely at 0%), so a zero-check would misreport a valid reading as invalid. Only push a GPS point onto the raceline trail when `gpsValid()` is true.
+
+### ESC mode/state are strings, not `METRICS` entries
+`esc_mode`/`esc_state` are handled by hand in `applyState()` (the `esc-mode`/`esc-state` elements), not added to the `METRICS` registry — `METRICS` assumes every field is a chartable number with decimals and a normalization range, which doesn't apply to a string like `"NORMAL"` or `"RAMP"`. The three numeric ESC fields (`esc_setpoint_pct`/`esc_live_pct`/`esc_ramp_pct`) *are* in `METRICS` and get the full auto-wired treatment (chart, history, Multi-tab toggle) for free. If a future string-valued field needs display, follow the mode/state pattern, not the `METRICS` pattern.
 
 ### Colors are CSS custom properties, resolved at chart-creation time
 Chart.js needs real color strings, not `var(--foo)` references — `resolveColor()` reads the computed CSS variable once when each chart is built. If the theme's CSS variables are ever changed dynamically (e.g. a light/dark toggle) rather than just at load time, charts built before the change won't pick up new colors without being recreated — this isn't wired up for live theme switching.
 
 ---
 
-## Current State (V2 — adapted from an earlier standalone dashboard)
+## Current State (V2.1)
 
 - In-memory only, no database, on the server side
-- Full tabbed dashboard (Overview, Speed, Power, Temp, RPM, IMU, Raceline, Link, Multi, Raw) — adapted from an earlier project's dashboard design, rewired for this project's actual packet fields (`speed_mph`, `batt_volt`, `motor_volt`, `current_a`, `temp_f`, `motor_rpm`, `wheel_rpm`, `roll_deg`/`pitch_deg`/`yaw_deg`, `accel_g`/`lateral_g`/`vertical_g`, `rssi`/`snr`, GPS fields) — no ESC/throttle tab, since that hardware isn't part of this build (see `greenpower_sender/CLAUDE.md`)
+- Full tabbed dashboard (Overview, Speed, Power, Temp, RPM, ESC, IMU, Raceline, Link, Multi, Raw) — adapted from an earlier project's dashboard design, rewired for this project's actual packet fields (`speed_mph`, `batt_volt`, `motor_volt`, `current_a`, `temp_f`, `motor_rpm`, `wheel_rpm`, `roll_deg`/`pitch_deg`/`yaw_deg`, `accel_g`/`lateral_g`/`vertical_g`, `rssi`/`snr`, GPS fields)
+- **ESC tab added** — `esc_mode`/`esc_state` (strings, hand-wired) plus `esc_setpoint_pct`/`esc_live_pct`/`esc_ramp_pct` (in `METRICS`, fully auto-wired) now that `greenpower_sender`'s ESC UART link is back (see its `CLAUDE.md`)
 - Single dashboard page, polling-based (200ms / 5 Hz interval, matching the sender's transmit rate), not WebSocket
 - All chart history is client-side only (see above) — no server-side history endpoint exists
 - `STALE_MS = 2000` — tuned for the 5 Hz cadence; that's already ~10 missed packets before flagging offline

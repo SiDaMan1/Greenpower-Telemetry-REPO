@@ -8,7 +8,7 @@
 
 The **real** telemetry sender for the Greenpower vehicle, currently built on a **breadboard** around a Heltec ESP32-S3 LoRa WiFi V4. It reads live sensors, prints the results to USB serial, and transmits on two radio links at once: **LoRa** (on-board SX1262, binary `telemetry_packet_t`) for a future long-range base-station receiver, and **ESP-NOW** to the steering wheel [`display_receiver`](../steering_wheel_display/CLAUDE.md) (same CSV format as [`mock_sender`](../mock_sender/CLAUDE.md), so the receiver doesn't care which sender is live).
 
-There is no ESC/UART link in this build — that was dropped in the V2 rework since the breadboard setup doesn't include the ESC controller. (The ESP-NOW payload still reserves fields for it, sent as placeholders — see below.)
+The ESC/UART link (dropped in the V2 rework, since the breadboard build didn't have the ESC controller connected at the time) is **back as of V3.1** — see [`esc controller`](../esc%20controller/CLAUDE.md), now running on an ESP32 WROOM-32. Both LoRa and ESP-NOW carry real ESC data; the ESP-NOW placeholder fallback (`"---"`, `0.0`) only kicks in if no ESC UART line has ever been parsed.
 
 ---
 
@@ -36,6 +36,8 @@ There is no `SYSTEM_INFO.md` in this folder yet.
 | Motor RPM | GPIO4 | laser-interrupt disc sensor, unbranded |
 | Wheel RPM | GPIO3 (boot-strapping pin — fine as input post-boot) | laser-interrupt disc sensor, unbranded |
 | VEXT power rail | GPIO36 (active LOW) | Heltec V4 external sensor rail |
+| ESC RX (from ESC TX) | GPIO44, Serial2 | [`esc controller`](../esc%20controller/CLAUDE.md), 115200 baud |
+| ESC TX (to ESC RX) | GPIO43, Serial2 | wired for symmetry — the ESC's firmware doesn't currently read anything back |
 
 **LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, SF7, BW125, sync word 0xF3, 22 dBm — see `config.h`.
 
@@ -57,13 +59,18 @@ The voltage-divider channels (A0/A1) can swing up to ~5V (25V max input ÷ 5:1 d
 ## Rules and Constraints
 
 ### `config.h` is shared — coordinate before changing it
-`telemetry_packet_t` (66 bytes, packed), the LoRa RF settings, and `ESPNOW_PEER_MAC` are meant to be identical on both ends of each link. No LoRa receiver exists in this repo yet, but any future one must use a byte-identical copy of `telemetry_packet_t` and matching RF settings (freq/bandwidth/SF/coding rate/sync word) or it won't decode anything. Update the size comment whenever a packet field is added, removed, or reordered.
+`telemetry_packet_t` (94 bytes, packed), the LoRa RF settings, and `ESPNOW_PEER_MAC` are meant to be identical on both ends of each link. There **is** a LoRa receiver in this repo now ([`greenpower_receiver`](../greenpower_receiver/CLAUDE.md)) and its `config.h` must be updated in the same commit as this one — they're two independently-maintained copies, not a shared include, so nothing enforces this automatically. Update the size comment whenever a packet field is added, removed, or reordered.
+
+### ESC UART link — real data as of V3.1, not placeholders
+`pollEsc()` runs every `loop()` iteration (same pattern as `pollGps()`) reading CSV lines off Serial2 from [`esc controller`](../esc%20controller/CLAUDE.md)'s `throttle_controller.ino`: `mode,state,setpointPct,livePct,rampPct`. Parsed values land in the module-level `esc` struct; `updateSensors()` copies them into `pkt.esc_*` and sets `PKT_FLAG_ESC_VALID` only once a line has actually been parsed (`esc.valid`) — don't assume the ESC fields are populated from boot, a disconnected/not-yet-booted ESC controller means the flag stays clear and `pkt.esc_*` stays zeroed.
+- `esc.mode`/`esc.state` are 8-byte buffers (`char[8]`), matching `telemetry_packet_t.esc_mode`/`esc_state` exactly — this isn't arbitrary, the ESC's own `snprintf` truncates those fields to 7 chars (`%.7s`) before sending, so 8 bytes (7 + null) is exactly enough and intentionally not more.
+- `parseEscLine()` bails out early (via early `return`) on any missing comma-separated field, leaving whatever was already in `esc.*` from the previous good line untouched — a single malformed/truncated UART line doesn't corrupt or blank out the last known good ESC state.
 
 ### ESP-NOW packet format — must match `mock_sender` and `display_receiver`
 ```
 speed_mph,batV,rpm,amps,mode,state,setpoint%,live%,ramp%
 ```
-Produced by `espNowSend()`, must stay field-for-field identical to what `mock_sender.ino` sends (see [`mock_sender/CLAUDE.md`](../mock_sender/CLAUDE.md)) and what `display_receiver`'s `parsePacket()` expects. This build has no ESC link, so `mode`/`state`/the three percent fields are sent as fixed placeholders (`"---"`, `0.0`) rather than real data — `rpm` uses the real `motor_rpm`, not a placeholder, since this sender does have real encoders.
+Produced by `espNowSend()`, must stay field-for-field identical to what `mock_sender.ino` sends (see [`mock_sender/CLAUDE.md`](../mock_sender/CLAUDE.md)) and what `display_receiver`'s `parsePacket()` expects. `mode`/`state`/the three percent fields now come from the real ESC link (`pkt.esc_*`, gated on `PKT_FLAG_ESC_VALID`) — the `"---"`/`0.0` placeholders only fire if no ESC UART line has ever been successfully parsed since boot, not as a permanent stand-in.
 
 ### ESP-NOW peer MAC — critical
 `ESPNOW_PEER_MAC` in `config.h` must match the MAC address `display_receiver` prints on boot. Currently `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` — same value used by `mock_sender`, so the two senders are interchangeable from the receiver's point of view.
@@ -120,14 +127,14 @@ VEXT power rail is enabled and given time to stabilize *before* I2C init — kee
 
 ---
 
-## Current State (V3)
+## Current State (V3.1)
 
 - Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 200 ms / 5 Hz interval
 - Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 5 Hz (`RPM_CALC_INTERVAL_MS = 200`) — everything in the pipeline runs at the same 5 Hz cadence, on purpose
 - ESP-NOW peer: `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` (steering wheel `display_receiver`)
-- ESC/UART telemetry removed (was present in V1, not part of this breadboard build) — ESP-NOW still sends placeholder ESC fields for format compatibility
+- **ESC UART telemetry restored** (Serial2, GPIO44 RX/GPIO43 TX, 115200 baud) — real mode/state/setpoint%/live%/ramp% from `esc controller`'s `throttle_controller.ino` (now on ESP32 WROOM-32), flowing through both LoRa (`telemetry_packet_t.esc_*`, `PKT_FLAG_ESC_VALID`) and ESP-NOW
 - Voltage and current sensing moved entirely to the ADS1115; the ESP32's internal ADC is no longer used for anything in this sketch (temp probe is 1-Wire digital, not analog)
-- No LoRa receiver counterpart exists in this repo yet
+- `greenpower_receiver` exists and decodes this sender's LoRa packets — `config.h` must be kept in sync with it manually (see above)
 
 ---
 

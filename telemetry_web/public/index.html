@@ -17,6 +17,7 @@
     --roll:#1abc9c; --pitch:#16a085; --yaw:#48c9b0;
     --accel:#e74c3c; --lateral:#c0392b; --vertical:#e67e22;
     --rssi:#95a5a6; --snr:#7f8c8d; --gps:#95a5a6;
+    --escset:#f39c12; --esclive:#e67e22; --escramp:#d35400; --escmode:#f1c40f;
     --text:#e8eaf0; --muted:#8899aa; --warn:#ffd700;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -142,6 +143,7 @@
     <div class="tab" data-page="power">🔋 Power</div>
     <div class="tab" data-page="temperature">🌡 Temp</div>
     <div class="tab" data-page="rpm">🔄 RPM</div>
+    <div class="tab" data-page="esc">🎮 ESC</div>
     <div class="tab" data-page="imu">📐 IMU</div>
     <div class="tab" data-page="raceline">🗺 Raceline</div>
     <div class="tab" data-page="link">📶 Link</div>
@@ -209,6 +211,23 @@
       <div class="chart-row" style="grid-template-columns:1fr 1fr">
         <div class="chart-card"><canvas id="chart-motor_rpm"></canvas></div>
         <div class="chart-card"><canvas id="chart-wheel_rpm"></canvas></div>
+      </div>
+    </div>
+
+    <div id="page-esc" class="page">
+      <div class="big-row" style="grid-template-columns:1fr 1fr">
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Mode</div><div class="dedicated-value" id="esc-mode" style="color:var(--escmode);font-size:40px">--</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">State</div><div class="dedicated-value" id="esc-state" style="color:var(--escmode);font-size:40px">--</div></div></div>
+      </div>
+      <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Setpoint</div><div class="dedicated-value" id="big-esc_setpoint_pct" style="color:var(--escset);font-size:44px">--</div><div class="dedicated-unit">%</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Live Output</div><div class="dedicated-value" id="big-esc_live_pct" style="color:var(--esclive);font-size:44px">--</div><div class="dedicated-unit">%</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Ramp</div><div class="dedicated-value" id="big-esc_ramp_pct" style="color:var(--escramp);font-size:44px">--</div><div class="dedicated-unit">%</div></div></div>
+      </div>
+      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="chart-card"><canvas id="chart-esc_setpoint_pct"></canvas></div>
+        <div class="chart-card"><canvas id="chart-esc_live_pct"></canvas></div>
+        <div class="chart-card"><canvas id="chart-esc_ramp_pct"></canvas></div>
       </div>
     </div>
 
@@ -299,6 +318,9 @@ const METRICS = {
   vertical_g: {label:'Vertical',   unit:'G',   color:'var(--vertical)',dec:3, range:[-2,4],     multiDefault:false},
   rssi:       {label:'RSSI',       unit:'dBm', color:'var(--rssi)',    dec:0, range:[-120,-30], multiDefault:false},
   snr:        {label:'SNR',        unit:'dB',  color:'var(--snr)',     dec:1, range:[-20,10],   multiDefault:false},
+  esc_setpoint_pct: {label:'ESC Setpoint', unit:'%', color:'var(--escset)',  dec:1, range:[0,100], multiDefault:false},
+  esc_live_pct:     {label:'ESC Live',     unit:'%', color:'var(--esclive)', dec:1, range:[0,100], multiDefault:true},
+  esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},
 };
 const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','rssi'];
 const MAX_POINTS = 150;   // ~30s of history at 5 Hz
@@ -475,6 +497,7 @@ const MAX_RAW_LINES = 80;
 
 function gpsValid(flags) { return !!(flags & 0x01); }
 function imuValid(flags) { return !!(flags & 0x02); }
+function escValid(flags) { return !!(flags & 0x08); }   // PKT_FLAG_ESC_VALID — bit 2 (0x04) is current-sensor valid, not ESC
 
 function applyState(d, online) {
   if (!d) return;
@@ -501,6 +524,15 @@ function applyState(d, online) {
 
     setText('ov-link', (d.rssi!=null && d.snr!=null) ? `${Math.round(d.rssi)}dBm / ${fv(d.snr,1)}dB` : '--');
     setText('ov-seq', d.seq!=null ? d.seq : 0);
+
+    // ESC mode/state are strings, not chartable numbers — handled separately
+    // from the METRICS-driven loop above, same reason GPS fix gets special
+    // treatment instead of living in METRICS.
+    const escOk = escValid(d.flags);
+    setText('esc-mode',  escOk ? (d.esc_mode  || '--') : '--');
+    setText('esc-state', escOk ? (d.esc_state || '--') : '--');
+    setStyle('esc-mode',  'color', escOk ? 'var(--escmode)' : 'var(--muted)');
+    setStyle('esc-state', 'color', escOk ? 'var(--escmode)' : 'var(--muted)');
 
     setText('age-badge', online ? 'LIVE' : 'NO SIGNAL');
   } catch(e) { console.warn('applyState error:', e); }

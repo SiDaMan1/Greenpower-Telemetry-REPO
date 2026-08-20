@@ -178,12 +178,23 @@ void loop() {
         Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
         Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
 
+        // ESC
+        if (pkt.flags & PKT_FLAG_ESC_VALID) {
+            Serial.printf("  ESC Mode  : %s\n",      pkt.esc_mode);
+            Serial.printf("  ESC State : %s\n",      pkt.esc_state);
+            Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
+            Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
+            Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);
+        } else {
+            Serial.println("  ESC       : waiting for data...");
+        }
+
         Serial.println("──────────────────────────────────────────\n");
 
         // ── Machine-readable line for host tooling (receiver_agent) ───
         // Kept as a single line, prefixed so it's trivial to filter out of
         // the human dump above with a simple startsWith("JSON:") check.
-        char json[400];
+        char json[480];
         snprintf(json, sizeof(json),
             "JSON:{"
             "\"seq\":%lu,\"rssi\":%.0f,\"snr\":%.1f,\"flags\":%u,"
@@ -192,7 +203,9 @@ void loop() {
             "\"batt_volt\":%.2f,\"motor_volt\":%.2f,\"current_a\":%.2f,"
             "\"roll_deg\":%.2f,\"pitch_deg\":%.2f,\"yaw_deg\":%.2f,"
             "\"accel_g\":%.3f,\"lateral_g\":%.3f,\"vertical_g\":%.3f,"
-            "\"motor_rpm\":%.0f,\"wheel_rpm\":%.0f"
+            "\"motor_rpm\":%.0f,\"wheel_rpm\":%.0f,"
+            "\"esc_valid\":%s,\"esc_mode\":\"%s\",\"esc_state\":\"%s\","
+            "\"esc_setpoint_pct\":%.1f,\"esc_live_pct\":%.1f,\"esc_ramp_pct\":%.1f"
             "}",
             (unsigned long)rxCount, radio.getRSSI(), radio.getSNR(), pkt.flags,
             pkt.speed_mph, pkt.latitude, pkt.longitude,
@@ -200,7 +213,10 @@ void loop() {
             pkt.batt_volt, pkt.motor_volt, pkt.current_a,
             pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg,
             pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
-            pkt.motor_rpm, pkt.wheel_rpm
+            pkt.motor_rpm, pkt.wheel_rpm,
+            (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",
+            pkt.esc_mode, pkt.esc_state,
+            pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
         );
         Serial.println(json);
 

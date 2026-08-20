@@ -4,12 +4,9 @@
 #include <Adafruit_SSD1306.h>
 
 // ─── Display ─────────────────────────────────────────────────────────────────
-// 128x64 SSD1306 — I2C remapped to TX/RX pins on Arduino Nano ESP32.
-//   SDA → RX (D0, pin 0)
-//   SCL → TX (D1, pin 1)
-// Swap the two defines below if your wires are the other way around.
-#define OLED_SDA 1   // TX pin
-#define OLED_SCL 0   // RX pin
+// 128x64 SSD1306 — I2C on the standard ESP32 WROOM-32 SDA/SCL pins.
+#define OLED_SDA 21
+#define OLED_SCL 22
 #define SCREEN_WIDTH  128
 #define SCREEN_HEIGHT 64
 #define OLED_ADDR     0x3C
@@ -21,18 +18,26 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define LEDC_FREQ_HZ  31372
 #define LEDC_RES_BITS 8       // 8-bit resolution keeps output math (0-255) the same
 
-// ─── Pins ────────────────────────────────────────────────────────────────────
-const int PWM_PIN      = 9;
-const int THROTTLE_PIN = A0;
-const int ECO_PIN      = 4;
-const int SPORT_PIN    = 5;
-const int BUTTON_PIN   = 2;
+// ─── Pins — ESP32 WROOM-32 (plain ESP32, not the Nano ESP32's S3) ────────────
+// GPIO6-11 are wired internally to the module's flash chip — never usable.
+// GPIO0/2/5/12/15 are boot-strapping pins — avoided here on purpose so a
+// switch/pot wired to the wrong state at power-on can't prevent booting.
+// THROTTLE_PIN is deliberately on an ADC1 pin (GPIO32-39): ADC2 pins stop
+// working whenever WiFi is active, so this keeps the pot readable even if
+// this board ever gets a WiFi/ESP-NOW link added later.
+const int PWM_PIN      = 25;
+const int THROTTLE_PIN = 34;   // ADC1_CH6, input-only (fine — read-only anyway)
+const int ECO_PIN      = 27;
+const int SPORT_PIN    = 14;
+const int BUTTON_PIN   = 13;
 
 // ─── UART telemetry (Serial1) ─────────────────────────────────────────────────
-// Wired to display_receiver: D10=TX → RX, D11=RX → TX, GND → GND
-// Serial1.begin() takes GPIO numbers, not Arduino pin labels.
-#define UART_TX_PIN 12   // D12
-#define UART_RX_PIN 11   // D11
+// Wired to display_receiver: TX → RX, RX → TX, GND → GND.
+// Serial1.begin() takes GPIO numbers directly on this board — there's no
+// Arduino pin-label layer like the Nano ESP32 had (no D0/D1/A0 aliases on a
+// plain "ESP32 Dev Module" board definition).
+#define UART_TX_PIN 17
+#define UART_RX_PIN 16
 static const unsigned long UART_MS = 50;   // 20 Hz — matches mock_sender rate
 
 // ─── Modes ───────────────────────────────────────────────────────────────────
@@ -203,10 +208,10 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   Serial.begin(9600);
-  Serial.println("Throttle controller ready. V22");
+  Serial.println("Throttle controller ready. V23");
 
   Serial1.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
-  Serial.println("Serial1 UART ready on D10(TX)/D11(RX)");
+  Serial.printf("Serial1 UART ready on GPIO%d(TX)/GPIO%d(RX)\n", UART_TX_PIN, UART_RX_PIN);
 
   Wire.begin(OLED_SDA, OLED_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
@@ -217,7 +222,7 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Throttle Ctrl V22");
+  display.println("Throttle Ctrl V23");
   display.display();
 
   lastTick    = millis();

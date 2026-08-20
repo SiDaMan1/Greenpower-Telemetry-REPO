@@ -15,13 +15,18 @@
 //         A3 = Vref        — YHDC HSTS016L reference (measured, not assumed)
 //    • Motor RPM         — laser-interrupt disc sensor, GPIO4 (CHANGE-edge, polarity-agnostic)
 //    • Wheel RPM         — laser-interrupt disc sensor, GPIO3 (CHANGE-edge, polarity-agnostic)
+//    • ESC controller    — UART (Serial2), GPIO44(RX)/GPIO43(TX), from
+//                          ../esc controller/throttle_controller.ino (ESP32
+//                          WROOM-32, TX=GPIO17/RX=GPIO16 on that end).
+//                          20 Hz CSV: mode,state,setpointPct,livePct,rampPct
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Transmits telemetry_packet_t every 200 ms (5 Hz)
+//           Transmits telemetry_packet_t (now includes ESC fields) every 200 ms (5 Hz)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
-//              mock_sender — see espNowSend() below. ESC fields are sent as
-//              placeholders ("---", 0) since this build has no ESC link.
+//              mock_sender — see espNowSend() below. Mode/state/percent
+//              fields now come from the real ESC link; fall back to "---"/0
+//              placeholders only if no ESC line has ever been parsed.
 //
 //  NOTE: ADS1115 must be powered from 5V, not 3.3V — the voltage-divider
 //  channels can swing up to ~5V (25V input / 5:1) and would clip against
@@ -50,6 +55,8 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <RadioLib.h>
+#include <string.h>
+#include <stdlib.h>
 #include "config.h"
 
 
@@ -74,6 +81,10 @@
 #define I2C_SCL_PIN       18
 
 #define TEMP_PROBE_PIN     6   // DS18B20 1-Wire data (needs 4.7k pull-up to VCC)
+
+#define ESC_RX_PIN        44   // ESP32 RX  ← ESC controller TX (GPIO17 on that board)
+#define ESC_TX_PIN        43   // ESP32 TX  → ESC controller RX (GPIO16 on that board) — unused by the ESC's code today, wired for symmetry
+#define ESC_BAUD      115200   // must match throttle_controller.ino's Serial1.begin()
 
 #define MOTOR_RPM_PIN      4   // laser-interrupt — motor disc (was wrongly 48 — never wired)
 #define WHEEL_RPM_PIN      3   // laser-interrupt — wheel disc (was wrongly 47 — never wired)
@@ -321,6 +332,65 @@ static void pollGps() {
 
 
 // ════════════════════════════════════════════════════════════════════
+//  ESC UART PARSER  (Serial2, from ../esc controller/throttle_controller.ino)
+//  Format: mode,state,setpointPct,livePct,rampPct
+// ════════════════════════════════════════════════════════════════════
+
+struct EscData {
+    char  mode[8];       // matches telemetry_packet_t.esc_mode size
+    char  state[8];      // matches telemetry_packet_t.esc_state size
+    float setpointPct;
+    float livePct;
+    float rampPct;
+    bool  valid;
+};
+
+static EscData esc = {};
+
+static void parseEscLine(char* line) {
+    char* tok = strtok(line, ",");
+    if (!tok) return;
+    strncpy(esc.mode, tok, sizeof(esc.mode) - 1);
+    esc.mode[sizeof(esc.mode) - 1] = '\0';
+
+    tok = strtok(nullptr, ",");
+    if (!tok) return;
+    strncpy(esc.state, tok, sizeof(esc.state) - 1);
+    esc.state[sizeof(esc.state) - 1] = '\0';
+
+    tok = strtok(nullptr, ",");
+    if (!tok) return;
+    esc.setpointPct = atof(tok);
+
+    tok = strtok(nullptr, ",");
+    if (!tok) return;
+    esc.livePct = atof(tok);
+
+    tok = strtok(nullptr, ",");
+    if (!tok) return;
+    esc.rampPct = atof(tok);
+
+    esc.valid = true;
+}
+
+static void pollEsc() {
+    static char    buf[64];
+    static uint8_t idx = 0;
+
+    while (Serial2.available()) {
+        char c = Serial2.read();
+        if (c == '\n') {
+            buf[idx] = '\0';
+            parseEscLine(buf);
+            idx = 0;
+        } else if (c != '\r' && idx < sizeof(buf) - 1) {
+            buf[idx++] = c;
+        }
+    }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
 //  SENSOR UPDATE  (called at SENSOR_INTERVAL_MS)
 // ════════════════════════════════════════════════════════════════════
 
@@ -378,6 +448,20 @@ static void updateSensors() {
     pkt.motor_rpm   = motorRpm;
     pkt.wheel_rpm   = wheelRpm;
     pkt.flags      |= PKT_FLAG_CUR_VALID;
+
+    // ESC fields — copied in from the last successfully parsed UART line
+    // (pollEsc() runs every loop() iteration, independent of this 200ms tick,
+    // so this is just picking up whatever's most recent, not triggering a read).
+    if (esc.valid) {
+        memcpy(pkt.esc_mode,  esc.mode,  sizeof(pkt.esc_mode));
+        memcpy(pkt.esc_state, esc.state, sizeof(pkt.esc_state));
+        pkt.esc_setpoint_pct = esc.setpointPct;
+        pkt.esc_live_pct     = esc.livePct;
+        pkt.esc_ramp_pct     = esc.rampPct;
+        pkt.flags           |= PKT_FLAG_ESC_VALID;
+    } else {
+        pkt.flags &= ~PKT_FLAG_ESC_VALID;
+    }
 }
 
 
@@ -403,12 +487,15 @@ static void loRaTx() {
 //  ESP-NOW TX
 //  Format: speed_mph,batV,rpm,amps,mode,state,setpoint%,live%,ramp%
 //  Same format as mock_sender, so display_receiver doesn't care which
-//  sender is live. This build has no ESC link, so the mode/state/percent
-//  fields are sent as placeholders rather than real data.
+//  sender is live. mode/state/percent fields come from the real ESC UART
+//  link when available; "---"/0 placeholders only if no ESC line has ever
+//  been parsed (PKT_FLAG_ESC_VALID not set).
 // ════════════════════════════════════════════════════════════════════
 
 static void espNowSend() {
     if (!espNowReady) return;
+
+    bool escValid = pkt.flags & PKT_FLAG_ESC_VALID;
 
     char payload[128];
     snprintf(payload, sizeof(payload),
@@ -417,8 +504,11 @@ static void espNowSend() {
         pkt.batt_volt,
         pkt.motor_rpm,
         pkt.current_a,
-        "---", "---",   // no ESC link in this build
-        0.0f, 0.0f, 0.0f
+        escValid ? pkt.esc_mode  : "---",
+        escValid ? pkt.esc_state : "---",
+        escValid ? pkt.esc_setpoint_pct : 0.0f,
+        escValid ? pkt.esc_live_pct     : 0.0f,
+        escValid ? pkt.esc_ramp_pct     : 0.0f
     );
 
     esp_err_t result = esp_now_send(PEER_MAC, (uint8_t*)payload, strlen(payload));
@@ -441,6 +531,11 @@ void setup() {
     Serial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
     Serial.printf("[OK]   GPS    Serial1  RX=%d TX=%d @ %d\n",
                   GPS_RX_PIN, GPS_TX_PIN, GPS_BAUD);
+
+    // ESC controller
+    Serial2.begin(ESC_BAUD, SERIAL_8N1, ESC_RX_PIN, ESC_TX_PIN);
+    Serial.printf("[OK]   ESC    Serial2  RX=%d TX=%d @ %d\n",
+                  ESC_RX_PIN, ESC_TX_PIN, ESC_BAUD);
 
     // Enable external sensor power rail (GPIO36, active LOW) — Heltec V4
     pinMode(VEXT_CTRL, OUTPUT);
@@ -539,8 +634,9 @@ void setup() {
 // ════════════════════════════════════════════════════════════════════
 
 void loop() {
-    // Runs every loop iteration to keep the GPS buffer drained
+    // These two run every loop iteration to keep their UART buffers drained
     pollGps();
+    pollEsc();
 
     uint32_t now = millis();
     if (now - lastSensorMs < SENSOR_INTERVAL_MS) return;
@@ -601,6 +697,17 @@ void loop() {
     Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
     Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
     Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
+
+    // ESC
+    if (pkt.flags & PKT_FLAG_ESC_VALID) {
+        Serial.printf("  ESC Mode  : %s\n",      pkt.esc_mode);
+        Serial.printf("  ESC State : %s\n",      pkt.esc_state);
+        Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
+        Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
+        Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);
+    } else {
+        Serial.println("  ESC       : waiting for data...");
+    }
 
     Serial.println("──────────────────────────────────────────\n");
 }
