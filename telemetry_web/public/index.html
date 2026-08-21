@@ -357,6 +357,61 @@
   .customize-row:hover { background:rgba(255,255,255,.04); }
   .customize-swatch { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 
+  /* ── Settings page ──────────────────────────────────────────────────
+     Cards styled like OneUI 8.5's settings list items (large rounded
+     panel, label+description on the left, control on the right) but built
+     entirely from this page's own tokens (--panel/--border/--accent/--ease)
+     rather than copying Samsung's literal colors — the ask was "fitted to
+     the website color scheme", not a literal reskin. */
+  .settings-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:16px 18px; display:flex; flex-direction:column; gap:4px; }
+  .settings-card-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }
+  .settings-card-title { font-size:14px; font-weight:700; color:var(--text); }
+  .settings-card-desc { font-size:12px; color:var(--muted); line-height:1.5; max-width:420px; }
+  .settings-card-control { flex-shrink:0; }
+  .settings-section-gap { height:2px; }
+
+  /* OneUI-style toggle switch: pill track, circular thumb, gradient fill
+     when on (matches the accent gradient already used for active tabs/
+     range buttons elsewhere on this page). A real <input type=checkbox>
+     under the hood (not a div with a click handler) so it stays keyboard-
+     and screen-reader-accessible for free. */
+  .oui-toggle { position:relative; display:inline-block; width:50px; height:30px; flex-shrink:0; cursor:pointer; }
+  .oui-toggle input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+  .oui-toggle-track { position:absolute; inset:0; border-radius:15px; background:rgba(255,255,255,.1);
+    border:1px solid var(--border); transition:background .25s var(--ease), border-color .25s var(--ease); }
+  .oui-toggle-thumb { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4);
+    transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
+  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(135deg, var(--accent), var(--accent2)); border-color:transparent; }
+  .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
+  /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
+     the thumb widens slightly toward whichever edge it's closer to
+     instead of just scaling uniformly, which reads as "being grabbed". */
+  .oui-toggle input:active ~ .oui-toggle-track .oui-toggle-thumb { width:26px; }
+  .oui-toggle input:checked:active ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(16px); }
+  .oui-toggle input:focus-visible ~ .oui-toggle-track { box-shadow:0 0 0 3px rgba(99,102,241,.35); }
+
+  /* OneUI-style slider: thin filled track (accent up to the thumb, dim
+     past it — computed live via a --fill custom property from JS, since
+     a plain <input type=range> can't do a two-tone track from CSS alone)
+     with a larger circular thumb than the browser default. */
+  .oui-slider-row { display:flex; align-items:center; gap:12px; }
+  .oui-slider { -webkit-appearance:none; appearance:none; flex:1; height:6px; border-radius:3px; outline:none;
+    background:linear-gradient(to right, var(--accent) var(--fill,0%), var(--accent2) var(--fill,0%), rgba(255,255,255,.1) var(--fill,0%));
+    cursor:pointer; }
+  .oui-slider::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 5px rgba(99,102,241,.16);
+    cursor:pointer; transition:box-shadow .15s var(--ease), transform .15s var(--ease); margin-top:0; }
+  .oui-slider::-webkit-slider-thumb:active { transform:scale(1.15); box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 7px rgba(99,102,241,.22); }
+  .oui-slider::-moz-range-track { height:6px; border-radius:3px; background:transparent; }
+  .oui-slider::-moz-range-progress { height:6px; border-radius:3px; background:linear-gradient(to right, var(--accent), var(--accent2)); }
+  .oui-slider::-moz-range-thumb { width:22px; height:22px; border-radius:50%; background:#fff; border:none;
+    box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 5px rgba(99,102,241,.16); cursor:pointer; }
+  .oui-slider-value { font-family:'Space Grotesk',sans-serif; font-size:14px; font-weight:700; color:var(--text);
+    min-width:20px; text-align:center; flex-shrink:0; }
+  .oui-slider-ticks { display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-top:2px; padding:0 1px; }
+
   .dedicated-big-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
     padding:18px 24px; display:flex; align-items:center; gap:20px; flex-shrink:0; }
   .dedicated-label { font-size:11px; font-weight:600; letter-spacing:1.6px; color:var(--muted); text-transform:uppercase; margin-bottom:3px; }
@@ -477,6 +532,12 @@
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
     #download-agent-btn { display:none; }
+    /* Test Mode moves into the Settings page as a toggle on mobile (same
+       reasoning as the button above — header space is tight, and Settings
+       is now the one place for "how this dashboard behaves" preferences).
+       #test-mode-btn/setTestMode() are unchanged and still drive it; the
+       Settings toggle just calls the same function — see its JS wiring. */
+    #test-mode-btn { display:none; }
     #header-right { gap:8px; }
     #tabs { padding:5px 6px; }
     .tab { padding:8px 12px; font-size:11px; }
@@ -835,7 +896,11 @@
        shaves a bit of height off each of the 6 stacked rows without
        shrinking the tile's width/text room at all. */
     #page-overview .stats-row-inner {
-      display:grid; grid-template-columns:repeat(2, 1fr); gap:10px;
+      /* --ov-cols is a plain :root custom property, set once at load (and
+         on every change) by the Overview Boxes Per Row slider in Settings
+         — see its JS wiring. Falls back to 2 (the same default the slider
+         itself starts at) if that JS hasn't run yet for any reason. */
+      display:grid; grid-template-columns:repeat(var(--ov-cols, 2), 1fr); gap:10px;
     }
     #page-overview .stats-row-inner .stat-card {
       flex:none; aspect-ratio:4/3; padding:10px;
@@ -930,6 +995,7 @@
     <div class="tab" data-page="multi"><span class="tab-icon icon" data-icon="multi"></span>Multi</div>
     <div class="tab" data-page="sessions"><span class="tab-icon icon" data-icon="sessions"></span>Sessions</div>
     <div class="tab" data-page="raw"><span class="tab-icon icon" data-icon="raw"></span>Raw</div>
+    <div class="tab" data-page="settings"><span class="tab-icon icon" data-icon="settings"></span>Settings</div>
   </div>
 
   <!-- Mobile-only nav: a bottom bar of icon-only tab buttons (thumb-reachable),
@@ -954,6 +1020,7 @@
       <div class="tab mobile-navbar-tab" data-page="multi"><span class="icon" data-icon="multi"></span></div>
       <div class="tab mobile-navbar-tab" data-page="sessions"><span class="icon" data-icon="sessions"></span></div>
       <div class="tab mobile-navbar-tab" data-page="raw"><span class="icon" data-icon="raw"></span></div>
+      <div class="tab mobile-navbar-tab" data-page="settings"><span class="icon" data-icon="settings"></span></div>
     </div>
     <div class="mobile-navbar-divider"></div>
     <button class="mobile-navbar-expand" id="mobile-navbar-expand" aria-label="Show all tabs">
@@ -961,20 +1028,21 @@
       <span class="icon expand-icon expand-icon-x" data-icon="x"></span>
     </button>
   </div>
+  <!-- Only tabs NOT already reachable from the fixed bottom bar
+       (.mobile-navbar-tab-primary: overview/speed/power/rpm/esc) show up
+       here — the sheet used to list all 12 tabs, duplicating the 5 already
+       one tap away in the bar itself. Settings has no primary-bar slot, so
+       it always lives here. -->
   <div class="mobile-navsheet-backdrop" id="mobile-navsheet-backdrop"></div>
   <div class="mobile-navsheet" id="mobile-navsheet">
-    <div class="tab mobile-navsheet-tab active" data-page="overview"><span class="icon" data-icon="overview"></span><span class="mobile-navsheet-tab-label">Overview</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="speed"><span class="icon" data-icon="speed"></span><span class="mobile-navsheet-tab-label">Speed</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="power"><span class="icon" data-icon="power"></span><span class="mobile-navsheet-tab-label">Power</span></div>
     <div class="tab mobile-navsheet-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span><span class="mobile-navsheet-tab-label">Temp</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="rpm"><span class="icon" data-icon="rpm"></span><span class="mobile-navsheet-tab-label">RPM</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="esc"><span class="icon" data-icon="esc"></span><span class="mobile-navsheet-tab-label">ESC</span></div>
     <div class="tab mobile-navsheet-tab" data-page="imu"><span class="icon" data-icon="imu"></span><span class="mobile-navsheet-tab-label">IMU</span></div>
     <div class="tab mobile-navsheet-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span><span class="mobile-navsheet-tab-label">Raceline</span></div>
     <div class="tab mobile-navsheet-tab" data-page="link"><span class="icon" data-icon="link"></span><span class="mobile-navsheet-tab-label">Link</span></div>
     <div class="tab mobile-navsheet-tab" data-page="multi"><span class="icon" data-icon="multi"></span><span class="mobile-navsheet-tab-label">Multi</span></div>
     <div class="tab mobile-navsheet-tab" data-page="sessions"><span class="icon" data-icon="sessions"></span><span class="mobile-navsheet-tab-label">Sessions</span></div>
     <div class="tab mobile-navsheet-tab" data-page="raw"><span class="icon" data-icon="raw"></span><span class="mobile-navsheet-tab-label">Raw</span></div>
+    <div class="tab mobile-navsheet-tab" data-page="settings"><span class="icon" data-icon="settings"></span><span class="mobile-navsheet-tab-label">Settings</span></div>
   </div>
 
   <!-- Install-app prompt — small floating button, not a banner (see CSS).
@@ -1210,6 +1278,62 @@
       <div id="raw-log"></div>
     </div>
 
+    <!-- Settings — mostly a mobile-page (reached via the nav sheet's
+         Settings tab; no primary bar slot), but reachable from desktop's
+         #tabs too since none of these preferences are actually mobile-only
+         in what they control (haptics silently no-ops without vibrate()
+         support, same as everywhere else it's used). See the JS section
+         near the bottom for how each control reads/writes localStorage. -->
+    <div id="page-settings" class="page">
+      <div class="section-heading">Settings</div>
+
+      <div class="settings-card">
+        <div class="settings-card-title">Default Time Range</div>
+        <div class="settings-card-desc">Which range the live charts start on when the page loads. Reuses the same buttons shown above every chart — picking one here also applies it right away.</div>
+        <div class="range-toggle-row" data-range-slot id="settings-default-range-row" style="margin-top:6px"></div>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-row">
+          <div>
+            <div class="settings-card-title">Overview Boxes Per Row</div>
+            <div class="settings-card-desc">How many stat tiles sit side-by-side on the mobile Overview page.</div>
+          </div>
+          <div class="oui-slider-value" id="settings-ov-cols-value">2</div>
+        </div>
+        <div class="oui-slider-row" style="margin-top:10px">
+          <input type="range" class="oui-slider" id="settings-ov-cols-slider" min="2" max="4" step="1" value="2">
+        </div>
+        <div class="oui-slider-ticks"><span>2</span><span>3</span><span>4</span></div>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-row">
+          <div>
+            <div class="settings-card-title">Haptics</div>
+            <div class="settings-card-desc">Light vibration when scrubbing a chart or tapping the toolbar. Android only — silently does nothing on iOS/desktop.</div>
+          </div>
+          <label class="oui-toggle settings-card-control">
+            <input type="checkbox" id="settings-haptics-toggle" checked>
+            <span class="oui-toggle-track"><span class="oui-toggle-thumb"></span></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="settings-card">
+        <div class="settings-card-row">
+          <div>
+            <div class="settings-card-title">Test Mode</div>
+            <div class="settings-card-desc">Feed sample data through the whole dashboard for testing, no real car needed. Never touches the network.</div>
+          </div>
+          <label class="oui-toggle settings-card-control">
+            <input type="checkbox" id="settings-testmode-toggle">
+            <span class="oui-toggle-track"><span class="oui-toggle-thumb"></span></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1245,6 +1369,38 @@ const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f'
 // density below is derived from this, and mobile users essentially never
 // rotate/resize this page mid-session.
 const IS_MOBILE = window.matchMedia('(max-width:860px)').matches;
+
+// ── SETTINGS / PREFERENCES ───────────────────────────────────────────────────
+// Small localStorage-backed preferences, read once here with a safe default
+// and kept live-updatable from the Settings page (#page-settings) further
+// down in the HTML — see its markup and the wiring near the bottom of this
+// script for each control's actual event listeners.
+const HAPTICS_KEY = 'gp_haptics_enabled';
+const OV_COLS_KEY = 'gp_overview_cols';
+const DEFAULT_RANGE_STORAGE_KEY = 'gp_default_range';
+
+let hapticsEnabled = true;
+try { hapticsEnabled = localStorage.getItem(HAPTICS_KEY) !== '0'; } catch(e) {}
+
+// Single choke point for every navigator.vibrate() call on the page — chart
+// scrubbing (attachHaptics below) AND toolbar taps (wired near the mobile
+// nav sheet code) both route through this, so the Settings haptics toggle
+// actually controls both instead of just one. navigator.vibrate is
+// Android-only — silently absent (not an error) on iOS/desktop, same as
+// before this setting existed.
+function vibrate(ms) {
+  if (hapticsEnabled && navigator.vibrate) navigator.vibrate(ms);
+}
+
+// --ov-cols drives the mobile Overview stat grid's column count (see its
+// CSS rule) — a plain :root custom property so the CSS/JS split stays
+// simple (one property, read by one media-query rule).
+function applyOverviewCols(n) {
+  document.documentElement.style.setProperty('--ov-cols', n);
+}
+let overviewCols = 2;
+try { overviewCols = parseInt(localStorage.getItem(OV_COLS_KEY), 10) || 2; } catch(e) {}
+applyOverviewCols(overviewCols);
 
 // ── ICONS ─────────────────────────────────────────────────────────────────────
 // Single source of truth for every icon on the page (Feather-style: 24x24
@@ -1427,7 +1583,7 @@ function attachHaptics(opts) {
     const idx = elements[0].index;
     if (idx !== lastIdx) {
       lastIdx = idx;
-      if (navigator.vibrate) navigator.vibrate(6);
+      vibrate(6);
     }
   };
   return opts;
@@ -1850,6 +2006,22 @@ document.getElementById('mobile-navbar-expand').addEventListener('click', () => 
 });
 document.getElementById('mobile-navsheet-backdrop').addEventListener('click', closeMobileNavSheet);
 
+// Any tap on the toolbar itself (the bottom bar's primary tab icons, the
+// divider, whatever's not the expand button) should close an open sheet —
+// you tapped the bar to go somewhere or just to dismiss the menu, either
+// way the sheet floating over the page is no longer wanted. The expand
+// button is excluded here since it already fully owns its own open/close
+// toggle above; letting this listener also fire for it would just be a
+// redundant close right before/after its own toggle runs. Also doubles as
+// the "haptics on toolbar buttons" tap — one delegated listener on the
+// whole bar covers every icon in it, default range button haptics/tab
+// haptics elsewhere already route through the same vibrate() choke point.
+document.getElementById('mobile-navbar').addEventListener('click', (e) => {
+  vibrate(8);
+  if (e.target.closest('#mobile-navbar-expand')) return;
+  closeMobileNavSheet();
+});
+
 // ── PWA INSTALL PROMPT ───────────────────────────────────────────────────────
 // A small floating icon button (not a banner) — costs almost no screen space
 // until tapped, then opens a compact popover with the real action/instructions
@@ -2103,7 +2275,16 @@ const RANGE_OPTIONS = [
   { key:'30m', label:'30M', ms:30 * 60 * 1000 },
   { key:'all', label:'All', ms:null },
 ];
-const DEFAULT_RANGE_KEY = '5m';
+// Overridable via the Settings page's Default Time Range row — falls back
+// to '5m' if nothing's been saved yet, or if a saved value no longer
+// matches any current RANGE_OPTIONS key (e.g. this list changes later).
+const DEFAULT_RANGE_KEY = (() => {
+  try {
+    const saved = localStorage.getItem(DEFAULT_RANGE_STORAGE_KEY);
+    if (saved && RANGE_OPTIONS.some(r => r.key === saved)) return saved;
+  } catch(e) {}
+  return '5m';
+})();
 let currentRangeKey = DEFAULT_RANGE_KEY;
 let currentRangeMs = RANGE_OPTIONS.find(r => r.key === DEFAULT_RANGE_KEY).ms;
 // A chart never shows less than this, even the instant the very first
@@ -2453,6 +2634,12 @@ function testModeTick() {
 function setTestMode(on) {
   testModeActive = on;
   document.getElementById('test-mode-btn').classList.toggle('active', on);
+  // Keep the Settings-page toggle in sync too — it's a second control for
+  // the exact same state (header button on desktop, Settings toggle on
+  // mobile where the header button is hidden), so either one flipping it
+  // needs to visually update the other.
+  const settingsToggle = document.getElementById('settings-testmode-toggle');
+  if (settingsToggle) settingsToggle.checked = on;
   if (testModeTimer) { clearInterval(testModeTimer); testModeTimer = null; }
   if (on) {
     testModeTimer = setInterval(testModeTick, 200);
@@ -2466,6 +2653,61 @@ function setTestMode(on) {
 }
 
 document.getElementById('test-mode-btn').addEventListener('click', () => setTestMode(!testModeActive));
+
+// ── SETTINGS PAGE WIRING ─────────────────────────────────────────────────────
+// Default Time Range: the row is a real [data-range-slot] container, so
+// renderRangeToggles() already keeps its buttons/active-state in sync with
+// every other range row on the page for free (see that function + the
+// shared document click delegate above it, both defined earlier). This
+// listener adds ONE extra thing on top, scoped to just this row: actually
+// persisting the choice as the new default for next page load. Every other
+// range-toggle-row on the page intentionally does NOT do this — clicking
+// the range buttons above a chart changes what's on screen right now, not
+// what the page starts on next time.
+document.getElementById('settings-default-range-row').addEventListener('click', (e) => {
+  const btn = e.target.closest('.range-toggle-btn');
+  if (!btn) return;
+  try { localStorage.setItem(DEFAULT_RANGE_STORAGE_KEY, btn.dataset.rangeKey); } catch(err) {}
+  vibrate(6);
+});
+
+// Overview Boxes Per Row slider — --fill (used by the .oui-slider CSS to
+// paint the accent-colored portion of the track) has to be set from JS;
+// a plain <input type=range> can't do a two-tone track from CSS alone.
+const ovColsSlider = document.getElementById('settings-ov-cols-slider');
+const ovColsValueEl = document.getElementById('settings-ov-cols-value');
+function updateOvColsSliderFill() {
+  const pct = ((ovColsSlider.value - ovColsSlider.min) / (ovColsSlider.max - ovColsSlider.min)) * 100;
+  ovColsSlider.style.setProperty('--fill', pct + '%');
+}
+ovColsSlider.value = overviewCols;
+ovColsValueEl.textContent = overviewCols;
+updateOvColsSliderFill();
+ovColsSlider.addEventListener('input', () => {
+  const n = parseInt(ovColsSlider.value, 10);
+  overviewCols = n;
+  ovColsValueEl.textContent = n;
+  applyOverviewCols(n);
+  updateOvColsSliderFill();
+  try { localStorage.setItem(OV_COLS_KEY, String(n)); } catch(err) {}
+  vibrate(4);
+});
+
+// Haptics toggle — flips the shared `hapticsEnabled` flag that vibrate()
+// (defined near the top of this script) checks on every call, chart
+// scrubbing and toolbar taps alike.
+const hapticsToggleEl = document.getElementById('settings-haptics-toggle');
+hapticsToggleEl.checked = hapticsEnabled;
+hapticsToggleEl.addEventListener('change', () => {
+  hapticsEnabled = hapticsToggleEl.checked;
+  try { localStorage.setItem(HAPTICS_KEY, hapticsEnabled ? '1' : '0'); } catch(err) {}
+  if (hapticsEnabled) vibrate(10); // one confirmation buzz right as it's turned back on
+});
+
+// Test Mode toggle — just calls the exact same setTestMode() the header
+// button does; setTestMode() itself keeps this checkbox's `checked` state
+// in sync when triggered from the OTHER control (see its own comment).
+document.getElementById('settings-testmode-toggle').addEventListener('change', (e) => setTestMode(e.target.checked));
 
 poll();
 setInterval(() => { if (!testModeActive) poll(); }, 200);

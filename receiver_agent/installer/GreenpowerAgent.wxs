@@ -84,22 +84,11 @@
       </Component>
     </DirectoryRef>
 
-    <!-- Start Menu shortcut + this is also where the uninstaller entry's
-         icon/name comes from (Add/Remove Programs).
-         A SECOND, explicit "Uninstall" shortcut sits right next to the app
-         launcher — not relying on Windows' right-click-a-shortcut →
-         Uninstall heuristic, which turned out not to reliably trigger for
-         a per-user MSI's shortcut here (real-world reports confirm this is
-         a known gap: a plain shortcut often carries no "uninstall
-         metadata" unless it's specifically an MSI-advertised one, and
-         Microsoft's own guidance is that Add/Remove Programs, not a Start
-         Menu right-click, is the guaranteed path). msiexec /x [ProductCode]
-         is the standard, always-available uninstall invocation — [ProductCode]
-         is a real MSI built-in property, resolved automatically, not
-         something authored elsewhere in this file. /qb still shows the
-         actual (de)install progress UI, just not the full first-run wizard
-         — an uninstall with truly zero UI at all would be a bit alarming
-         to click into with no confirmation of what's happening. -->
+    <!-- Start Menu shortcut. This is also where the uninstaller entry's
+         icon/name comes from (Add/Remove Programs). Right-click on this
+         shortcut in the Start Menu also surfaces an "Uninstall" option
+         (routes through Windows Settings > Apps) — confirmed working, so
+         no separate explicit uninstall shortcut is needed here. -->
     <DirectoryRef Id="ApplicationProgramsFolder">
       <Component Id="StartMenuShortcut" Guid="3e2a2f9d-7b7e-4b9d-9a2f-6e4d1a2c9b3e">
         <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="StartMenuShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
@@ -107,11 +96,6 @@
                   Name="Greenpower Receiver Agent"
                   Target="[#FILE_agent_launcher_vbs]"
                   WorkingDirectory="INSTALLFOLDER"
-                  Icon="AgentIcon.ico" />
-        <Shortcut Id="StartMenuUninstall"
-                  Name="Uninstall Greenpower Receiver Agent"
-                  Target="[SystemFolder]msiexec.exe"
-                  Arguments="/x [ProductCode] /qb"
                   Icon="AgentIcon.ico" />
         <RemoveFolder Id="RemoveAppProgramsFolder" On="uninstall" />
       </Component>

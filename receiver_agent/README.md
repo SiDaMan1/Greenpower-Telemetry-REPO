@@ -7,7 +7,7 @@ Runs on whatever computer the `greenpower_receiver` ESP32 is plugged into. Watch
 1. Make sure [Node.js](https://nodejs.org) (LTS) is installed.
 2. Download `GreenpowerAgentSetup.msi` (from the dashboard's Download Installer button, or the repo root README) and run it.
 
-The installer walks through a normal setup wizard — no admin rights needed (installs to your own user folder, not Program Files). It installs dependencies, config is already baked in, registers itself to start silently every time you log in, and starts it immediately. It also adds a Start Menu shortcut (right-click it any time to uninstall) and shows up in Add/Remove Programs.
+The installer walks through a normal setup wizard — no admin rights needed (installs to your own user folder, not Program Files). It installs dependencies, config is already baked in, registers itself to start silently every time you log in, and starts it immediately. It also adds a Start Menu shortcut and shows up in Add/Remove Programs — to uninstall, use **Settings → Apps → Installed apps** (search "Greenpower") and choose Uninstall there.
 
 It's a `.msi`, not the more common `.exe` — deliberate: an earlier `.exe` build worked, but got hard-blocked by Windows on Intune-managed/corporate devices (Microsoft Defender specifically targets raw executables that way); an `.msi` isn't that kind of file, so it isn't affected. Confirmed working end-to-end on a real managed device, not just in theory.
 
