@@ -200,22 +200,33 @@
   .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
   .btn:active, .tab:active { transform:scale(.95); }
 
-  /* A real <select>, not a custom dropdown component — the open menu is
-     browser-native either way (can't be re-skinned without a much bigger
-     custom-listbox build, out of scope for a global settings control used
-     rarely), so this just re-themes the closed/collapsed control to sit
-     visually with the rest of the header instead of looking like an
-     unstyled foreign form element. appearance:none removes the native
-     chevron/border so the whole thing reads as one of this page's own
-     pill buttons, not a stock OS form control. */
-  .range-select {
-    appearance:none; -webkit-appearance:none;
-    background:rgba(255,255,255,.04) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="%23828a9c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>') no-repeat right 8px center;
-    color:var(--text); border:1px solid var(--border); border-radius:8px;
-    padding:6px 22px 6px 10px; font-family:inherit; font-size:11px; font-weight:600;
-    cursor:pointer;
+  /* Global time-range toggle — rendered identically into every
+     [data-range-slot] container (one per dedicated page, one inside
+     Overview's Customize panel) by renderRangeToggles() in <script>, all
+     reflecting/controlling the ONE shared currentRangeMs. Same visual
+     language as .multi-toggle (segmented pill buttons, muted until
+     active) for consistency with the page's other toggle-group control. */
+  .range-toggle-row { display:flex; flex-wrap:wrap; gap:6px; flex-shrink:0; }
+  .range-toggle-btn {
+    padding:5px 13px; border-radius:999px; border:1px solid var(--border);
+    background:rgba(255,255,255,.03); color:var(--muted); cursor:pointer;
+    font-family:'Rajdhani',sans-serif; font-size:11px; font-weight:700; letter-spacing:.4px;
+    transition:background .15s var(--ease), color .15s var(--ease), border-color .15s var(--ease);
   }
-  .range-select:hover { background-color:rgba(255,255,255,.08); }
+  .range-toggle-btn:hover { color:var(--text); background:rgba(255,255,255,.07); }
+  .range-toggle-btn.active { color:#fff; background:rgba(99,102,241,.22); border-color:rgba(99,102,241,.4); }
+  .range-toggle-btn:active { transform:scale(.95); }
+  /* Sits above a page's charts (see the .range-toggle-row markup in each
+     dedicated page) — a small gap of its own since it's not inside the
+     flex column's normal gap flow the way sibling elements are... actually
+     it IS a normal flex child of .page, so the page's own `gap` already
+     spaces it correctly; nothing extra needed here beyond flex-shrink:0
+     above so a long row of buttons never gets squeezed by neighboring
+     flex:1 chart content. */
+
+  .customize-panel-label { font-size:10px; font-weight:700; letter-spacing:1.2px; color:var(--muted);
+    text-transform:uppercase; margin:2px 6px 6px; }
+  .customize-panel-label:not(:first-child) { margin-top:12px; }
 
   /* ── Icons ──────────────────────────────────────────────────────────
      Inline SVG (Feather-style: stroke=currentColor, no fill) filled in at
@@ -466,12 +477,12 @@
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
     #download-agent-btn { display:none; }
-    #header-right { gap:5px; }
-    .range-select { padding:5px 16px 5px 6px; font-size:10px; background-position:right 5px center; background-size:8px; }
-    #test-mode-btn { padding:5px 7px; }
+    #header-right { gap:8px; }
     #tabs { padding:5px 6px; }
     .tab { padding:8px 12px; font-size:11px; }
     .page { padding:10px; gap:10px; }
+    .range-toggle-row { gap:5px; }
+    .range-toggle-btn { padding:5px 11px; font-size:10.5px; }
 
     #page-raceline.active { flex-direction:column; }
     #overview-right { grid-template-columns:repeat(2,1fr); }
@@ -566,22 +577,22 @@
      while the expand button (no matching right margin) hugged the right
      edge with barely any gap at all — "even between icons, uneven at the
      ends" is exactly what read as off-center/unequal padding. */
-  /* A small UPWARD-biased shadow, not none and not a plain downward one.
-     The original downward shadow (0 10px 30px -10px rgba(0,0,0,.6)) was
-     removed entirely earlier — a shadow cast down from a floating element
-     sitting right against the real Android nav bar (only ~10px+safe-area
-     of actual gap, measured directly) reads as a dark halo/mismatch no
-     matter how well the background colors themselves line up. A negative
-     y-offset shifts the shadow's center UP and above the pill instead of
-     below it, so it gives real lifted-card depth without reaching down
-     toward the gap at all — its downward reach past the pill's own bottom
-     edge is only blur-minus-offset (8-2=6px here), comfortably inside that
-     ~10px+ measured gap, unlike a plain positive-offset shadow would be. */
+  /* An EQUAL-on-all-sides shadow (0 offset), not upward-biased and not a
+     plain downward one. Went through three states this session: a plain
+     downward shadow (0 10px 30px -10px rgba(0,0,0,.6) — reached into the
+     ~10px+ gap toward the real Android nav bar below, reading as a color
+     mismatch) → removed entirely → upward-biased (negative y-offset) →
+     **this: symmetric, zero offset, small blur**, per an explicit request
+     for equal depth on every side rather than a lopsided lift. With no
+     offset, the shadow's downward reach past the pill's own bottom edge is
+     the full blur radius (6px here) — kept small specifically so that
+     still stays comfortably inside the ~10px+ measured gap; a bigger blur
+     would need an offset again to stay clear. */
   .mobile-navbar {
     position:fixed; left:10px; right:10px; bottom:calc(10px + env(safe-area-inset-bottom)); height:58px; z-index:15;
     align-items:stretch; justify-content:space-between; padding:0 10px; border-radius:20px;
     background:rgba(15,18,26,.94); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-    border:1px solid var(--border); box-shadow:0 -2px 8px rgba(0,0,0,.3);
+    border:1px solid var(--border); box-shadow:0 0 6px rgba(0,0,0,.3);
   }
   /* No scroll here on purpose — the bar shows a fixed, non-scrolling set
      of the most-used tabs (marked in HTML with .mobile-navbar-tab-primary;
@@ -836,12 +847,6 @@
       <a id="download-agent-btn" class="btn btn-sm" href="/greenpower-agent.zip" download="greenpower-agent.zip" title="Download the receiver agent (unzip, run setup.bat)">
         <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
       </a>
-      <!-- Global — one selection affects every live chart on every page
-           (Overview minis, each dedicated metric page, Multi), not a
-           per-page setting. Options/values populated by JS from
-           RANGE_OPTIONS so this stays the one source of truth rather than
-           duplicating the list in markup. -->
-      <select id="range-select" class="range-select" title="How much history the live charts show"></select>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
@@ -958,6 +963,9 @@
           <div class="customize-wrap">
             <button id="chart-customize-btn" class="btn btn-sm"><span class="icon" data-icon="settings"></span>Customize</button>
             <div id="chart-customize-panel" class="customize-panel">
+              <div class="customize-panel-label">Time Range</div>
+              <div class="range-toggle-row" data-range-slot></div>
+              <div class="customize-panel-label">Visible Charts</div>
               <div id="chart-customize-list"></div>
             </div>
           </div>
@@ -977,11 +985,13 @@
     </div>
 
     <div id="page-speed" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="dedicated-big-card"><div><div class="dedicated-label">Current Speed</div><div class="dedicated-value" id="big-speed_mph" style="color:var(--speed)">--</div><div class="dedicated-unit">MPH</div></div></div>
       <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-speed_mph"></canvas></div></div>
     </div>
 
     <div id="page-power" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Battery</div><div class="dedicated-value size-md" id="big-batt_volt" style="color:var(--battv)">--</div><div class="dedicated-unit">VOLTS</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">Motor Volt</div><div class="dedicated-value size-md" id="big-motor_volt" style="color:var(--motorv)">--</div><div class="dedicated-unit">VOLTS</div></div></div>
@@ -995,11 +1005,13 @@
     </div>
 
     <div id="page-temperature" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="dedicated-big-card"><div><div class="dedicated-label">Temperature</div><div class="dedicated-value" id="big-temp_f" style="color:var(--temp)">--</div><div class="dedicated-unit">°F</div></div></div>
       <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-temp_f"></canvas></div></div>
     </div>
 
     <div id="page-rpm" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Motor RPM</div><div class="dedicated-value" id="big-motor_rpm" style="color:var(--mrpm)">--</div><div class="dedicated-unit">RPM</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">Wheel RPM</div><div class="dedicated-value" id="big-wheel_rpm" style="color:var(--wrpm)">--</div><div class="dedicated-unit">RPM</div></div></div>
@@ -1011,6 +1023,7 @@
     </div>
 
     <div id="page-esc" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Mode</div><div class="dedicated-value size-sm" id="esc-mode" style="color:var(--escmode)">--</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">State</div><div class="dedicated-value size-sm" id="esc-state" style="color:var(--escmode)">--</div></div></div>
@@ -1028,6 +1041,7 @@
     </div>
 
     <div id="page-imu" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="section-heading">Orientation</div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Roll</div><div class="dedicated-value size-sm" id="big-roll_deg" style="color:var(--roll)">--</div><div class="dedicated-unit">°</div></div></div>
@@ -1065,6 +1079,7 @@
     </div>
 
     <div id="page-link" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">RSSI</div><div class="dedicated-value" id="big-rssi" style="color:var(--rssi)">--</div><div class="dedicated-unit">dBm</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">SNR</div><div class="dedicated-value" id="big-snr" style="color:var(--snr)">--</div><div class="dedicated-unit">dB</div></div></div>
@@ -1076,6 +1091,7 @@
     </div>
 
     <div id="page-multi" class="page">
+      <div class="range-toggle-row" data-range-slot></div>
       <div id="multi-controls"></div>
       <div class="chart-card" style="flex:1;min-height:0"><div class="chart-canvas-wrap"><canvas id="chart-multi"></canvas></div></div>
     </div>
@@ -2004,7 +2020,40 @@ const RANGE_OPTIONS = [
   { key:'all', label:'All', ms:null },
 ];
 const DEFAULT_RANGE_KEY = '5m';
+let currentRangeKey = DEFAULT_RANGE_KEY;
 let currentRangeMs = RANGE_OPTIONS.find(r => r.key === DEFAULT_RANGE_KEY).ms;
+// A chart never shows less than this, even the instant the very first
+// packet of a fresh run arrives — the alternative (an axis that starts
+// razor-thin and stretches wider with every single point) reads as
+// constant rescaling rather than a stable chart slowly filling in.
+const RANGE_FLOOR_MS = 60 * 1000;
+
+// Renders the SAME button-row markup into every [data-range-slot]
+// container (one per dedicated page, one inside Overview's Customize
+// panel — see the markup) — all of them reflect/control the one shared
+// currentRangeMs, not independent per-page state. Click handling is a
+// single delegated listener on document (added once, below) rather than
+// re-binding a listener to every button on every render.
+function renderRangeToggles() {
+  const html = RANGE_OPTIONS.map(r =>
+    `<button type="button" class="range-toggle-btn${r.key === currentRangeKey ? ' active' : ''}" data-range-key="${r.key}">${r.label}</button>`
+  ).join('');
+  document.querySelectorAll('[data-range-slot]').forEach(el => { el.innerHTML = html; });
+}
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.range-toggle-btn');
+  if (!btn) return;
+  const opt = RANGE_OPTIONS.find(r => r.key === btn.dataset.rangeKey);
+  if (!opt) return;
+  currentRangeKey = opt.key;
+  currentRangeMs = opt.ms;
+  renderRangeToggles();
+  // Redraw immediately rather than waiting up to 200ms for the next live
+  // packet — picking a new range is a direct action that should feel
+  // instant, the same reasoning as the tab-switch catch-up call.
+  applyHistory();
+});
+renderRangeToggles();
 
 // historyTimes is always sorted ascending (only ever appended to) — binary
 // search for "first index at/after this timestamp" instead of a linear
@@ -2018,6 +2067,22 @@ function findTimeIndex(times, sinceMs) {
   }
   return lo;
 }
+
+// ── STALE-GAP CUTTING ─────────────────────────────────────────────────────
+// If more than CHART_GAP_STALE_MS passes between two consecutive real
+// packets (LoRa dropout, receiver_agent restarted, car parked and walked
+// away from for a bit), the raw buffer would otherwise have one point right
+// before the gap and one right after it with nothing in between — Chart.js
+// draws a straight line directly connecting the two, which reads as a
+// smooth, continuous reading across dead time that was never actually
+// measured. Rather than trying to render "a gap" in the middle of an
+// otherwise-continuous chart, a detected stale gap wipes the retained
+// buffer and starts a fresh run right there — activeRunStart (see
+// applyHistory()'s grow-to-range-floor logic) resets to the new point, so
+// the chart re-anchors cleanly instead of bridging across the dead time.
+const CHART_GAP_STALE_MS = 5000;
+let lastPacketTime = null;
+let activeRunStart = null;
 
 let lastSeq = null;
 const rawLines = [];
@@ -2073,11 +2138,24 @@ function applyState(d, online) {
 }
 
 function pushHistory(d) {
-  Object.keys(METRICS).forEach(k => history[k].push(typeof d[k] === 'number' ? d[k] : null));
   // d.received_at is stamped server-side (see server.js) when the packet
   // arrived — real wall-clock time, not a client poll-tick guess. Falls back
   // to Date.now() only if it's ever missing (e.g. an old cached response).
   const t = d.received_at || Date.now();
+
+  // A gap of more than CHART_GAP_STALE_MS since the last real point means
+  // whatever's already in the buffer is a disconnected, stale run — wipe it
+  // and start over from this point rather than let Chart.js bridge across
+  // the dead time with a straight line (see the constant's own comment).
+  if (lastPacketTime != null && (t - lastPacketTime) > CHART_GAP_STALE_MS) {
+    historyTimes.length = 0;
+    Object.keys(METRICS).forEach(k => history[k].length = 0);
+    activeRunStart = null;
+  }
+  lastPacketTime = t;
+  if (activeRunStart == null) activeRunStart = t;
+
+  Object.keys(METRICS).forEach(k => history[k].push(typeof d[k] === 'number' ? d[k] : null));
   historyTimes.push(t);
   // Evict anything older than the hard retention ceiling — this is the
   // outer bound on the whole buffer, independent of whatever range is
@@ -2118,12 +2196,20 @@ function chartIsVisible(chart) {
 function applyHistory() {
   try {
     const now = Date.now();
-    // The window this tick's update should show: an explicit duration back
-    // from now, or (currentRangeMs === null, "All") the buffer's own
-    // earliest retained point — NOT literally "unbounded", see
-    // HISTORY_HARD_CAP_MS above for why "All" still has a real ceiling.
-    const windowStart = currentRangeMs != null ? now - currentRangeMs
-      : (historyTimes.length ? historyTimes[0] : now);
+    // The window this tick's update should show — grows from
+    // RANGE_FLOOR_MS (1 min) up to the selected range as the current run
+    // (see activeRunStart/pushHistory()'s gap-cutting above) actually
+    // accumulates that much real time, rather than jumping straight to a
+    // mostly-empty full-range window the instant a run starts. "All"
+    // (currentRangeMs === null) grows the same way but with no upper cap
+    // of its own — still bounded by HISTORY_HARD_CAP_MS via the buffer
+    // itself, never literally unbounded.
+    const runStart = activeRunStart != null ? activeRunStart : now;
+    const elapsed = now - runStart;
+    const effectiveSpan = currentRangeMs != null
+      ? Math.max(RANGE_FLOOR_MS, Math.min(elapsed, currentRangeMs))
+      : Math.max(RANGE_FLOOR_MS, elapsed);
+    const windowStart = now - effectiveSpan;
     const startIdx = findTimeIndex(historyTimes, windowStart);
     const winTimes = historyTimes.slice(startIdx);
     // xMin/xMax are the FULL selected window, not just wherever real data
@@ -2296,24 +2382,6 @@ function setTestMode(on) {
 }
 
 document.getElementById('test-mode-btn').addEventListener('click', () => setTestMode(!testModeActive));
-
-// ── RANGE SELECTOR ────────────────────────────────────────────────────────
-// Populated from RANGE_OPTIONS (declared with history/historyTimes above)
-// rather than hand-written <option> markup, so that list stays the one
-// place range choices are defined.
-(function initRangeSelect() {
-  const sel = document.getElementById('range-select');
-  sel.innerHTML = RANGE_OPTIONS.map(r => `<option value="${r.key}">${r.label}</option>`).join('');
-  sel.value = DEFAULT_RANGE_KEY;
-  sel.addEventListener('change', () => {
-    const opt = RANGE_OPTIONS.find(r => r.key === sel.value);
-    currentRangeMs = opt ? opt.ms : null;
-    // Redraw immediately rather than waiting up to 200ms for the next live
-    // packet — picking a new range is a direct action that should feel
-    // instant, the same reasoning as the tab-switch catch-up call.
-    applyHistory();
-  });
-})();
 
 poll();
 setInterval(() => { if (!testModeActive) poll(); }, 200);
