@@ -1,6 +1,6 @@
 {
   "name": "Greenpower Telemetry",
-  "short_name": "Greenpower",
+  "short_name": "GP Telemetry",
   "description": "Live telemetry dashboard for the Greenpower vehicle",
   "start_url": "/",
   "scope": "/",

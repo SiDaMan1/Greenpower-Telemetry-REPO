@@ -30,7 +30,7 @@
      dark background, not some default, is what ends up under the status
      bar / home-indicator areas. -->
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Greenpower">
+<meta name="apple-mobile-web-app-title" content="GP Telemetry">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -68,6 +68,19 @@
   * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
   html,body { height:100%; background:var(--bg0); color:var(--text); font-family:'Rajdhani',sans-serif;
     overflow:hidden; -webkit-font-smoothing:antialiased; }
+
+  /* Nothing is selectable/copyable by default (nav labels, buttons, headings,
+     etc. — none of that is "data" worth a copy menu popping up on a long-
+     press) except the actual telemetry readouts, which explicitly opt back
+     in below. Keeps mobile Safari/Chrome's press-and-hold text-selection
+     bubble from appearing on random UI chrome while still letting someone
+     copy an actual number (a speed reading, a raw packet line, a session
+     timestamp) if they want to. */
+  body { -webkit-user-select:none; user-select:none; }
+  .stat-value, .stat-unit, .dedicated-value, .dedicated-unit,
+  #raw-log, #sessions-table td, #esc-mode, #esc-state {
+    -webkit-user-select:text; user-select:text;
+  }
 
   /* Safe-area padding (notch / status bar) at the top only — html/body's own
      background already paints edge-to-edge behind it (nothing here clips
@@ -111,6 +124,15 @@
     font-family:'Share Tech Mono',monospace; font-size:10px; padding:4px 9px;
     border-radius:999px; border:1px solid var(--border); color:var(--muted);
     white-space:nowrap; background:rgba(255,255,255,.02);
+  }
+  /* Test mode: feeds fake, plausible telemetry through the exact same
+     render path as a real packet (applyState/pushHistory/applyHistory) at
+     the same 5Hz cadence, so the whole UI — numbers, charts, GPS fix,
+     ESC mode/state — can be exercised for visual/UI work without the car,
+     receiver, or receiver_agent running at all. Off by default; a bright
+     amber accent when on so it's unmistakable this isn't real data. */
+  #test-mode-btn.active {
+    color:var(--warn); border-color:rgba(245,158,11,.45); background:rgba(245,158,11,.12);
   }
 
   /* ── Tabs ───────────────────────────────────────────────────────── */
@@ -341,9 +363,41 @@
     #raceline-info .stat-card { flex:1 1 130px; }
     #raceline-map { min-height:280px; }
 
-    .big-row, .chart-row { grid-template-columns:1fr !important; }
+    /* flex:1 (the desktop value) squeezes a .big-row/.chart-row down to
+       whatever share of the flex-column page it's "given" rather than
+       letting it size to its own content — fine on desktop where a page
+       only ever has one such section, but on a page with TWO stacked
+       sections (IMU: Orientation + G-Force) the second section's box gets
+       compressed below its actual grid content's height, and since a grid
+       container doesn't clip overflow by default, that content spills
+       downward and visually overlaps whatever comes after it. flex:none +
+       min-height:auto makes each section's box match its real content
+       height instead, so stacking behaves like normal block flow (the page
+       itself already scrolls via .page{overflow-y:auto} to make room). */
+    .big-row, .chart-row { flex:none; min-height:auto; }
+    .chart-row { grid-template-columns:1fr !important; }
     .dedicated-big-card { padding:16px 18px; }
     .chart-card { min-height:200px; }
+
+    /* Dedicated-value pages: an even number of stat cards in one .big-row
+       (RPM: 2, Link: 2, ESC's mode/state row: 2) becomes a 2-column grid of
+       squares; an odd number (Power: 3, ESC's setpoint/live/ramp row: 3,
+       IMU's two 3-card rows) becomes squares for all but the last card,
+       which spans the full row width as a rectangle instead of leaving an
+       awkward half-empty final row. `:nth-child(odd):last-child` matches
+       the last card only when its position is also odd — which is only
+       possible when the row's total card count is itself odd, so this
+       needs no JS/count-tracking, just that one selector. Pages with a
+       single card (Speed, Temperature) never use .big-row at all, so
+       they're untouched here — already a full-width rectangle by default. */
+    .big-row { grid-template-columns:repeat(2,1fr) !important; }
+    .big-row .dedicated-big-card {
+      aspect-ratio:1/1; padding:12px; flex-direction:column; align-items:center;
+      justify-content:center; text-align:center; gap:2px;
+    }
+    .big-row .dedicated-big-card:nth-child(odd):last-child {
+      grid-column:1/-1; aspect-ratio:auto; flex-direction:row; text-align:left; justify-content:flex-start;
+    }
   }
   @media (max-width: 480px) {
     #age-badge { display:none; }
@@ -370,9 +424,22 @@
      are real, animated CSS transitions — see the stats-row comment above
      for why this preview tool alone can't visibly confirm that, and how to
      verify structural correctness in it anyway. */
+  /* justify-content:space-between directly on the bar (not on some inner
+     wrapper) is what makes the edges symmetric: the first tab and the
+     expand button — the true first/last flex items — land flush against
+     the bar's own padding on either side, and every gap between items
+     (tab↔tab, tab↔divider, divider↔expand) is equalized automatically by
+     space-between across the whole row. An earlier version put only the 5
+     primary tabs in their own flex:1 sub-box (space-evenly'd *within that
+     box only*) with the divider+expand as separate siblings outside it —
+     the tabs ended up evenly spaced relative to each other, but the whole
+     5-tab cluster sat with a visible ~20px inset from the bar's left edge
+     while the expand button (no matching right margin) hugged the right
+     edge with barely any gap at all — "even between icons, uneven at the
+     ends" is exactly what read as off-center/unequal padding. */
   .mobile-navbar {
     position:fixed; left:10px; right:10px; bottom:calc(10px + env(safe-area-inset-bottom)); height:58px; z-index:15;
-    align-items:stretch; padding:0 6px; border-radius:20px;
+    align-items:stretch; justify-content:space-between; padding:0 10px; border-radius:20px;
     background:rgba(15,18,26,.94); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
     border:1px solid var(--border); box-shadow:0 10px 30px -10px rgba(0,0,0,.6);
   }
@@ -383,11 +450,12 @@
      expand button is the ONLY way to reach the rest. A scrollable bar meant
      "the other 7 tabs" were reachable two different, inconsistent ways
      (swipe OR the expand sheet); this makes the sheet the one real answer
-     to "where are the other tabs", with the bar itself simple and fixed. */
-  .mobile-navbar-scroll {
-    flex:1; min-width:0; display:flex; align-items:stretch; justify-content:space-evenly;
-    overflow:hidden;
-  }
+     to "where are the other tabs", with the bar itself simple and fixed.
+     display:contents removes this element's own box entirely so its
+     children (the tabs) become direct flex items of .mobile-navbar itself,
+     participating in that single space-between distribution alongside the
+     divider and expand button — see the comment on .mobile-navbar above. */
+  .mobile-navbar-scroll { display:contents; }
   .mobile-navbar-tab { display:none; }
   /* aspect-ratio:1/1, not a fixed width — .mobile-navbar-scroll's
      align-items:stretch plus this margin gives the height (bar height
@@ -570,6 +638,7 @@
       <a id="download-agent-btn" class="btn btn-sm" href="https://download-directory.github.io/?url=https://github.com/SiDaMan1/Greenpower-Telemetry-REPO/tree/main/receiver_agent&filename=greenpower-agent" target="_blank" rel="noopener" title="Download the receiver agent (unzip, run setup.bat)">
         <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
       </a>
+      <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
       <span id="server-time">--:--:--</span>
@@ -888,7 +957,17 @@ const METRICS = {
   esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},
 };
 const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','rssi'];
-const MAX_POINTS = 150;   // ~30s of history at 5 Hz
+// A phone's chart cards are maybe a third the width of a desktop chart, so
+// the same 150-point/30s window that reads as a smooth line on desktop
+// packs 5x more points per pixel on mobile — it reads as a dense, jagged
+// scribble instead. Halving the window (still ~12s at the sender's 5Hz
+// cadence) keeps roughly the same visual point-density as desktop. Checked
+// once at load via matchMedia, not re-checked on resize/rotation — history
+// arrays are pre-sized to this at page load (see initHistory below) and
+// resizing them live mid-session would mean re-deriving MAX_POINTS-worth of
+// placeholder/real data, not worth it for an orientation change that mobile
+// users essentially never do on this page.
+const MAX_POINTS = window.matchMedia('(max-width:860px)').matches ? 60 : 150;
 
 // ── ICONS ─────────────────────────────────────────────────────────────────────
 // Single source of truth for every icon on the page (Feather-style: 24x24
@@ -980,16 +1059,54 @@ const TOOLTIP_OPTS = {
   titleFont:{family:"'Share Tech Mono',monospace", size:10},
   bodyFont:{family:"'Space Grotesk',sans-serif", size:12, weight:'600'},
 };
+// A short (not zero, not "full") animation duration is the middle ground
+// between the two bad extremes: animation:false (the old setting) makes
+// every 200ms redraw a hard cut, which is cheap but reads as a jump, not a
+// line "growing"; a long/default-duration animation would still be mid-
+// tween when the *next* update arrives 200ms later, stacking into visible
+// lag. ~250ms is short enough to always resolve well before the next tick
+// but long enough to actually read as a smooth slide rather than a snap.
+const LIVE_ANIMATION = { duration:250, easing:'easeOutQuad' };
 const BASE_OPTS = {
-  responsive:true, maintainAspectRatio:false, animation:false,
+  responsive:true, maintainAspectRatio:false, animation:LIVE_ANIMATION,
   interaction:{mode:'index', intersect:false},
   plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
   scales:{
     x:{display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
     y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#828a9c',font:{size:10}},border:{color:'rgba(255,255,255,.07)'}}
   },
-  elements:{point:{radius:0,hoverRadius:4,hitRadius:8},line:{borderWidth:2,tension:0.35}}
+  // borderJoinStyle/borderCapStyle:'round' round off the corners where the
+  // canvas line segments between points meet — combined with tension (the
+  // Bezier curve smoothing already in place), this is what keeps a chart
+  // with fewer points (see MAX_POINTS above) from reading as a jagged
+  // polyline of sharp angles instead of a smooth curve.
+  elements:{point:{radius:0,hoverRadius:4,hitRadius:8},
+    line:{borderWidth:2,tension:0.35,borderJoinStyle:'round',borderCapStyle:'round'}}
 };
+
+// ── HAPTICS ──────────────────────────────────────────────────────────────────
+// A light tick each time the touch/hover crosses into a new data point while
+// scrubbing a chart's tooltip — mirrors the tactile "detent" feel of a
+// physical dial/slider. navigator.vibrate is Android-only (no iOS Safari
+// support, and no error if it's simply absent — it's just undefined there),
+// and browsers require this to originate from a real user gesture, which a
+// touchmove/hover over the canvas satisfies. Attached as chart.options.onHover
+// (NOT baked into BASE_OPTS itself) because safeChart()/the multi-chart both
+// build their options via JSON.parse(JSON.stringify(BASE_OPTS)) to get a
+// fresh per-chart copy — functions don't survive a JSON round-trip, so this
+// has to be assigned onto each chart's options object afterward instead.
+function attachHaptics(opts) {
+  let lastIdx = null;
+  opts.onHover = (evt, elements) => {
+    if (!elements || !elements.length) { lastIdx = null; return; }
+    const idx = elements[0].index;
+    if (idx !== lastIdx) {
+      lastIdx = idx;
+      if (navigator.vibrate) navigator.vibrate(6);
+    }
+  };
+  return opts;
+}
 
 // metricKey (when given) seeds the y-axis with the metric's known plausible
 // range as suggestedMin/suggestedMax — a *suggestion*, not a hard clamp, so
@@ -1012,6 +1129,7 @@ function safeChart(id, colorVar, label, big=false, metricKey=null) {
       opts.scales.y.suggestedMin = lo;
       opts.scales.y.suggestedMax = hi;
     }
+    attachHaptics(opts);
     return new Chart(ctx, {
       type:'line',
       data:{labels:[],datasets:[{label,data:[],borderColor:color,backgroundColor:color+'1c',fill:true}]},
@@ -1025,7 +1143,9 @@ function safeUpdateChart(chart, labels, data) {
   try {
     chart.data.labels = (labels||[]).map(String);
     chart.data.datasets[0].data = data||[];
-    chart.update('none');
+    // update() (no 'none' mode) so LIVE_ANIMATION actually plays — the line
+    // sliding/growing into its new point, instead of a hard cut every tick.
+    chart.update();
   } catch(e) { console.warn('Chart update failed:', e); }
 }
 
@@ -1184,7 +1304,13 @@ try {
   mopts.responsive=true; mopts.maintainAspectRatio=false;
   mopts.scales.x={display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
   mopts.scales.y={display:true,min:-5,max:110,title:{display:true,text:'NORMALISED (%)',color:'#828a9c',font:{size:11}},ticks:{color:'#828a9c'},grid:{color:'rgba(255,255,255,.05)'},border:{color:'rgba(255,255,255,.07)'}};
-  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10}}}, tooltip:TOOLTIP_OPTS};
+  // usePointStyle + pointStyle:'line' draws each legend marker as a short
+  // colored line instead of Chart.js's default filled box — matches the
+  // actual line it's labeling, and a thin line takes noticeably less
+  // horizontal space per entry than a box, which matters here since this
+  // legend can have up to 18 entries wrapping across the chart's width.
+  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10},usePointStyle:true,pointStyle:'line'}}, tooltip:TOOLTIP_OPTS};
+  attachHaptics(mopts);
   multiChart = new Chart(mctx,{type:'line',data:{labels:[],datasets:[]},options:mopts});
 } catch(e) { console.warn('Multi chart init failed:', e); }
 
@@ -1493,8 +1619,8 @@ async function viewSession(id) {
       const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
       sessionCharts[k] = new Chart(ctx, {
         type:'line',
-        data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3 }] },
-        options:{
+        data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3, borderJoinStyle:'round', borderCapStyle:'round' }] },
+        options:attachHaptics({
           responsive:true, maintainAspectRatio:false, animation:false,
           interaction:{mode:'index', intersect:false},
           plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
@@ -1502,7 +1628,7 @@ async function viewSession(id) {
             x:{display:true, ticks:{color:'#828a9c', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
             y:{grid:{color:'rgba(255,255,255,.05)'}, ticks:{color:'#828a9c', font:{size:10}}, border:{color:'rgba(255,255,255,.07)'}}
           }
-        }
+        })
       });
     });
   } catch(e) {
@@ -1626,7 +1752,8 @@ function applyHistory() {
       const norm = history[k].map(v => v==null ? null : Math.max(0,Math.min(100,(v-lo)/span*100)));
       const color = resolveColor(METRICS[k].color);
       return {label:METRICS[k].label.toUpperCase(), data:norm, borderColor:color,
-              backgroundColor:color+'14', fill:false, borderWidth:1.8, pointRadius:0, tension:0.3};
+              backgroundColor:color+'14', fill:false, borderWidth:1.8, pointRadius:0, tension:0.3,
+              pointStyle:'line', borderJoinStyle:'round', borderCapStyle:'round'};
     });
     multiChart.update('none');
   } catch(e) { console.warn('applyHistory error:', e); }
@@ -1692,8 +1819,84 @@ async function poll() {
 // rather than the chart building its axes up from a single first point.
 applyHistory();
 
+// ── TEST MODE (fake data for UI testing, no car/receiver required) ──────────
+// Generates a plausible packet every 200ms (same cadence as the real poll)
+// and pushes it through the exact same applyState/pushHistory/applyHistory/
+// pushRawLine functions a real packet would go through — so every chart,
+// stat card, GPS fix indicator, and ESC mode/state exercises real rendering
+// code, not a separate mocked-up code path that could drift from it. Client-
+// side only: nothing is POSTed anywhere, this never touches /api/telemetry
+// or the database, so it can't pollute real session history.
+let testModeActive = false;
+let testModeTimer = null;
+let testSeq = 0;
+const TEST_START = Date.now();
+
+function randRange(lo, hi) { return lo + Math.random() * (hi - lo); }
+
+// Smooth wandering values (sine + a little noise) instead of pure random
+// jitter every tick — reads like a real sensor drifting, not static, which
+// matters for actually eyeballing whether a chart/animation looks right.
+function wave(lo, hi, periodMs, phase=0) {
+  const mid = (lo + hi) / 2, amp = (hi - lo) / 2;
+  const t = (Date.now() - TEST_START) / periodMs;
+  return mid + amp * Math.sin(t * Math.PI * 2 + phase) * 0.85 + (Math.random() - 0.5) * amp * 0.1;
+}
+
+function genTestPacket() {
+  testSeq++;
+  const d = { seq: testSeq, received_at: Date.now() };
+  let phase = 0;
+  Object.keys(METRICS).forEach(k => {
+    const [lo, hi] = METRICS[k].range;
+    d[k] = wave(lo, hi, 6000 + phase * 900, phase);
+    phase++;
+  });
+  // Keep GPS/IMU/ESC flagged valid so the Raceline fix indicator, IMU page,
+  // and ESC mode/state all light up too, not just the chartable METRICS.
+  d.flags = 0x01 | 0x02 | 0x08;   // GPS_VALID | IMU_VALID | ESC_VALID
+  d.latitude = 39.0997 + Math.sin(testSeq / 200) * 0.002;
+  d.longitude = -94.5786 + Math.cos(testSeq / 200) * 0.002;
+  d.satellites = 9;
+  d.hdop = 1.1;
+  d.esc_mode = 'NORMAL';
+  d.esc_state = testSeq % 400 < 200 ? 'RUN' : 'RAMP';
+  return d;
+}
+
+function testModeTick() {
+  const d = genTestPacket();
+  updateConnStatus(true, 0);
+  applyState(d, true);
+  pushHistory(d);
+  applyHistory();
+  pushRawLine(d);
+  if (gpsValid(d.flags)) {
+    gpsTrail.push([d.latitude, d.longitude]);
+    if (gpsTrail.length > MAX_GPS) gpsTrail.shift();
+    updateGpsMap(d.latitude, d.longitude);
+  }
+}
+
+function setTestMode(on) {
+  testModeActive = on;
+  document.getElementById('test-mode-btn').classList.toggle('active', on);
+  if (testModeTimer) { clearInterval(testModeTimer); testModeTimer = null; }
+  if (on) {
+    testModeTimer = setInterval(testModeTick, 200);
+    testModeTick();
+  } else {
+    // Hand back to the real poll loop immediately rather than waiting for
+    // its next 200ms tick, so the UI doesn't sit on stale fake numbers for
+    // up to 200ms after switching test mode off.
+    poll();
+  }
+}
+
+document.getElementById('test-mode-btn').addEventListener('click', () => setTestMode(!testModeActive));
+
 poll();
-setInterval(poll, 200);
+setInterval(() => { if (!testModeActive) poll(); }, 200);
 </script>
 </body>
 </html>
