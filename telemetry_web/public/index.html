@@ -200,6 +200,23 @@
   .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
   .btn:active, .tab:active { transform:scale(.95); }
 
+  /* A real <select>, not a custom dropdown component — the open menu is
+     browser-native either way (can't be re-skinned without a much bigger
+     custom-listbox build, out of scope for a global settings control used
+     rarely), so this just re-themes the closed/collapsed control to sit
+     visually with the rest of the header instead of looking like an
+     unstyled foreign form element. appearance:none removes the native
+     chevron/border so the whole thing reads as one of this page's own
+     pill buttons, not a stock OS form control. */
+  .range-select {
+    appearance:none; -webkit-appearance:none;
+    background:rgba(255,255,255,.04) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="%23828a9c" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>') no-repeat right 8px center;
+    color:var(--text); border:1px solid var(--border); border-radius:8px;
+    padding:6px 22px 6px 10px; font-family:inherit; font-size:11px; font-weight:600;
+    cursor:pointer;
+  }
+  .range-select:hover { background-color:rgba(255,255,255,.08); }
+
   /* ── Icons ──────────────────────────────────────────────────────────
      Inline SVG (Feather-style: stroke=currentColor, no fill) filled in at
      load by applyIcons() from the ICONS map in <script> — every icon spot
@@ -356,9 +373,19 @@
   #raceline-map { flex:1; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
     padding:10px; min-height:0; display:flex; flex-direction:column; }
 
+  /* overflow: hidden auto (not a bare overflow-y:auto) — an element with
+     overflow-y set but overflow-x left at its 'visible' default gets that
+     'visible' relaxed to 'auto' too per the CSS Overflow spec (a scrollable
+     box can't have one axis visible and the other not), and that
+     implicit/computed auto-scrollbar is what was drawing outside the
+     border-radius curve on some browsers/devices — an explicit `hidden`
+     (never wanted here anyway; word-break:break-all already prevents
+     horizontal overflow) avoids the dual-auto computation entirely instead
+     of fighting it. Same fix applied to #sessions-table-wrap and
+     .mobile-navsheet below, mirrored for whichever axis each actually uses. */
   #raw-log { font-family:'Share Tech Mono',monospace; font-size:11px; line-height:1.7;
     background:#080b11; border:1px solid var(--border); border-radius:var(--radius);
-    padding:14px; flex:1; overflow-y:auto; color:var(--accent3); white-space:pre-wrap; word-break:break-all; }
+    padding:14px; flex:1; overflow:hidden auto; color:var(--accent3); white-space:pre-wrap; word-break:break-all; }
 
   #multi-controls { display:flex; flex-wrap:wrap; gap:8px; padding:12px 14px; background:var(--panel);
     border:1px solid var(--border); border-radius:var(--radius); flex-shrink:0; }
@@ -368,7 +395,7 @@
   .multi-toggle.on { opacity:1; background:rgba(255,255,255,.05); }
 
   /* ── Sessions table ─────────────────────────────────────────────── */
-  #sessions-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; border-radius:var(--radius);
+  #sessions-table-wrap { overflow:auto hidden; -webkit-overflow-scrolling:touch; border-radius:var(--radius);
     border:1px solid var(--border); background:var(--panel); }
   #sessions-table { width:100%; border-collapse:collapse; font-family:'Share Tech Mono',monospace; font-size:12px; min-width:520px; }
   #sessions-table thead tr { text-align:left; color:var(--muted); border-bottom:1px solid var(--border); }
@@ -439,7 +466,9 @@
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
     #download-agent-btn { display:none; }
-    #header-right { gap:8px; }
+    #header-right { gap:5px; }
+    .range-select { padding:5px 16px 5px 6px; font-size:10px; background-position:right 5px center; background-size:8px; }
+    #test-mode-btn { padding:5px 7px; }
     #tabs { padding:5px 6px; }
     .tab { padding:8px 12px; font-size:11px; }
     .page { padding:10px; gap:10px; }
@@ -537,17 +566,22 @@
      while the expand button (no matching right margin) hugged the right
      edge with barely any gap at all — "even between icons, uneven at the
      ends" is exactly what read as off-center/unequal padding. */
-  /* No box-shadow (was: 0 10px 30px -10px rgba(0,0,0,.6)) — a drop shadow
-     cast downward from a floating element sitting right against the real
-     Android nav bar reads as a dark halo/gradient in the gap between them,
-     which looks like a mismatch even when the actual background colors
-     (see #app's mobile gradient) line up correctly. Removing it lets the
-     flat background show cleanly instead of fighting a shadow gradient. */
+  /* A small UPWARD-biased shadow, not none and not a plain downward one.
+     The original downward shadow (0 10px 30px -10px rgba(0,0,0,.6)) was
+     removed entirely earlier — a shadow cast down from a floating element
+     sitting right against the real Android nav bar (only ~10px+safe-area
+     of actual gap, measured directly) reads as a dark halo/mismatch no
+     matter how well the background colors themselves line up. A negative
+     y-offset shifts the shadow's center UP and above the pill instead of
+     below it, so it gives real lifted-card depth without reaching down
+     toward the gap at all — its downward reach past the pill's own bottom
+     edge is only blur-minus-offset (8-2=6px here), comfortably inside that
+     ~10px+ measured gap, unlike a plain positive-offset shadow would be. */
   .mobile-navbar {
     position:fixed; left:10px; right:10px; bottom:calc(10px + env(safe-area-inset-bottom)); height:58px; z-index:15;
     align-items:stretch; justify-content:space-between; padding:0 10px; border-radius:20px;
     background:rgba(15,18,26,.94); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-    border:1px solid var(--border);
+    border:1px solid var(--border); box-shadow:0 -2px 8px rgba(0,0,0,.3);
   }
   /* No scroll here on purpose — the bar shows a fixed, non-scrolling set
      of the most-used tabs (marked in HTML with .mobile-navbar-tab-primary;
@@ -657,7 +691,11 @@
        as a real depth cue AND stay clear of a 10px gap, so this drops the
        shadow entirely instead — same call already made for .mobile-navbar
        above, same reasoning. */
-    padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    /* overflow:hidden auto, not a bare overflow-y:auto — see #raw-log's
+       comment above for why (the un-set overflow-x axis relaxing to 'auto'
+       is what let the scrollbar draw outside this element's border-radius
+       on some browsers). */
+    padding:8px; overflow:hidden auto; -webkit-overflow-scrolling:touch;
     transform:translateY(14px) scale(.96); opacity:0; pointer-events:none; will-change:transform, opacity;
     /* A slight overshoot ease (cubic-bezier peak >1) instead of the page's
        standard --ease reads as a springier, more "alive" sheet motion —
@@ -798,6 +836,12 @@
       <a id="download-agent-btn" class="btn btn-sm" href="/greenpower-agent.zip" download="greenpower-agent.zip" title="Download the receiver agent (unzip, run setup.bat)">
         <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
       </a>
+      <!-- Global — one selection affects every live chart on every page
+           (Overview minis, each dedicated metric page, Multi), not a
+           per-page setting. Options/values populated by JS from
+           RANGE_OPTIONS so this stays the one source of truth rather than
+           duplicating the list in markup. -->
+      <select id="range-select" class="range-select" title="How much history the live charts show"></select>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
@@ -1117,20 +1161,10 @@ const METRICS = {
   esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},
 };
 const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','rssi'];
-// Checked once at load, not re-checked on resize/rotation — both MAX_POINTS
-// and the x-axis tick density below are derived from this once, and mobile
-// users essentially never rotate/resize this page mid-session.
+// Checked once at load, not re-checked on resize/rotation — the x-axis tick
+// density below is derived from this, and mobile users essentially never
+// rotate/resize this page mid-session.
 const IS_MOBILE = window.matchMedia('(max-width:860px)').matches;
-// A phone's chart cards are maybe a third the width of a desktop chart, so
-// the same 150-point/30s window that reads as a smooth line on desktop
-// packs 5x more points per pixel on mobile — it reads as a dense, jagged
-// scribble instead. Halving the window (still ~12s at the sender's 5Hz
-// cadence) keeps roughly the same visual point-density as desktop. History
-// arrays are pre-sized to this at page load (see below) — resizing them
-// live mid-session would mean re-deriving MAX_POINTS-worth of placeholder/
-// real data, not worth it for an orientation change mobile users
-// essentially never do on this page.
-const MAX_POINTS = IS_MOBILE ? 60 : 150;
 
 // ── ICONS ─────────────────────────────────────────────────────────────────────
 // Single source of truth for every icon on the page (Feather-style: 24x24
@@ -1264,20 +1298,21 @@ const BASE_OPTS = {
     // the comment above. ticks.callback (assigned post-JSON-clone by
     // attachTimeAxis() below, since functions don't survive JSON.stringify)
     // formats those raw ms values as hour:minute for display.
-    // Labels are hour:minute only (fmtTimeNoSeconds, no seconds) but a
-    // mobile chart's visible window is only ~12s (MAX_POINTS above) — at
-    // the old maxTicksLimit:4, most/all of those ticks land inside the same
-    // minute and print the exact same "H:MM" text repeated, which reads as
-    // clutter/noise rather than useful timing info. Cut mobile down to 2 —
-    // enough to show the window is moving without repeating itself.
+    // Labels are hour:minute only (fmtTimeNoSeconds, no seconds). At the
+    // shortest selectable range (1 Min, see RANGE_OPTIONS) a mobile chart's
+    // narrower width means the old maxTicksLimit:4 could land several ticks
+    // inside the same minute and print the exact same "H:MM" text repeated
+    // — clutter/noise, not useful timing info. Cut mobile down to 2 —
+    // enough to show the window is moving without repeating itself. Doesn't
+    // need to vary by the currently-selected range itself; 2 vs 4 stays a
+    // reasonable label count across the whole 1min-30min+ span.
     x:{type:'linear', display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:IS_MOBILE?2:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
     y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#828a9c',font:{size:10}},border:{color:'rgba(255,255,255,.07)'}}
   },
   // borderJoinStyle/borderCapStyle:'round' round off the corners where the
   // canvas line segments between points meet — combined with tension (the
-  // Bezier curve smoothing already in place), this is what keeps a chart
-  // with fewer points (see MAX_POINTS above) from reading as a jagged
-  // polyline of sharp angles instead of a smooth curve.
+  // Bezier curve smoothing already in place), keeps the line reading as a
+  // smooth curve rather than a jagged polyline of sharp angles.
   elements:{point:{radius:0,hoverRadius:4,hitRadius:8},
     line:{borderWidth:2,tension:0.35,borderJoinStyle:'round',borderCapStyle:'round'}}
 };
@@ -1325,30 +1360,25 @@ function attachHaptics(opts) {
 // so on a touch device the tooltip just stays pinned at wherever the finger
 // last was, forever, until the next tap starts a new one. This adds the
 // missing "let go" behavior: a real touchend/touchcancel listener that
-// starts a 1s countdown to clear the tooltip, cancelled if a new touch
-// starts before it fires (so a quick re-tap/drag doesn't get cut off mid-
-// gesture). Takes the CHART INSTANCE, not an options object — unlike
-// attachHaptics/attachTimeAxis above (which patch options before
-// construction), this needs chart.canvas/chart.update() after the chart
-// already exists, so it's called post-construction at every chart-creation
-// site instead.
+// clears the tooltip/highlighted point the instant a touch ends — no delay,
+// no fade (an earlier version faded it out after a 1s delay; the user
+// tried that and asked for an immediate disappearance instead). Takes the
+// CHART INSTANCE, not an options object — unlike attachHaptics/
+// attachTimeAxis above (which patch options before construction), this
+// needs chart.canvas/chart.update() after the chart already exists, so
+// it's called post-construction at every chart-creation site instead.
 function attachTouchTooltipAutoHide(chart) {
   if (!chart || !chart.canvas) return chart;
-  let hideTimer = null;
-  const cancelPending = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
   const hideTooltipNow = () => {
     try {
       chart.setActiveElements([]);
       chart.tooltip.setActiveElements([], {x:0, y:0});
-      chart.update();   // NOT 'none' — this is the one call that should
-                         // actually animate, using TOOLTIP_OPTS.animation
-                         // above, so the tooltip fades rather than snaps.
+      chart.update('none');   // instant — no fade, per the "disappear
+                               // immediately" request above.
     } catch(e) {}
   };
-  chart.canvas.addEventListener('touchstart', cancelPending, {passive:true});
-  const scheduleHide = () => { cancelPending(); hideTimer = setTimeout(hideTooltipNow, 1000); };
-  chart.canvas.addEventListener('touchend', scheduleHide, {passive:true});
-  chart.canvas.addEventListener('touchcancel', scheduleHide, {passive:true});
+  chart.canvas.addEventListener('touchend', hideTooltipNow, {passive:true});
+  chart.canvas.addEventListener('touchcancel', hideTooltipNow, {passive:true});
   return chart;
 }
 
@@ -1405,14 +1435,23 @@ function forceChartResize(chart) {
 // Chart.js's older (values[], labels[]) pairing. See the BASE_OPTS comment
 // above for why that's what actually fixes the line's smoothness, not an
 // animation setting.
-function safeUpdateChart(chart, times, values) {
+// xMin/xMax are passed explicitly (the currently-selected range's bounds,
+// computed once per applyHistory() call and shared across every chart) —
+// NOT derived from times[0]/times[last] the way this used to work. That
+// distinction matters now that a "range" can be much bigger than the data
+// that's actually arrived: right after opening the 30-minute view (or right
+// after selecting a longer range for the first time), the real data might
+// only span the last few seconds/minutes — deriving the axis from the data
+// itself would show a tiny sliver of a 30-minute-wide chart instead of the
+// full selected window. Passing the window bounds explicitly keeps the
+// axis showing the FULL selected range immediately, with real data filling
+// in from wherever it actually starts.
+function safeUpdateChart(chart, times, values, xMin, xMax) {
   if (!chart) return;
   try {
     chart.data.datasets[0].data = times.map((t, i) => ({x:t, y:values[i]}));
-    if (times.length) {
-      chart.options.scales.x.min = times[0];
-      chart.options.scales.x.max = times[times.length - 1];
-    }
+    chart.options.scales.x.min = xMin;
+    chart.options.scales.x.max = xMax;
     chart.update('none');
   } catch(e) { console.warn('Chart update failed:', e); }
 }
@@ -1682,6 +1721,16 @@ document.querySelectorAll('.tab').forEach(t => {
         Object.values(bigCharts).forEach(forceChartResize);
         forceChartResize(multiChart);
         Object.values(sessionCharts).forEach(forceChartResize);
+        // applyHistory() itself now skips any chart whose offsetParent is
+        // null (see its own comment) — normally harmless since it re-runs
+        // on every new live packet regardless of the active tab anyway, so
+        // a chart catches up within one poll tick (≤200ms) of becoming
+        // visible. But that "next packet" may never come (car/receiver
+        // offline, or Test Mode not running) — without this explicit call,
+        // a chart you switch to while nothing is live would sit with
+        // whatever data/axis it last had (possibly none at all, if it's
+        // never been visible before) instead of the correct current window.
+        applyHistory();
       }, 0);
       // Leaflet (like Chart.js) can't correctly size a map built inside a
       // container that was display:none — invalidateSize() forces it to
@@ -1916,24 +1965,60 @@ document.getElementById('session-view-close').addEventListener('click', () => {
 });
 
 // ── STATE / HISTORY ──────────────────────────────────────────────────────────
-// Pre-filled to MAX_POINTS with nulls/backdated placeholder timestamps
-// rather than starting empty and growing to MAX_POINTS over the first ~30s.
-// An empty→growing chart auto-fits its axes to whatever handful of points
-// exist so far, so every single new point visibly yanks the whole chart's
-// scale around ("the graphs expand rapidly") until it finally fills up.
-// Starting pre-filled means the x-axis already spans the full window and
-// (combined with the per-metric y suggestedMin/Max in safeChart()) the axes
-// are stable from the very first real data point — Chart.js just draws a
-// null-gap line that fills in from the right as real points arrive, instead
-// of a shrinking/rescaling one.
+// history[k]/historyTimes are a single GROWING buffer per metric (not a
+// fixed-size ring anymore — see the old MAX_POINTS/pre-seeded-nulls
+// approach this replaced, further down in git history) — every real sample
+// is kept until it ages out past HISTORY_HARD_CAP_MS, independent of
+// whatever time RANGE is currently selected for display (see RANGE_OPTIONS
+// below). This split matters: the buffer is the full retention policy
+// ("how much do we ever keep"), the selected range is just a VIEW into a
+// slice of it ("how much do we show right now") — switching ranges never
+// throws away or re-fetches data, it just changes which slice of the
+// already-retained buffer gets handed to Chart.js.
+// HISTORY_HARD_CAP_MS (4h) is generous headroom past the longest selectable
+// range (30m) or a typical race/test session, while still bounding memory
+// for a tab left open a very long time — evicted in pushHistory() below.
+const HISTORY_HARD_CAP_MS = 4 * 60 * 60 * 1000;
 const history = {};
-Object.keys(METRICS).forEach(k => history[k] = new Array(MAX_POINTS).fill(null));
-const historyTimes = [];   // real epoch-ms timestamps (server-stamped, see server.js), not a point counter
-const SENSOR_INTERVAL_MS_GUESS = 200;   // matches the sender's 5 Hz cadence — only used to space out the initial placeholder timestamps below
-(function seedHistoryTimes() {
-  const now = Date.now();
-  for (let i = MAX_POINTS - 1; i >= 0; i--) historyTimes.push(now - i * SENSOR_INTERVAL_MS_GUESS);
-})();
+Object.keys(METRICS).forEach(k => history[k] = []);
+const historyTimes = [];   // real epoch-ms timestamps (server-stamped, see server.js), parallel to history[k]
+
+// ── LIVE CHART TIME RANGE (global — affects every live chart at once) ───────
+// A single shared selection rather than a per-page/per-chart one: this is
+// a "how far back am I looking" setting, conceptually the same everywhere,
+// not something that makes sense to differ page-to-page. ms:null ("All")
+// means "the entire retained buffer" (still bounded by HISTORY_HARD_CAP_MS
+// above), not literally the whole DB-backed session — that's a deliberate
+// scope line, not an oversight: "All" here means everything received since
+// this tab started polling, matching this file's existing documented split
+// between the client-side-only live charts and the separate, durable,
+// server-side Sessions/CSV-export feature (see the Sessions rules further
+// down) — a past/pre-page-load session's full history is what the Sessions
+// tab is already for; duplicating that fetch-and-merge logic into the live
+// charts here was a deliberately avoided scope expansion.
+const RANGE_OPTIONS = [
+  { key:'1m',  label:'1M',  ms:60 * 1000 },
+  { key:'5m',  label:'5M',  ms:5 * 60 * 1000 },
+  { key:'15m', label:'15M', ms:15 * 60 * 1000 },
+  { key:'30m', label:'30M', ms:30 * 60 * 1000 },
+  { key:'all', label:'All', ms:null },
+];
+const DEFAULT_RANGE_KEY = '5m';
+let currentRangeMs = RANGE_OPTIONS.find(r => r.key === DEFAULT_RANGE_KEY).ms;
+
+// historyTimes is always sorted ascending (only ever appended to) — binary
+// search for "first index at/after this timestamp" instead of a linear
+// scan, since this runs every ~200ms against a buffer that can hold up to
+// HISTORY_HARD_CAP_MS/200ms = 72,000 entries at the 30-minute+ end.
+function findTimeIndex(times, sinceMs) {
+  let lo = 0, hi = times.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (times[mid] < sinceMs) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
 let lastSeq = null;
 const rawLines = [];
 const MAX_RAW_LINES = 80;
@@ -1988,16 +2073,24 @@ function applyState(d, online) {
 }
 
 function pushHistory(d) {
-  Object.keys(METRICS).forEach(k => {
-    const arr = history[k];
-    arr.push(typeof d[k] === 'number' ? d[k] : null);
-    if (arr.length > MAX_POINTS) arr.shift();
-  });
+  Object.keys(METRICS).forEach(k => history[k].push(typeof d[k] === 'number' ? d[k] : null));
   // d.received_at is stamped server-side (see server.js) when the packet
   // arrived — real wall-clock time, not a client poll-tick guess. Falls back
   // to Date.now() only if it's ever missing (e.g. an old cached response).
-  historyTimes.push(d.received_at || Date.now());
-  if (historyTimes.length > MAX_POINTS) historyTimes.shift();
+  const t = d.received_at || Date.now();
+  historyTimes.push(t);
+  // Evict anything older than the hard retention ceiling — this is the
+  // outer bound on the whole buffer, independent of whatever range is
+  // currently SELECTED for display (see RANGE_OPTIONS above). Normally
+  // evicts 0-1 entries per call (one point pushed at a time at ~5Hz); the
+  // splice cost only becomes noticeable right as a long-open tab first
+  // crosses HISTORY_HARD_CAP_MS, not on a steady-state basis.
+  const cutoff = t - HISTORY_HARD_CAP_MS;
+  const evictCount = findTimeIndex(historyTimes, cutoff);
+  if (evictCount > 0) {
+    historyTimes.splice(0, evictCount);
+    Object.keys(METRICS).forEach(k => history[k].splice(0, evictCount));
+  }
 }
 
 // Hour:minute only — no seconds. Chart x-axis labels at 5 Hz would otherwise
@@ -2011,26 +2104,57 @@ function fmtTimeNoSeconds(ms) {
   catch(e) { return ''; }
 }
 
+// A chart on a tab that isn't currently active has offsetParent === null —
+// updating it (rebuilding a data array that can now be tens of thousands of
+// points at the longer ranges) is pure wasted work while nobody can see it.
+// It naturally catches up within one poll tick (≤200ms) of becoming visible
+// again, since applyHistory() re-runs on every new packet regardless of
+// which tab is active — no separate "catch up on tab switch" step needed
+// beyond the canvas resize the tab-click handler already does.
+function chartIsVisible(chart) {
+  return !!(chart && chart.canvas && chart.canvas.offsetParent !== null);
+}
+
 function applyHistory() {
   try {
-    OVERVIEW_MINI.forEach(k => safeUpdateChart(ovCharts[k], historyTimes, history[k]));
-    Object.keys(bigCharts).forEach(k => safeUpdateChart(bigCharts[k], historyTimes, history[k]));
+    const now = Date.now();
+    // The window this tick's update should show: an explicit duration back
+    // from now, or (currentRangeMs === null, "All") the buffer's own
+    // earliest retained point — NOT literally "unbounded", see
+    // HISTORY_HARD_CAP_MS above for why "All" still has a real ceiling.
+    const windowStart = currentRangeMs != null ? now - currentRangeMs
+      : (historyTimes.length ? historyTimes[0] : now);
+    const startIdx = findTimeIndex(historyTimes, windowStart);
+    const winTimes = historyTimes.slice(startIdx);
+    // xMin/xMax are the FULL selected window, not just wherever real data
+    // happens to start — see safeUpdateChart()'s comment for why.
+    const xMin = windowStart, xMax = now;
 
-    if (!multiChart) return;
+    OVERVIEW_MINI.forEach(k => {
+      const ch = ovCharts[k];
+      if (chartIsVisible(ch)) safeUpdateChart(ch, winTimes, history[k].slice(startIdx), xMin, xMax);
+    });
+    Object.keys(bigCharts).forEach(k => {
+      const ch = bigCharts[k];
+      if (chartIsVisible(ch)) safeUpdateChart(ch, winTimes, history[k].slice(startIdx), xMin, xMax);
+    });
+
+    if (!multiChart || !chartIsVisible(multiChart)) return;
     const visible = Object.keys(METRICS).filter(k => multiVisible[k]);
     multiChart.data.datasets = visible.map(k => {
       const [lo,hi] = METRICS[k].range; const span = (hi-lo)||1;
-      const norm = history[k].map(v => v==null ? null : Math.max(0,Math.min(100,(v-lo)/span*100)));
-      const points = historyTimes.map((t,i) => ({x:t, y:norm[i]}));
+      const vals = history[k].slice(startIdx);
+      const points = winTimes.map((t,i) => {
+        const v = vals[i];
+        return {x:t, y: v==null ? null : Math.max(0,Math.min(100,(v-lo)/span*100))};
+      });
       const color = resolveColor(METRICS[k].color);
       return {label:METRICS[k].label.toUpperCase(), data:points, borderColor:color,
               backgroundColor:color+'14', fill:false, borderWidth:1.8, pointRadius:0, tension:0.3,
               pointStyle:'line', borderJoinStyle:'round', borderCapStyle:'round'};
     });
-    if (historyTimes.length) {
-      multiChart.options.scales.x.min = historyTimes[0];
-      multiChart.options.scales.x.max = historyTimes[historyTimes.length - 1];
-    }
+    multiChart.options.scales.x.min = xMin;
+    multiChart.options.scales.x.max = xMax;
     multiChart.update('none');
   } catch(e) { console.warn('applyHistory error:', e); }
 }
@@ -2089,10 +2213,12 @@ async function poll() {
     updateConnStatus(false, null);
   }
 }
-// Paint the pre-filled (all-null) history window immediately so every chart
-// already shows its full, stable time axis before the first live packet
-// ever arrives — real data then fills in from the right on top of it,
-// rather than the chart building its axes up from a single first point.
+// Paint the currently-visible chart's axis immediately, before the first
+// live packet ever arrives — xMin/xMax inside applyHistory() are always the
+// full selected-range window regardless of how much real data exists yet
+// (see its own comment), so this shows a correctly-scaled empty chart from
+// the very first frame rather than one that visibly grows into shape as
+// data arrives.
 applyHistory();
 
 // ── TEST MODE (fake data for UI testing, no car/receiver required) ──────────
@@ -2170,6 +2296,24 @@ function setTestMode(on) {
 }
 
 document.getElementById('test-mode-btn').addEventListener('click', () => setTestMode(!testModeActive));
+
+// ── RANGE SELECTOR ────────────────────────────────────────────────────────
+// Populated from RANGE_OPTIONS (declared with history/historyTimes above)
+// rather than hand-written <option> markup, so that list stays the one
+// place range choices are defined.
+(function initRangeSelect() {
+  const sel = document.getElementById('range-select');
+  sel.innerHTML = RANGE_OPTIONS.map(r => `<option value="${r.key}">${r.label}</option>`).join('');
+  sel.value = DEFAULT_RANGE_KEY;
+  sel.addEventListener('change', () => {
+    const opt = RANGE_OPTIONS.find(r => r.key === sel.value);
+    currentRangeMs = opt ? opt.ms : null;
+    // Redraw immediately rather than waiting up to 200ms for the next live
+    // packet — picking a new range is a direct action that should feel
+    // instant, the same reasoning as the tab-switch catch-up call.
+    applyHistory();
+  });
+})();
 
 poll();
 setInterval(() => { if (!testModeActive) poll(); }, 200);
