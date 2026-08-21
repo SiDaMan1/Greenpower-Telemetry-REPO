@@ -5,9 +5,17 @@ Runs on whatever computer the `greenpower_receiver` ESP32 is plugged into. Watch
 ## Setup (one time)
 
 1. Make sure [Node.js](https://nodejs.org) (LTS) is installed.
-2. Double-click **`setup.bat`**.
+2. Download `GreenpowerAgentSetup.exe` (from the dashboard's Download Installer button, or the repo root README) and run it.
 
-That's it. It installs dependencies, asks for your website URL and API key the first time (same `TELEMETRY_API_KEY` you set on Railway), registers itself to start silently every time you log in, and starts it immediately.
+The installer walks through a normal setup wizard — no admin rights needed (installs to your own user folder, not Program Files). It installs dependencies, config is already baked in, registers itself to start silently every time you log in, and starts it immediately. It also adds a Start Menu shortcut and a proper uninstaller (Add/Remove Programs).
+
+Building the installer yourself (only needed if you've changed something in this folder): see `installer/GreenpowerAgent.iss` — compile with Inno Setup's `ISCC.exe`, no admin rights needed for that either.
+
+<details>
+<summary>Old manual flow (still works, just not what the installer button gives you)</summary>
+
+Double-click **`setup.bat`** directly in this folder instead of using the installer — same underlying steps (installs dependencies, asks for your website URL and API key the first time, registers auto-start, starts it immediately), just without the Start Menu shortcut/uninstaller/wizard UI.
+</details>
 
 ## Using it (every time after that)
 

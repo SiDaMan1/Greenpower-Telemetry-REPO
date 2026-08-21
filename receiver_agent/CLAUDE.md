@@ -25,6 +25,9 @@ This is meant to run continuously in the background (e.g. started at login), not
 | `tray-icon.ico` | System tray icon (32×32, generated from the Greenpower badge logo) | **Yes, regenerate from the same source logo if it ever changes** |
 | `agent.log` | Runtime log (gitignored) — the only visibility into the agent once it's running hidden via `setup.bat` | **Generated, not checked in** |
 | `package.json` | Dependencies (`serialport`, `node-notifier`, `systray`) | **Yes, if adding a real dependency** |
+| `installer/GreenpowerAgent.iss` | Inno Setup script — builds `GreenpowerAgentSetup.exe`, the real Windows installer this folder now ships as (Start Menu shortcut, uninstaller, no admin needed). See its own header comment for build command and why it's `PrivilegesRequired=lowest` | **Yes — keep in sync with what `setup.bat` does; see the rule below** |
+| `installer/infobefore.txt` | Plain-text page shown before the installer wizard starts (Node.js prerequisite, no-admin note) | **Yes** |
+| `installer/dist/` | Build output (gitignored) — `ISCC.exe`-compiled `.exe` lands here, then gets copied to `telemetry_web/public/GreenpowerAgentSetup.exe` to publish it | **Generated, not checked in** |
 | `CLAUDE.md` | This file | **Yes — update after significant changes** |
 
 ---
@@ -70,19 +73,26 @@ Confirmed by actually installing it — `node-systray`/`node-systray-v2` are the
 ### Restarting the agent is required to pick up agent.js changes — it doesn't hot-reload
 Obvious in hindsight but worth stating: a code change here (like the tray icon addition) only affects the *next* time the agent starts (re-run `setup.bat`, or `taskkill` the old `node.exe` per `agent.pid` and start it again) — an already-running instance keeps running the code it loaded at its own startup.
 
+### The installer (`installer/GreenpowerAgent.iss`) duplicates `setup.bat`'s logic in Pascal Script — keep them in sync
+`GreenpowerAgentSetup.exe` is the primary distribution now (linked from both the dashboard's Download Installer button and the repo root README), but `setup.bat` still exists and still works standalone — they're two independent implementations of the same steps (check Node.js is on PATH, `npm install`, write a hidden Startup-folder VBS launcher, kill any previous `agent.pid` process, launch now), not one calling the other. If the setup FLOW itself changes (a new step, a different auto-start mechanism, a new prerequisite check), update both — the `.iss` file's `[Code]` section (`NodeIsOnPath`, `StopExistingAgent`, `WriteStartupLauncher`, `CurStepChanged`) and `setup.bat` will silently drift apart otherwise.
+**No admin rights, deliberately**: `PrivilegesRequired=lowest` + `DefaultDirName={localappdata}\Programs\GreenpowerAgent` means the installer never triggers a UAC prompt and never needs Program Files — matters because whoever's running this on a laptop at the track may not have admin on that machine. Don't change the install directory to a Program Files path or otherwise make this require elevation without a real reason.
+**Node.js is still a required prerequisite, not bundled.** Packaging the agent into a single, fully standalone `.exe` (via `pkg` or Node's built-in Single Executable Applications feature) was considered and deliberately not attempted — `serialport` is a native addon and `systray` spawns its own helper binary, and bundling native addons into a SEA/pkg single-file executable is a known-fragile combination with edge cases this environment couldn't verify actually work on a real target machine. If that's ever attempted, treat it as a real project with real device testing, not a quick swap.
+**Rebuild command** (from `receiver_agent/installer/`, no admin needed): `"%LocalAppData%\Programs\Inno Setup 7\ISCC.exe" GreenpowerAgent.iss` → output lands in `installer/dist/GreenpowerAgentSetup.exe` → copy that over `telemetry_web/public/GreenpowerAgentSetup.exe` to actually publish it (same "rebuild by hand, it's a snapshot not a live proxy" pattern `greenpower-agent.zip` used before it, see `telemetry_web/CLAUDE.md`).
+
 ### `setup.bat`'s config-write block avoids delayed-expansion pitfalls on purpose
 The `set /p` + config.json write logic uses `goto`/labels instead of nesting inside an `if (...)` parenthesized block — batch expands `%VAR%` at parse time for a whole parenthesized block, so a variable set with `set /p` earlier in the *same* block reads back empty. If you touch `setup.bat`, keep variable-set-then-use sequences as separate top-level lines (or add `setlocal enabledelayedexpansion` + `!VAR!` if you reintroduce a block) rather than reintroducing this bug.
 
 ---
 
-## Current State (V1.2 — tray icon added)
+## Current State (V1.3 — real Windows installer added)
 
 - Windows-focused (development/testing done on Windows); other platforms untested
 - No persistent "remember this device" — every unplug/replug re-prompts
 - No retry/queue on forward failure — a failed POST to `telemetry_web` is logged and dropped, not retried
-- One-time setup is `setup.bat`: installs deps, prompts for config if missing, registers a hidden auto-start launcher in the user's Startup folder (`%APPDATA%\...\Startup\GreenpowerReceiverAgent.vbs`), and starts it immediately. After that, normal use is plug-in + one notification click — no terminal, no manual `npm start`.
+- **Primary distribution is now `GreenpowerAgentSetup.exe`**, a real Inno Setup installer (`installer/GreenpowerAgent.iss`) — Start Menu shortcut, uninstaller in Add/Remove Programs, no admin rights needed. `setup.bat` still exists and still works as a manual/standalone alternative — see the rule above on keeping the two in sync. Both do the same underlying steps: install deps, register a hidden auto-start launcher in the user's Startup folder (`%APPDATA%\...\Startup\GreenpowerReceiverAgent.vbs`), start it immediately. After that, normal use is plug-in + one notification click — no terminal, no manual `npm start`.
 - Runs hidden (no console window) once auto-started; `agent.log` (truncated per run) is the only runtime visibility
-- **System tray icon added**: shows a Greenpower badge icon in the taskbar tray for as long as the agent process is alive (whether or not anything is currently forwarding), with a right-click menu (`Greenpower Agent — Running` status line + `Stop Agent`) — see the `systray` rules above for the exact package/API gotchas. `config.json` is now committed with real credentials (previously gitignored) at the repo owner's explicit request.
+- System tray icon: shows a Greenpower badge icon in the taskbar tray for as long as the agent process is alive (whether or not anything is currently forwarding), with a right-click menu (`Greenpower Agent — Running` status line + `Stop Agent`) — see the `systray` rules above for the exact package/API gotchas. `config.json` is committed with real credentials (previously gitignored) at the repo owner's explicit request.
+- **Not yet tested end-to-end on a real machine** — the installer was built and compiles cleanly, but actually running it (which would install for real, run `npm install`, register Startup auto-start, and start the agent talking to the live API) wasn't done in the session that built it, deliberately, since that has real persistent side effects on whatever machine runs it. Worth a real test pass before treating it as fully proven.
 
 ---
 

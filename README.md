@@ -31,15 +31,14 @@ A few things worth knowing if you're using it, not just building it:
 
 If you just need the car's data reaching the dashboard, you don't need this whole repo — only the **receiver agent**, running on whatever laptop the base-station receiver is plugged into.
 
-[![Download Receiver Agent](https://img.shields.io/badge/⬇️_Download-Receiver_Agent-22c55e?style=for-the-badge)](https://ascteracingmonitor.com/greenpower-agent.zip)
+[![Download Receiver Agent](https://img.shields.io/badge/⬇️_Download-Receiver_Agent-22c55e?style=for-the-badge)](https://ascteracingmonitor.com/GreenpowerAgentSetup.exe)
 
-1. Click the button above → downloads `greenpower-agent.zip` directly (no extra pages, no sign-in)
-2. Unzip it anywhere
-3. Double-click **`setup.bat`** inside the unzipped folder
+1. Click the button above → downloads `GreenpowerAgentSetup.exe` (a real Windows installer, ~2 MB)
+2. Run it and click through the setup wizard
 
-That's the entire one-time setup — it installs its own dependencies, config is already baked in, and it registers itself to auto-start at login (plus a small tray icon so you can tell it's running). After that, day-to-day use is just: plug in the receiver, click **Yes** on the notification that pops up asking permission to forward. Unplug/replug always re-asks — it never silently starts forwarding on its own.
+No unzipping, no `.bat` files — it's a proper installer now: Start Menu shortcut, uninstaller in Add/Remove Programs, no admin rights needed (installs to your own user folder). It still installs its own dependencies, config is already baked in, and it registers itself to auto-start at login (plus a small tray icon so you can tell it's running). Requires [Node.js](https://nodejs.org) (LTS) already installed — the installer checks and tells you if it's missing. After setup, day-to-day use is just: plug in the receiver, click **Yes** on the notification that pops up asking permission to forward. Unplug/replug always re-asks — it never silently starts forwarding on its own.
 
-The same download button also lives on the dashboard itself (top-right, desktop) for anyone who lands there first.
+The same download button also lives on the dashboard itself (top-right, desktop) for anyone who lands there first — it opens a short confirmation dialog first, since this is now a real installer someone's about to run, not an inert zip.
 
 More detail, including what the consent prompt is actually protecting against: [`receiver_agent/README.md`](receiver_agent/README.md)
 

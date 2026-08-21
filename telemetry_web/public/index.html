@@ -772,6 +772,34 @@
     .install-fab, .install-popover { display:none !important; }
   }
 
+  /* ── Download-installer confirmation modal ────────────────────────────
+     #download-agent-btn is already desktop-only (display:none inside the
+     max-width:860px block below), so this only ever needs to work on
+     desktop — a plain centered modal+backdrop, not the mobile-safe-area-
+     aware floating patterns used elsewhere in this file. Closed state is
+     opacity:0/pointer-events:none, never display:none — see
+     .mobile-navsheet's own rule (search this file) for exactly why a
+     display:none closed state silently kills a close transition; the same
+     reasoning applies here even though this modal doesn't animate closed
+     with quite the same fanfare. */
+  .confirm-modal-backdrop {
+    position:fixed; inset:0; z-index:30; background:rgba(0,0,0,.55);
+    opacity:0; pointer-events:none; transition:opacity .18s var(--ease);
+  }
+  .confirm-modal-backdrop.show { opacity:1; pointer-events:auto; }
+  .confirm-modal {
+    position:fixed; top:50%; left:50%; z-index:31; width:min(380px, calc(100vw - 48px));
+    background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--shadow); padding:20px;
+    transform:translate(-50%, -50%) scale(.96); opacity:0; pointer-events:none;
+    transition:transform .18s var(--ease), opacity .18s var(--ease);
+  }
+  .confirm-modal.show { transform:translate(-50%, -50%) scale(1); opacity:1; pointer-events:auto; }
+  .confirm-modal-title { font-family:'Space Grotesk',sans-serif; font-size:15px; font-weight:700; margin-bottom:10px; }
+  .confirm-modal-body { font-size:13px; line-height:1.55; color:var(--muted); }
+  .confirm-modal-body strong { color:var(--text); }
+  .confirm-modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+
   @media (max-width: 860px) {
     #tabs { display:none; }
     .mobile-navbar { display:flex; }
@@ -827,32 +855,56 @@
   <div id="header">
     <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
     <div id="header-right">
-      <!-- greenpower-agent.zip is a pre-built static file living right in
-           this app's own public/ folder (built from `git ls-files
-           receiver_agent`, same file set download-directory.github.io used
-           to bundle) — NOT the download-directory.github.io redirector
-           this used to point at. That service works by loading its own
-           page, fetching+zipping the folder client-side, and leaving a
-           whole status page ("Downloaded 10 files! Done!") visible with no
-           auto-close — the user has to see and click away from that every
-           time. A same-origin static file with the `download` attribute
-           triggers the browser's native save prompt directly, instantly,
-           with zero intermediate page ever shown.
-           MUST be regenerated whenever anything in receiver_agent/ changes
-           — this is a snapshot, not a live proxy to the folder. Rebuild
-           with (from the repo root): `git ls-files receiver_agent` piped
-           into a fresh Compress-Archive into telemetry_web/public/
-           greenpower-agent.zip, preserving the receiver_agent/ path
-           prefix inside the zip (matches the old bundle's structure). -->
-      <a id="download-agent-btn" class="btn btn-sm" href="/greenpower-agent.zip" download="greenpower-agent.zip" title="Download the receiver agent (unzip, run setup.bat)">
-        <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
-      </a>
+      <!-- GreenpowerAgentSetup.exe is a pre-built Inno Setup installer
+           living right in this app's own public/ folder — replaced an
+           earlier plain greenpower-agent.zip (unzip + run setup.bat by
+           hand). Real installer now: Start Menu shortcut, entry in
+           Add/Remove Programs, proper uninstaller — built from
+           receiver_agent/installer/GreenpowerAgent.iss, no admin rights
+           needed (installs to the user's own AppData, not Program Files).
+           MUST be rebuilt whenever anything in receiver_agent/ changes —
+           this is a snapshot, not a live build. Rebuild with (from
+           receiver_agent/installer/, no admin needed):
+             "%LocalAppData%\Programs\Inno Setup 7\ISCC.exe" GreenpowerAgent.iss
+           then copy installer/dist/GreenpowerAgentSetup.exe over this file.
+           This is a button, not a plain <a href download> — clicking it
+           opens #download-confirm-modal first (see its markup below) since
+           this is now a real .exe someone would run, not an inert zip of
+           source files; the modal's own Download link is what actually
+           triggers the file. -->
+      <button id="download-agent-btn" class="btn btn-sm" title="Download the receiver agent installer">
+        <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Installer</span>
+      </button>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
       <span id="server-time">--:--:--</span>
     </div>
   </div>
+
+  <!-- Confirmation modal before the agent installer download — this is a
+       real Windows .exe that runs setup on whoever's machine downloads it
+       now (was: an inert zip of source files, no confirmation needed).
+       Hidden by default (opacity:0/pointer-events:none, not display:none —
+       see .mobile-navsheet's own rule for why display:none breaks a close
+       transition), shown via JS toggling .show on both this and the
+       backdrop. -->
+  <div class="confirm-modal-backdrop" id="download-confirm-backdrop"></div>
+  <div class="confirm-modal" id="download-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="download-confirm-title">
+    <div class="confirm-modal-title" id="download-confirm-title">Download Receiver Agent</div>
+    <div class="confirm-modal-body">
+      This downloads <strong>GreenpowerAgentSetup.exe</strong> — a Windows installer that sets up a background app to relay telemetry from the receiver to this dashboard. It'll ask your permission before forwarding anything, every time.
+      <br><br>
+      Requires Node.js already installed; no admin rights needed. Only run installers from a source you trust.
+    </div>
+    <div class="confirm-modal-actions">
+      <button class="btn btn-sm" id="download-confirm-cancel">Cancel</button>
+      <a class="btn btn-sm btn-accent" id="download-confirm-go" href="/GreenpowerAgentSetup.exe" download="GreenpowerAgentSetup.exe">
+        <span class="icon" data-icon="download"></span>Download
+      </a>
+    </div>
+  </div>
+
   <div id="tabs">
     <div class="tab active" data-page="overview"><span class="tab-icon icon" data-icon="overview"></span>Overview</div>
     <div class="tab" data-page="speed"><span class="tab-icon icon" data-icon="speed"></span>Speed</div>
@@ -1875,6 +1927,26 @@ document.getElementById('raw-clear').addEventListener('click', () => {
   const el = document.getElementById('raw-log');
   if (el) el.textContent = '';
 });
+
+// ── DOWNLOAD-INSTALLER CONFIRMATION MODAL ────────────────────────────────────
+// #download-agent-btn no longer links straight to the file — it opens this
+// modal first, since GreenpowerAgentSetup.exe is a real installer someone
+// would run, not an inert zip of source files. #download-confirm-go is the
+// actual <a href download> that fires the browser's native save prompt;
+// clicking it also closes the modal (no reason to leave it open once the
+// real action already happened).
+function showDownloadConfirm() {
+  document.getElementById('download-confirm-backdrop').classList.add('show');
+  document.getElementById('download-confirm-modal').classList.add('show');
+}
+function hideDownloadConfirm() {
+  document.getElementById('download-confirm-backdrop').classList.remove('show');
+  document.getElementById('download-confirm-modal').classList.remove('show');
+}
+document.getElementById('download-agent-btn').addEventListener('click', showDownloadConfirm);
+document.getElementById('download-confirm-cancel').addEventListener('click', hideDownloadConfirm);
+document.getElementById('download-confirm-backdrop').addEventListener('click', hideDownloadConfirm);
+document.getElementById('download-confirm-go').addEventListener('click', hideDownloadConfirm);
 
 // ── SESSIONS (persistent history, from Postgres via server.js) ──────────────
 // Unlike everything else on this page, session data is NOT live-polled —
