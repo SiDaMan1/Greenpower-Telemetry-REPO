@@ -150,7 +150,7 @@ Went through four forms: `download-directory.github.io` (third-party page, no au
 Because this is a real installer someone would run (not an inert zip of source files), `#download-agent-btn` is a `<button>`, not a plain `<a href download>` — clicking it opens `#download-confirm-modal` (a simple centered backdrop+panel, desktop-only since the button itself already is) explaining what it downloads and why, with a Cancel button and a real `#download-confirm-go` `<a href="/GreenpowerAgentSetup.msi" download>` that both fires the native save prompt AND closes the modal on click. Same closed-state pattern as `.mobile-navsheet` (`opacity:0`/`pointer-events:none`, never `display:none`) for the same reason — see that rule elsewhere in this file.
 This is a **snapshot, not a live build** — it does NOT regenerate itself when `receiver_agent/` changes, and there is no build step or server route wired up to keep it in sync. **Whenever any file in `receiver_agent/` changes, this installer must be rebuilt by hand and re-copied** (or the downloaded agent silently goes stale) — from `receiver_agent/installer/` (no admin needed, using the portable WiX v3.14.1 binaries — see `receiver_agent/CLAUDE.md` for exactly how those were obtained without needing WiX's own admin-requiring installer):
 ```
-candle.exe -ext WixUtilExtension GreenpowerAgent.wxs
+candle.exe -arch x64 -ext WixUtilExtension GreenpowerAgent.wxs
 light.exe -ext WixUIExtension -ext WixUtilExtension GreenpowerAgent.wixobj -o dist\GreenpowerAgentSetup.msi
 ```
 then copy `installer/dist/GreenpowerAgentSetup.msi` over `telemetry_web/public/GreenpowerAgentSetup.msi`.

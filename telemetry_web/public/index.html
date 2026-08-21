@@ -876,7 +876,7 @@
            MUST be rebuilt whenever anything in receiver_agent/ changes —
            this is a snapshot, not a live build. Rebuild with (from
            receiver_agent/installer/, no admin needed):
-             candle.exe -ext WixUtilExtension GreenpowerAgent.wxs
+             candle.exe -arch x64 -ext WixUtilExtension GreenpowerAgent.wxs
              light.exe -ext WixUIExtension -ext WixUtilExtension GreenpowerAgent.wixobj -o dist\GreenpowerAgentSetup.msi
            then copy installer/dist/GreenpowerAgentSetup.msi over this file.
            This is a button, not a plain <a href download> — clicking it
@@ -885,7 +885,7 @@
            source files; the modal's own Download link is what actually
            triggers the file. -->
       <button id="download-agent-btn" class="btn btn-sm" title="Download the receiver agent installer">
-        <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Installer</span>
+        <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
       </button>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>

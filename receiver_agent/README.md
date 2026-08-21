@@ -13,7 +13,7 @@ It's a `.msi`, not the more common `.exe` — deliberate: an earlier `.exe` buil
 
 Building the installer yourself (only needed if you've changed something in this folder): see `installer/GreenpowerAgent.wxs` — compile with the portable WiX v3.14.1 `candle.exe`/`light.exe` (get the `wix314-binaries.zip` release asset from the [WiX v3 GitHub releases](https://github.com/wixtoolset/wix3/releases) — not WiX's own installer, which needs admin), no admin rights needed for the build either:
 ```
-candle.exe -ext WixUtilExtension GreenpowerAgent.wxs
+candle.exe -arch x64 -ext WixUtilExtension GreenpowerAgent.wxs
 light.exe -ext WixUIExtension -ext WixUtilExtension GreenpowerAgent.wixobj -o dist\GreenpowerAgentSetup.msi
 ```
 
