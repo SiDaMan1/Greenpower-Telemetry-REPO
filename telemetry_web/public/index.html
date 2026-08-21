@@ -417,7 +417,14 @@
        --panel card overlay (tuned for a near-black base) still reads fine
        against either end. */
     #app { background:linear-gradient(to bottom, #0b0c11, #171719); }
-    #header { padding:0 12px; height:50px; }
+    /* Flat, opaque #0b0c11 (not the desktop rgba(13,16,23,.85) translucent
+       tint) — that rgba blend has a visible blue cast (its blue channel,
+       23, is the highest of the three; #0b0c11's channels are much closer
+       to neutral) and, being translucent, blends with whatever's scrolling
+       behind it rather than staying a fixed, exact color — both of which
+       read as a mismatch against the real (neutral, opaque) status bar
+       right above it. Flat and opaque removes both problems at once. */
+    #header { background:#0b0c11; padding:0 12px; height:50px; }
     #server-time { display:none; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
@@ -521,11 +528,17 @@
      while the expand button (no matching right margin) hugged the right
      edge with barely any gap at all — "even between icons, uneven at the
      ends" is exactly what read as off-center/unequal padding. */
+  /* No box-shadow (was: 0 10px 30px -10px rgba(0,0,0,.6)) — a drop shadow
+     cast downward from a floating element sitting right against the real
+     Android nav bar reads as a dark halo/gradient in the gap between them,
+     which looks like a mismatch even when the actual background colors
+     (see #app's mobile gradient) line up correctly. Removing it lets the
+     flat background show cleanly instead of fighting a shadow gradient. */
   .mobile-navbar {
     position:fixed; left:10px; right:10px; bottom:calc(10px + env(safe-area-inset-bottom)); height:58px; z-index:15;
     align-items:stretch; justify-content:space-between; padding:0 10px; border-radius:20px;
     background:rgba(15,18,26,.94); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
-    border:1px solid var(--border); box-shadow:0 10px 30px -10px rgba(0,0,0,.6);
+    border:1px solid var(--border);
   }
   /* No scroll here on purpose — the bar shows a fixed, non-scrolling set
      of the most-used tabs (marked in HTML with .mobile-navbar-tab-primary;
