@@ -276,9 +276,17 @@
   .chart-canvas-wrap { position:relative; flex:1; min-height:0; width:100%; }
   .chart-canvas-wrap canvas { position:absolute; inset:0; width:100% !important; height:100% !important; }
 
+  /* display:flex + align-items/justify-content:center — NOT text-align +
+     line-height (the previous approach). line-height only centers on the
+     text baseline, which doesn't reliably vertically-center a differently-
+     sized inline-flex child (the .icon span, sized 10x10 inside this 18x18
+     circle) — it lands visibly off-center, high or low depending on the
+     font's own metrics. Flex centering positions the icon by its actual
+     box, not a text baseline, so it's centered regardless of icon size. */
   .chart-hide-btn { position:absolute; top:6px; right:6px; width:18px; height:18px; border-radius:50%;
-    background:rgba(255,255,255,.05); border:none; color:var(--muted); font-size:10px; line-height:18px;
-    text-align:center; cursor:pointer; opacity:0; transition:opacity .15s var(--ease), background .15s var(--ease), color .15s var(--ease); z-index:2; }
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(255,255,255,.05); border:none; color:var(--muted); font-size:10px;
+    cursor:pointer; opacity:0; transition:opacity .15s var(--ease), background .15s var(--ease), color .15s var(--ease); z-index:2; }
   .mini-chart-card:hover .chart-hide-btn { opacity:1; }
   .chart-hide-btn:hover { background:rgba(244,63,94,.18); color:var(--danger); }
   @media (hover:none) { .chart-hide-btn { opacity:.4; } }
@@ -422,8 +430,15 @@
      Everything below defaults to display:none so it can NEVER affect
      desktop layout/paint even if a selector here is wrong — only the
      (max-width:860px) block at the bottom turns any of it on. Desktop
-     keeps using #tabs exactly as before; none of this touches it. */
-  .mobile-navbar, .mobile-navsheet, .mobile-navsheet-backdrop, .install-fab, .install-popover { display:none; }
+     keeps using #tabs exactly as before; none of this touches it.
+     .mobile-navsheet/.mobile-navsheet-backdrop are deliberately NOT in this
+     list — see their own rules below for why (they need to stay out of
+     display:none entirely to get a real close transition). Excluding them
+     here is still just as safe for "never affects desktop": both are
+     position:fixed (already out of normal document flow) and default to
+     opacity:0 + pointer-events:none in their own rules below, so they take
+     no layout space and can't be interacted with on desktop either way. */
+  .mobile-navbar, .install-fab, .install-popover { display:none; }
 
   /* Bottom nav bar (thumb-reachable — the point of moving it off the side)
      shows every tab as an icon-only button; a dedicated "expand" button
@@ -513,32 +528,39 @@
   .mobile-navbar-expand.open .expand-icon-menu { opacity:0; transform:rotate(90deg) scale(.4); }
   .mobile-navbar-expand.open .expand-icon-x { opacity:1; transform:rotate(0deg) scale(1); }
 
+  /* Opacity-only closed state (no display:none) is what gives this a real
+     CLOSE transition, not just an open one. The previous version toggled
+     display:block/none via .show — opening worked (transitioning from a
+     display:none starting point into visible+opaque is a well-supported
+     browser pattern), but CLOSING did not: removing .show reverted to the
+     base rule's unconditional display:none, which takes effect instantly
+     (display isn't a transitionable property) and yanked the sheet out of
+     rendering before the opacity/transform transition got even one frame —
+     it just vanished instead of animating out. Staying at opacity:0 +
+     pointer-events:none (never display:none) means BOTH directions animate,
+     since opacity/transform are always free to transition either way. Safe
+     to leave "rendered" at all times because position:fixed already takes
+     it out of normal layout flow and pointer-events:none already blocks
+     interaction while closed — costs nothing on desktop either (see the
+     comment on the old shared display:none rule above). */
   .mobile-navsheet-backdrop {
     position:fixed; inset:0; z-index:14; background:rgba(0,0,0,.45); backdrop-filter:blur(1px);
+    opacity:0; pointer-events:none; transition:opacity .28s var(--ease);
   }
-  .mobile-navsheet-backdrop.show { display:block; animation:fadeIn .2s var(--ease); }
+  .mobile-navsheet-backdrop.show { opacity:1; pointer-events:auto; }
 
   .mobile-navsheet {
     position:fixed; left:10px; right:10px; bottom:calc(78px + env(safe-area-inset-bottom)); z-index:16; max-height:min(58vh, 420px);
     background:var(--panel-solid); border:1px solid var(--border); border-radius:18px;
     box-shadow:0 18px 44px -14px rgba(0,0,0,.65); padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
-    transform:translateY(14px) scale(.96); opacity:0; pointer-events:none;
-    transition:transform .22s var(--ease), opacity .18s var(--ease);
+    transform:translateY(14px) scale(.96); opacity:0; pointer-events:none; will-change:transform, opacity;
+    /* A slight overshoot ease (cubic-bezier peak >1) instead of the page's
+       standard --ease reads as a springier, more "alive" sheet motion —
+       common for bottom-sheet UI — and 280/220ms (was 220/180ms) gives it
+       enough time to actually be perceived as a slide rather than a snap. */
+    transition:transform .28s cubic-bezier(.34,1.56,.64,1), opacity .22s var(--ease);
   }
-  /* display MUST be set here, not just opacity/transform — the base rule
-     above hides every mobile-nav/install element with a plain display:none,
-     and since .mobile-navsheet's own base rule (further down) never
-     redeclares display (its opacity:0/pointer-events:none handle the closed
-     look instead, so opacity CAN transition, which display:none cannot),
-     that display:none silently survives unless .show overrides it here too.
-     Caught in testing: without this line, .show still toggled correctly
-     (classList, event wiring, even programmatic .click() on the tabs inside
-     all worked) but the sheet stayed invisible — display:none doesn't stop
-     an element from being queried or clicked programmatically, only from
-     being painted, so this specific bug doesn't show up in a check that
-     only clicks elements and reads classList instead of checking actual
-     rendered visibility. */
-  .mobile-navsheet.show { display:block; transform:translateY(0) scale(1); opacity:1; pointer-events:auto; }
+  .mobile-navsheet.show { transform:translateY(0) scale(1); opacity:1; pointer-events:auto; }
   .mobile-navsheet-tab {
     display:flex; align-items:center; gap:14px; padding:12px 13px; min-height:46px;
     color:var(--muted); cursor:pointer; border-radius:12px;
@@ -1085,30 +1107,49 @@ const TOOLTIP_OPTS = {
   titleFont:{family:"'Share Tech Mono',monospace", size:10},
   bodyFont:{family:"'Space Grotesk',sans-serif", size:12, weight:'600'},
 };
-// A short (not zero, not "full") animation duration is the middle ground
-// between the two bad extremes: animation:false (the old setting) makes
-// every 200ms redraw a hard cut, which is cheap but reads as a jump, not a
-// line "growing"; a long/default-duration animation would still be mid-
-// tween when the *next* update arrives 200ms later, stacking into visible
-// lag AND (see forceChartResize() above) means Chart.js's own "is an
-// animation still running" check rarely goes false, which is what a plain
-// chart.resize() call needs to actually take effect rather than silently
-// deferring itself. 150ms comfortably resolves before the next 200ms tick
-// (unlike the 250ms first tried here) while still reading as a smooth
-// slide rather than a snap.
-const LIVE_ANIMATION = { duration:150, easing:'easeOutQuad' };
+// ── WHY THE LINE USED TO "BUG OUT" (and why there's no per-update
+// animation config here anymore) ────────────────────────────────────────
+// An earlier pass tried to get a smooth "line growing" feel by animating
+// Chart.js's own value-tween on every update() call. That doesn't actually
+// work for a scrolling/shifting window of data: Chart.js's animation tweens
+// each ARRAY INDEX's value from old→new, but pushHistory() shifts the
+// oldest sample out and pushes a new one in every tick — so index 0's "old"
+// value belonged to one sample and its "new" value belongs to a completely
+// different (newer) sample. Every point ends up tweening toward a neighbor's
+// value instead of smoothly sliding, which reads as a rippling "bug out",
+// not a slide. (It also caused a second, worse bug: chart.resize() silently
+// no-ops while a Chart.js animation is in flight, which — once updates were
+// animating continuously — could leave a newly-active tab's chart stuck
+// invisible. See CLAUDE.md for the full story.)
+// The real fix is architectural, not a duration tweak: every chart point is
+// now a real {x: epoch-ms, y: value} pair (see safeUpdateChart/applyHistory
+// below) on a genuine LINEAR time x-axis, not an index-positioned value on
+// a category axis. A point's (x,y) never changes after it's first recorded
+// — only the oldest point drops off one side and a new one appears on the
+// other — so from one 200ms redraw to the next, every still-visible point
+// keeps its exact coordinates and just lands at a slightly different pixel
+// x (because the visible [min,max] time window advanced). That alone reads
+// as continuous smooth scrolling at 5 redraws/second, the same way a heart-
+// rate monitor trace looks fluid from frequent redraws with no animation
+// system involved at all. animation stays OFF (chart.update('none') always)
+// — there is nothing left for Chart.js's animator to usefully tween.
 const BASE_OPTS = {
-  responsive:true, maintainAspectRatio:false, animation:LIVE_ANIMATION,
+  responsive:true, maintainAspectRatio:false, animation:false,
   interaction:{mode:'index', intersect:false},
   plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
   scales:{
+    // type:'linear' (epoch-ms numeric values, not category/string labels)
+    // is what makes each point sit at its own real, fixed x position — see
+    // the comment above. ticks.callback (assigned post-JSON-clone by
+    // attachTimeAxis() below, since functions don't survive JSON.stringify)
+    // formats those raw ms values as hour:minute for display.
     // Labels are hour:minute only (fmtTimeNoSeconds, no seconds) but a
     // mobile chart's visible window is only ~12s (MAX_POINTS above) — at
     // the old maxTicksLimit:4, most/all of those ticks land inside the same
     // minute and print the exact same "H:MM" text repeated, which reads as
     // clutter/noise rather than useful timing info. Cut mobile down to 2 —
     // enough to show the window is moving without repeating itself.
-    x:{display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:IS_MOBILE?2:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
+    x:{type:'linear', display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:IS_MOBILE?2:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
     y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#828a9c',font:{size:10}},border:{color:'rgba(255,255,255,.07)'}}
   },
   // borderJoinStyle/borderCapStyle:'round' round off the corners where the
@@ -1119,6 +1160,18 @@ const BASE_OPTS = {
   elements:{point:{radius:0,hoverRadius:4,hitRadius:8},
     line:{borderWidth:2,tension:0.35,borderJoinStyle:'round',borderCapStyle:'round'}}
 };
+
+// Assigns the x-axis tick formatter and tooltip title formatter — both
+// functions, so (like attachHaptics below) this has to run AFTER
+// JSON.parse(JSON.stringify(BASE_OPTS)) rather than living on BASE_OPTS
+// itself, since functions don't survive a JSON round-trip. Also re-applied
+// after the multi-chart's wholesale opts.scales.x reassignment, since that
+// overwrites whatever was here first.
+function attachTimeAxis(opts) {
+  opts.scales.x.ticks.callback = (v) => fmtTimeNoSeconds(v);
+  opts.plugins.tooltip.callbacks = { title: (items) => items.length ? fmtTimeNoSeconds(items[0].parsed.x) : '' };
+  return opts;
+}
 
 // ── HAPTICS ──────────────────────────────────────────────────────────────────
 // A light tick each time the touch/hover crosses into a new data point while
@@ -1165,55 +1218,47 @@ function safeChart(id, colorVar, label, big=false, metricKey=null) {
       opts.scales.y.suggestedMin = lo;
       opts.scales.y.suggestedMax = hi;
     }
+    attachTimeAxis(opts);
     attachHaptics(opts);
+    // data starts empty — applyHistory() runs once immediately after all
+    // charts are built (see below) and populates every chart's first real
+    // frame from history[]/historyTimes[], same as before.
     return new Chart(ctx, {
       type:'line',
-      data:{labels:[],datasets:[{label,data:[],borderColor:color,backgroundColor:color+'1c',fill:true}]},
+      data:{datasets:[{label,data:[],borderColor:color,backgroundColor:color+'1c',fill:true}]},
       options:opts
     });
   } catch(e) { console.warn('Chart init failed:', id, e); return null; }
 }
 
-// Chart.js's own chart.resize(w,h) silently DEFERS itself — storing the new
-// size to apply on the next animation-driven draw instead of resizing right
-// now — whenever that chart has an animation in flight (its internal
-// Animator.running(chart) check). Since live charts now animate on every
-// update (see LIVE_ANIMATION above) and update roughly every 200ms, a chart
-// fed a steady stream of updates can have a "still running" animation
-// almost continuously, so a plain resize() call (e.g. the tab-switch fix
-// below, or the stats-bar collapse fix) can end up deferred indefinitely —
-// nothing ever triggers that deferred flush while updates keep re-arming a
-// new animation before the old one finishes. The visible symptom: a chart
-// on a newly-active tab stays stuck at its original (often 0×0, if it was
-// built while its page was still display:none) canvas size — genuinely
-// blank — for as long as updates keep streaming in, and only actually
-// resizes once something stops the updates (e.g. leaving Test Mode) and an
-// animation cycle finally completes on its own. chart.stop() cancels any
-// in-flight animation for that chart immediately, which forces resize()'s
-// very next call to take its normal synchronous path instead of deferring.
+// Chart.js's own chart.resize(w,h) silently DEFERS itself whenever that
+// chart has an animation in flight (its internal Animator.running(chart)
+// check) — it just stashes the new size to apply on that animation's next
+// draw instead of resizing synchronously. Charts don't animate on update
+// anymore (see the BASE_OPTS comment above), so this should never actually
+// trigger in practice now — chart.stop() is just a zero-cost defensive
+// no-op guard against ever hitting that trap again (e.g. if a future change
+// re-introduces per-update animation for some chart type), before every
+// resize() call the tab-switch handler and stats-bar-collapse fix make.
 function forceChartResize(chart) {
   if (!chart) return;
   try { chart.stop(); chart.resize(); } catch(e) { console.warn('Chart resize failed:', e); }
 }
 
-function safeUpdateChart(chart, labels, data) {
+// times/values are the parallel arrays from history[]/historyTimes (see
+// STATE / HISTORY below) — zipped here into real {x,y} points rather than
+// Chart.js's older (values[], labels[]) pairing. See the BASE_OPTS comment
+// above for why that's what actually fixes the line's smoothness, not an
+// animation setting.
+function safeUpdateChart(chart, times, values) {
   if (!chart) return;
   try {
-    chart.data.labels = (labels||[]).map(String);
-    chart.data.datasets[0].data = data||[];
-    // applyHistory() updates EVERY chart on EVERY tick regardless of which
-    // tab is active (cheap when it's just a data swap+'none' redraw) — but
-    // animating all ~25 of them (8 overview minis + 16 dedicated bigs +
-    // multi) simultaneously every ~200ms turned out to be enough main-
-    // thread/GPU work on a phone to visibly starve paint: the chart you're
-    // actually looking at appeared frozen/blank the whole time, and only
-    // caught up once updates stopped (e.g. leaving Test Mode, whose no-
-    // packet-loss 200ms cadence maxes this out worse than real LoRa data
-    // ever does). A hidden tab's canvas has offsetParent === null, so only
-    // animate the chart(s) actually on screen right now — everything else
-    // still gets fresh data via 'none', just without the animation cost.
-    const visible = chart.canvas && chart.canvas.offsetParent !== null;
-    chart.update(visible ? undefined : 'none');
+    chart.data.datasets[0].data = times.map((t, i) => ({x:t, y:values[i]}));
+    if (times.length) {
+      chart.options.scales.x.min = times[0];
+      chart.options.scales.x.max = times[times.length - 1];
+    }
+    chart.update('none');
   } catch(e) { console.warn('Chart update failed:', e); }
 }
 
@@ -1370,16 +1415,21 @@ try {
   const mctx = document.getElementById('chart-multi');
   const mopts = JSON.parse(JSON.stringify(BASE_OPTS));
   mopts.responsive=true; mopts.maintainAspectRatio=false;
-  mopts.scales.x={display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:IS_MOBILE?2:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
+  mopts.scales.x={type:'linear',display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:IS_MOBILE?2:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
   mopts.scales.y={display:true,min:-5,max:110,title:{display:true,text:'NORMALISED (%)',color:'#828a9c',font:{size:11}},ticks:{color:'#828a9c'},grid:{color:'rgba(255,255,255,.05)'},border:{color:'rgba(255,255,255,.07)'}};
   // usePointStyle + pointStyle:'line' draws each legend marker as a short
   // colored line instead of Chart.js's default filled box — matches the
   // actual line it's labeling, and a thin line takes noticeably less
   // horizontal space per entry than a box, which matters here since this
   // legend can have up to 18 entries wrapping across the chart's width.
-  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10},usePointStyle:true,pointStyle:'line'}}, tooltip:TOOLTIP_OPTS};
+  // tooltip is a shallow COPY of TOOLTIP_OPTS, not the same shared object —
+  // attachTimeAxis() below adds a .callbacks function onto whatever object
+  // is here, and mutating the actual shared TOOLTIP_OPTS in place would be
+  // a stray side effect on a "constant" other code reads from.
+  mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10},usePointStyle:true,pointStyle:'line'}}, tooltip:{...TOOLTIP_OPTS}};
+  attachTimeAxis(mopts);
   attachHaptics(mopts);
-  multiChart = new Chart(mctx,{type:'line',data:{labels:[],datasets:[]},options:mopts});
+  multiChart = new Chart(mctx,{type:'line',data:{datasets:[]},options:mopts});
 } catch(e) { console.warn('Multi chart init failed:', e); }
 
 // ── GPS RACELINE (real satellite imagery via Leaflet + Esri World Imagery) ──
@@ -1808,21 +1858,24 @@ function fmtTimeNoSeconds(ms) {
 
 function applyHistory() {
   try {
-    const timeLabels = historyTimes.map(t => fmtTimeNoSeconds(t));
-    OVERVIEW_MINI.forEach(k => safeUpdateChart(ovCharts[k], timeLabels, history[k]));
-    Object.keys(bigCharts).forEach(k => safeUpdateChart(bigCharts[k], timeLabels, history[k]));
+    OVERVIEW_MINI.forEach(k => safeUpdateChart(ovCharts[k], historyTimes, history[k]));
+    Object.keys(bigCharts).forEach(k => safeUpdateChart(bigCharts[k], historyTimes, history[k]));
 
     if (!multiChart) return;
     const visible = Object.keys(METRICS).filter(k => multiVisible[k]);
-    multiChart.data.labels = timeLabels;
     multiChart.data.datasets = visible.map(k => {
       const [lo,hi] = METRICS[k].range; const span = (hi-lo)||1;
       const norm = history[k].map(v => v==null ? null : Math.max(0,Math.min(100,(v-lo)/span*100)));
+      const points = historyTimes.map((t,i) => ({x:t, y:norm[i]}));
       const color = resolveColor(METRICS[k].color);
-      return {label:METRICS[k].label.toUpperCase(), data:norm, borderColor:color,
+      return {label:METRICS[k].label.toUpperCase(), data:points, borderColor:color,
               backgroundColor:color+'14', fill:false, borderWidth:1.8, pointRadius:0, tension:0.3,
               pointStyle:'line', borderJoinStyle:'round', borderCapStyle:'round'};
     });
+    if (historyTimes.length) {
+      multiChart.options.scales.x.min = historyTimes[0];
+      multiChart.options.scales.x.max = historyTimes[historyTimes.length - 1];
+    }
     multiChart.update('none');
   } catch(e) { console.warn('applyHistory error:', e); }
 }
