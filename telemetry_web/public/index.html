@@ -623,24 +623,26 @@
     .stats-bar.collapsed .stats-row { grid-template-rows:1fr !important; padding:14px !important; }
 
     /* Overview is numbers-only on mobile (see above) so those numbers ARE
-       the page — square tiles in a fixed-column grid instead of the
-       desktop's flex-wrap of variable-width rectangles, so both the tile
-       shape and the gap between every tile (row-to-row AND column-to-
-       column) are consistent, not just left/right neighbors in one wrapped
-       row. */
+       the page — tiles in a fixed-column grid instead of the desktop's
+       flex-wrap of variable-width rectangles, so both the tile shape and
+       the gap between every tile (row-to-row AND column-to-column) are
+       consistent, not just left/right neighbors in one wrapped row. 4/3
+       (not 1/1) — a slight landscape rectangle, not a perfect square —
+       shaves a bit of height off each of the 6 stacked rows without
+       shrinking the tile's width/text room at all. */
     #page-overview .stats-row-inner {
       display:grid; grid-template-columns:repeat(2, 1fr); gap:10px;
     }
     #page-overview .stats-row-inner .stat-card {
-      flex:none; aspect-ratio:1/1; padding:10px;
+      flex:none; aspect-ratio:4/3; padding:10px;
       display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:4px;
     }
     #page-overview .stat-card::before { left:50%; top:auto; bottom:6px; width:22px; height:2px; transform:translateX(-50%); }
-    #page-overview .stat-label { font-size:11px; letter-spacing:1.6px; }
-    #page-overview .stat-value { font-size:clamp(19px,5.4vw,25px); }
-    #page-overview .stat-value.compact { font-size:clamp(15px,4.2vw,18px); }
-    #page-overview .stat-value.tiny { font-size:clamp(11px,3.2vw,13px); }
-    #page-overview .stat-unit { font-size:11px; }
+    #page-overview .stat-label { font-size:12px; letter-spacing:1.6px; }
+    #page-overview .stat-value { font-size:clamp(22px,6.2vw,29px); }
+    #page-overview .stat-value.compact { font-size:clamp(17px,4.8vw,21px); }
+    #page-overview .stat-value.tiny { font-size:clamp(13px,3.6vw,15px); }
+    #page-overview .stat-unit { font-size:12px; }
   }
 </style>
 </head>
@@ -1088,9 +1090,13 @@ const TOOLTIP_OPTS = {
 // every 200ms redraw a hard cut, which is cheap but reads as a jump, not a
 // line "growing"; a long/default-duration animation would still be mid-
 // tween when the *next* update arrives 200ms later, stacking into visible
-// lag. ~250ms is short enough to always resolve well before the next tick
-// but long enough to actually read as a smooth slide rather than a snap.
-const LIVE_ANIMATION = { duration:250, easing:'easeOutQuad' };
+// lag AND (see forceChartResize() above) means Chart.js's own "is an
+// animation still running" check rarely goes false, which is what a plain
+// chart.resize() call needs to actually take effect rather than silently
+// deferring itself. 150ms comfortably resolves before the next 200ms tick
+// (unlike the 250ms first tried here) while still reading as a smooth
+// slide rather than a snap.
+const LIVE_ANIMATION = { duration:150, easing:'easeOutQuad' };
 const BASE_OPTS = {
   responsive:true, maintainAspectRatio:false, animation:LIVE_ANIMATION,
   interaction:{mode:'index', intersect:false},
@@ -1168,6 +1174,28 @@ function safeChart(id, colorVar, label, big=false, metricKey=null) {
   } catch(e) { console.warn('Chart init failed:', id, e); return null; }
 }
 
+// Chart.js's own chart.resize(w,h) silently DEFERS itself — storing the new
+// size to apply on the next animation-driven draw instead of resizing right
+// now — whenever that chart has an animation in flight (its internal
+// Animator.running(chart) check). Since live charts now animate on every
+// update (see LIVE_ANIMATION above) and update roughly every 200ms, a chart
+// fed a steady stream of updates can have a "still running" animation
+// almost continuously, so a plain resize() call (e.g. the tab-switch fix
+// below, or the stats-bar collapse fix) can end up deferred indefinitely —
+// nothing ever triggers that deferred flush while updates keep re-arming a
+// new animation before the old one finishes. The visible symptom: a chart
+// on a newly-active tab stays stuck at its original (often 0×0, if it was
+// built while its page was still display:none) canvas size — genuinely
+// blank — for as long as updates keep streaming in, and only actually
+// resizes once something stops the updates (e.g. leaving Test Mode) and an
+// animation cycle finally completes on its own. chart.stop() cancels any
+// in-flight animation for that chart immediately, which forces resize()'s
+// very next call to take its normal synchronous path instead of deferring.
+function forceChartResize(chart) {
+  if (!chart) return;
+  try { chart.stop(); chart.resize(); } catch(e) { console.warn('Chart resize failed:', e); }
+}
+
 function safeUpdateChart(chart, labels, data) {
   if (!chart) return;
   try {
@@ -1216,7 +1244,7 @@ function setStatsBarCollapsed(collapsed, persist=true) {
   if (persist) { try { localStorage.setItem(STATS_BAR_KEY, collapsed ? '1' : '0'); } catch(e) {} }
   // Wait for the collapse/expand transition (.3s) to finish before resizing
   // charts against the new final height, not a mid-animation one.
-  setTimeout(() => { Object.values(ovCharts).forEach(ch => ch && ch.resize()); }, 320);
+  setTimeout(() => { Object.values(ovCharts).forEach(forceChartResize); }, 320);
 }
 
 (function initStatsBar() {
@@ -1445,10 +1473,10 @@ document.querySelectorAll('.tab').forEach(t => {
       // clicked on a page that's already visible, so there's no "wake up
       // when visible" behavior being relied on either way).
       setTimeout(() => {
-        Object.values(ovCharts).forEach(ch => ch && ch.resize());
-        Object.values(bigCharts).forEach(ch => ch && ch.resize());
-        if (multiChart) multiChart.resize();
-        Object.values(sessionCharts).forEach(ch => ch && ch.resize());
+        Object.values(ovCharts).forEach(forceChartResize);
+        Object.values(bigCharts).forEach(forceChartResize);
+        forceChartResize(multiChart);
+        Object.values(sessionCharts).forEach(forceChartResize);
       }, 0);
       // Leaflet (like Chart.js) can't correctly size a map built inside a
       // container that was display:none — invalidateSize() forces it to
