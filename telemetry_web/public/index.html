@@ -415,8 +415,17 @@
        — both endpoints are close near-black tones, so the shift reads as
        "a background", not a visible seam partway down the page, and the
        --panel card overlay (tuned for a near-black base) still reads fine
-       against either end. */
-    #app { background:linear-gradient(to bottom, #0b0c11, #171719); }
+       against either end.
+       The second stop is pinned at 80% (not 100%) — a plain 2-stop gradient
+       only reaches the exact #171719 at the very last pixel row, so
+       anywhere the nav bar pill actually sits (measured: ~92-99% down a
+       typical phone's height) was interpolating to something like #161619
+       instead — a real, if tiny, off-by-one-unit mismatch, not the exact
+       color. Reaching #171719 by 80% and holding flat for the remaining
+       20% guarantees the entire nav bar/sheet zone sits on the exact
+       measured color, with margin for shorter devices or extra safe-area
+       inset pushing the pill up slightly further. */
+    #app { background:linear-gradient(to bottom, #0b0c11, #171719 80%); }
     /* Flat, opaque #0b0c11 (not the desktop rgba(13,16,23,.85) translucent
        tint) — that rgba blend has a visible blue cast (its blue channel,
        23, is the highest of the three; #0b0c11's channels are much closer
@@ -620,7 +629,14 @@
   .mobile-navsheet {
     position:fixed; left:10px; right:10px; bottom:calc(78px + env(safe-area-inset-bottom)); z-index:16; max-height:min(58vh, 420px);
     background:var(--panel-solid); border:1px solid var(--border); border-radius:18px;
-    box-shadow:0 18px 44px -14px rgba(0,0,0,.65); padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    /* Tightened from 0 18px 44px -14px — that shadow's downward reach
+       (offset+blur) extended far enough to still visibly darken the gap
+       between the sheet and the nav bar pill below it, the same "shadow
+       reads as a color mismatch against a precisely-tuned background"
+       problem already fixed on the nav bar itself. Smaller offset/blur
+       keeps a real depth cue right under the sheet but fades to fully
+       transparent well before reaching the pill ~78px+ below. */
+    box-shadow:0 8px 20px -6px rgba(0,0,0,.5); padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
     transform:translateY(14px) scale(.96); opacity:0; pointer-events:none; will-change:transform, opacity;
     /* A slight overshoot ease (cubic-bezier peak >1) instead of the page's
        standard --ease reads as a springier, more "alive" sheet motion —
