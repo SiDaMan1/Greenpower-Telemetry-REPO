@@ -646,14 +646,18 @@
   .mobile-navsheet {
     position:fixed; left:10px; right:10px; bottom:calc(78px + env(safe-area-inset-bottom)); z-index:16; max-height:min(58vh, 420px);
     background:var(--panel-solid); border:1px solid var(--border); border-radius:18px;
-    /* Tightened from 0 18px 44px -14px — that shadow's downward reach
-       (offset+blur) extended far enough to still visibly darken the gap
-       between the sheet and the nav bar pill below it, the same "shadow
-       reads as a color mismatch against a precisely-tuned background"
-       problem already fixed on the nav bar itself. Smaller offset/blur
-       keeps a real depth cue right under the sheet but fades to fully
-       transparent well before reaching the pill ~78px+ below. */
-    box-shadow:0 8px 20px -6px rgba(0,0,0,.5); padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    /* No box-shadow at all (was: first 0 18px 44px -14px, then tightened to
+       0 8px 20px -6px — still not enough). The sheet's own bottom edge
+       (`bottom:calc(78px + safe-area-inset-bottom)`) sits only ~10px above
+       the nav bar pill's top edge (`bottom:10px + safe-area-inset-bottom`,
+       height 58px → top edge ~68px up) — a genuinely tiny gap. Even the
+       tightened shadow's ~28px reach (offset+blur) comfortably clears that
+       10px and lands directly on the pill, which is exactly what this was
+       still visible as. There's no shadow size small enough to both read
+       as a real depth cue AND stay clear of a 10px gap, so this drops the
+       shadow entirely instead — same call already made for .mobile-navbar
+       above, same reasoning. */
+    padding:8px; overflow-y:auto; -webkit-overflow-scrolling:touch;
     transform:translateY(14px) scale(.96); opacity:0; pointer-events:none; will-change:transform, opacity;
     /* A slight overshoot ease (cubic-bezier peak >1) instead of the page's
        standard --ease reads as a springier, more "alive" sheet motion —
@@ -774,14 +778,24 @@
   <div id="header">
     <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
     <div id="header-right">
-      <!-- No target="_blank" — download-directory.github.io is a small
-           redirector page (builds a zip client-side from the GitHub folder,
-           then fires the browser's own download prompt), not the zip file
-           itself, so it can't be a plain <a download> straight to a file.
-           Opening it in the SAME tab means the user gets just the native
-           download prompt instead of a whole extra tab left open after
-           the zip starts downloading. -->
-      <a id="download-agent-btn" class="btn btn-sm" href="https://download-directory.github.io/?url=https://github.com/SiDaMan1/Greenpower-Telemetry-REPO/tree/main/receiver_agent&filename=greenpower-agent" title="Download the receiver agent (unzip, run setup.bat)">
+      <!-- greenpower-agent.zip is a pre-built static file living right in
+           this app's own public/ folder (built from `git ls-files
+           receiver_agent`, same file set download-directory.github.io used
+           to bundle) — NOT the download-directory.github.io redirector
+           this used to point at. That service works by loading its own
+           page, fetching+zipping the folder client-side, and leaving a
+           whole status page ("Downloaded 10 files! Done!") visible with no
+           auto-close — the user has to see and click away from that every
+           time. A same-origin static file with the `download` attribute
+           triggers the browser's native save prompt directly, instantly,
+           with zero intermediate page ever shown.
+           MUST be regenerated whenever anything in receiver_agent/ changes
+           — this is a snapshot, not a live proxy to the folder. Rebuild
+           with (from the repo root): `git ls-files receiver_agent` piped
+           into a fresh Compress-Archive into telemetry_web/public/
+           greenpower-agent.zip, preserving the receiver_agent/ path
+           prefix inside the zip (matches the old bundle's structure). -->
+      <a id="download-agent-btn" class="btn btn-sm" href="/greenpower-agent.zip" download="greenpower-agent.zip" title="Download the receiver agent (unzip, run setup.bat)">
         <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
       </a>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
@@ -1207,6 +1221,12 @@ const TOOLTIP_OPTS = {
   displayColors:false,
   titleFont:{family:"'Share Tech Mono',monospace", size:10},
   bodyFont:{family:"'Space Grotesk',sans-serif", size:12, weight:'600'},
+  // Explicit fade duration for the tooltip's OWN show/hide transition —
+  // separate from the chart-level `animation` option (false, elsewhere in
+  // this file) — so the touch-auto-hide below (see
+  // attachTouchTooltipAutoHide) has something defined to actually fade
+  // through rather than an instant pop.
+  animation:{duration:250},
 };
 // ── WHY THE LINE USED TO "BUG OUT" (and why there's no per-update
 // animation config here anymore) ────────────────────────────────────────
@@ -1298,6 +1318,40 @@ function attachHaptics(opts) {
   return opts;
 }
 
+// ── TOUCH TOOLTIP AUTO-HIDE ──────────────────────────────────────────────────
+// Chart.js's default `events` list includes touchstart/touchmove (so
+// scrubbing a finger across the chart shows/updates the tooltip) but NOT
+// touchend — there's no touch equivalent of a desktop mouseout to clear it,
+// so on a touch device the tooltip just stays pinned at wherever the finger
+// last was, forever, until the next tap starts a new one. This adds the
+// missing "let go" behavior: a real touchend/touchcancel listener that
+// starts a 1s countdown to clear the tooltip, cancelled if a new touch
+// starts before it fires (so a quick re-tap/drag doesn't get cut off mid-
+// gesture). Takes the CHART INSTANCE, not an options object — unlike
+// attachHaptics/attachTimeAxis above (which patch options before
+// construction), this needs chart.canvas/chart.update() after the chart
+// already exists, so it's called post-construction at every chart-creation
+// site instead.
+function attachTouchTooltipAutoHide(chart) {
+  if (!chart || !chart.canvas) return chart;
+  let hideTimer = null;
+  const cancelPending = () => { if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } };
+  const hideTooltipNow = () => {
+    try {
+      chart.setActiveElements([]);
+      chart.tooltip.setActiveElements([], {x:0, y:0});
+      chart.update();   // NOT 'none' — this is the one call that should
+                         // actually animate, using TOOLTIP_OPTS.animation
+                         // above, so the tooltip fades rather than snaps.
+    } catch(e) {}
+  };
+  chart.canvas.addEventListener('touchstart', cancelPending, {passive:true});
+  const scheduleHide = () => { cancelPending(); hideTimer = setTimeout(hideTooltipNow, 1000); };
+  chart.canvas.addEventListener('touchend', scheduleHide, {passive:true});
+  chart.canvas.addEventListener('touchcancel', scheduleHide, {passive:true});
+  return chart;
+}
+
 // metricKey (when given) seeds the y-axis with the metric's known plausible
 // range as suggestedMin/suggestedMax — a *suggestion*, not a hard clamp, so
 // real values outside it still expand the axis normally. Without this, a
@@ -1324,11 +1378,11 @@ function safeChart(id, colorVar, label, big=false, metricKey=null) {
     // data starts empty — applyHistory() runs once immediately after all
     // charts are built (see below) and populates every chart's first real
     // frame from history[]/historyTimes[], same as before.
-    return new Chart(ctx, {
+    return attachTouchTooltipAutoHide(new Chart(ctx, {
       type:'line',
       data:{datasets:[{label,data:[],borderColor:color,backgroundColor:color+'1c',fill:true}]},
       options:opts
-    });
+    }));
   } catch(e) { console.warn('Chart init failed:', id, e); return null; }
 }
 
@@ -1530,7 +1584,7 @@ try {
   mopts.plugins={legend:{display:true,labels:{color:'#e7ebf3',font:{size:10},usePointStyle:true,pointStyle:'line'}}, tooltip:{...TOOLTIP_OPTS}};
   attachTimeAxis(mopts);
   attachHaptics(mopts);
-  multiChart = new Chart(mctx,{type:'line',data:{datasets:[]},options:mopts});
+  multiChart = attachTouchTooltipAutoHide(new Chart(mctx,{type:'line',data:{datasets:[]},options:mopts}));
 } catch(e) { console.warn('Multi chart init failed:', e); }
 
 // ── GPS RACELINE (real satellite imagery via Leaflet + Esri World Imagery) ──
@@ -1836,7 +1890,7 @@ async function viewSession(id) {
       const metric = METRICS[k];
       const color = resolveColor(metric ? metric.color : 'var(--accent2)');
       const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
-      sessionCharts[k] = new Chart(ctx, {
+      sessionCharts[k] = attachTouchTooltipAutoHide(new Chart(ctx, {
         type:'line',
         data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3, borderJoinStyle:'round', borderCapStyle:'round' }] },
         options:attachHaptics({
@@ -1848,7 +1902,7 @@ async function viewSession(id) {
             y:{grid:{color:'rgba(255,255,255,.05)'}, ticks:{color:'#828a9c', font:{size:10}}, border:{color:'rgba(255,255,255,.07)'}}
           }
         })
-      });
+      }));
     });
   } catch(e) {
     console.warn('viewSession error:', e);
