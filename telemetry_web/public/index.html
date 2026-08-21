@@ -30,18 +30,22 @@
 <meta name="theme-color" content="#0a0c11">
 <!-- Mobile-only override (a media-gated theme-color tag — same mechanism
      browsers already use for prefers-color-scheme light/dark variants):
-     #5f5f5f, sampled directly off this installed app's actual Android
-     system-bar color. theme-color/color-scheme (above) were the "make
-     Android match our page" attempt — verified correct but unreliably
-     honored by Chrome (a known open platform bug, not a config gap here).
-     This flips the approach: match OUR edge color to what Android is
-     actually painting, instead. Desktop never matches this media query, so
-     desktop's tab/toolbar tint is untouched — this is mobile-only, same as
-     the equivalent CSS override in <style> (see the @media(max-width:860px)
-     block's body/#header rules). If Android's actual bar color ever
+     #0b0c11, sampled directly off this installed app's actual Android
+     status-bar color (nearly identical to --bg0 already — set precisely
+     anyway since it was measured). theme-color/color-scheme (above) were
+     the "make Android match our page" attempt — verified correct but
+     unreliably honored by Chrome (a known open platform bug, not a config
+     gap here). This flips the approach: match OUR edge color to what
+     Android is actually painting, instead. Desktop never matches this
+     media query, so desktop's tab/toolbar tint is untouched — this is
+     mobile-only, same as the equivalent CSS override in <style> (see the
+     @media(max-width:860px) block's body/#app rules — #app's own
+     background additionally blends toward #171719 at the bottom for the
+     separate, actually-different nav-bar color, which this single flat
+     theme-color value can't represent). If Android's actual bar color ever
      changes (device/OS update), this value would need resampling — it's
      not derived from anything else, just a measured constant. -->
-<meta name="theme-color" content="#5f5f5f" media="(max-width: 860px)">
+<meta name="theme-color" content="#0b0c11" media="(max-width: 860px)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <!-- black-translucent (not black/default) — makes iOS draw the status bar
@@ -124,11 +128,9 @@
     display:flex; flex-direction:column; height:100vh; height:100dvh;
     padding-top:env(safe-area-inset-top);
     /* Explicit background (was: unset, relying on html/body showing
-       through) — needed so the mobile override below (making body itself
-       match the Android system bar color) only affects the actual edges
-       (the safe-area-inset-top gap above this padding, and faintly through
-       #header's own translucency) rather than recoloring the whole
-       scrollable dashboard behind it. */
+       through) — desktop value here; the mobile @media block below
+       overrides this to a gradient blending toward the real Android
+       nav-bar color at the bottom edge (see that rule for why). */
     background:var(--bg0);
   }
 
@@ -388,23 +390,34 @@
        match OUR near-black theme (theme-color/color-scheme, verified
        correct but unreliably honored — a known open Chromium bug, not a
        config gap on our end), match OUR edges to what Android is actually
-       showing (#5f5f5f, sampled directly off the installed app). Only
-       `body` changes — #app now carries its own explicit --bg0 background
-       (see its rule above) that covers the entire dashboard content area,
-       so this is only ever visible in the genuine edge gaps: the safe-
-       area-inset-top strip above #header, and faintly through #header's
-       own translucency (also retinted below) right at that seam. The
-       scrollable page content/cards underneath are completely unaffected
-       — still the original near-black theme those were designed against
-       (the --panel card overlay is a barely-there 3.5% white tint tuned
-       for a near-black base; recoloring the whole app to this mid-gray
-       would wash that out and break the card/panel contrast system). */
-    body { background:#5f5f5f; }
-    /* Retinted toward the same gray (was rgba(13,16,23,.85), near-black)
-       so the header — the thing actually sitting flush against the status
-       bar — visually continues it instead of creating its own second seam
-       a few pixels below the first. */
-    #header { background:rgba(95,95,95,.9); padding:0 12px; height:50px; }
+       showing — sampled directly off the installed app: #0b0c11 for the
+       status bar (top; nearly identical to --bg0 already — a 1-unit
+       difference, imperceptible, but set precisely anyway since it was
+       measured), #171719 for the gesture/nav bar (bottom; a real, visible
+       difference from --bg0, not just noise). An earlier pass used a
+       single #5f5f5f for both — that measurement was wrong/stale; the two
+       system bars are NOT the same color as each other, hence two values
+       here, not one.
+       body only needs the top value: #app carries its own explicit --bg0
+       background (see its rule above) covering the entire dashboard
+       content area, so body is only ever visible in the genuine top edge
+       gap (the safe-area-inset-top strip above #header) — never at the
+       bottom, since #app's box already extends the full 100dvh height
+       down to the physical bottom edge (no gap exists there for body to
+       show through). */
+    body { background:#0b0c11; }
+    /* #app's own background carries the bottom-edge fix instead: a subtle
+       top→bottom gradient from the (near-identical-to-existing) status-bar
+       color down to the real, different nav-bar color, so the interior's
+       bottom edge — the last thing visible before the physical nav bar —
+       leans toward #171719 instead of the original --bg0. Deliberately a
+       gradient across the FULL height (not a separate bottom-only strip)
+       — both endpoints are close near-black tones, so the shift reads as
+       "a background", not a visible seam partway down the page, and the
+       --panel card overlay (tuned for a near-black base) still reads fine
+       against either end. */
+    #app { background:linear-gradient(to bottom, #0b0c11, #171719); }
+    #header { padding:0 12px; height:50px; }
     #server-time { display:none; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
