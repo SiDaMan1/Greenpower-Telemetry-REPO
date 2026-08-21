@@ -28,6 +28,20 @@
      "nav bar is a different color than the page" symptom. -->
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0a0c11">
+<!-- Mobile-only override (a media-gated theme-color tag — same mechanism
+     browsers already use for prefers-color-scheme light/dark variants):
+     #5f5f5f, sampled directly off this installed app's actual Android
+     system-bar color. theme-color/color-scheme (above) were the "make
+     Android match our page" attempt — verified correct but unreliably
+     honored by Chrome (a known open platform bug, not a config gap here).
+     This flips the approach: match OUR edge color to what Android is
+     actually painting, instead. Desktop never matches this media query, so
+     desktop's tab/toolbar tint is untouched — this is mobile-only, same as
+     the equivalent CSS override in <style> (see the @media(max-width:860px)
+     block's body/#header rules). If Android's actual bar color ever
+     changes (device/OS update), this value would need resampling — it's
+     not derived from anything else, just a measured constant. -->
+<meta name="theme-color" content="#5f5f5f" media="(max-width: 860px)">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <!-- black-translucent (not black/default) — makes iOS draw the status bar
@@ -109,6 +123,13 @@
   #app {
     display:flex; flex-direction:column; height:100vh; height:100dvh;
     padding-top:env(safe-area-inset-top);
+    /* Explicit background (was: unset, relying on html/body showing
+       through) — needed so the mobile override below (making body itself
+       match the Android system bar color) only affects the actual edges
+       (the safe-area-inset-top gap above this padding, and faintly through
+       #header's own translucency) rather than recoloring the whole
+       scrollable dashboard behind it. */
+    background:var(--bg0);
   }
 
   /* ── Header ─────────────────────────────────────────────────────── */
@@ -362,7 +383,28 @@
     .big-row, .chart-row { grid-template-columns:1fr 1fr !important; }
   }
   @media (max-width: 860px) {
-    #header { padding:0 12px; height:50px; }
+    /* Flip the whole approach on the actual system-bar color mismatch:
+       instead of trying to get Android to paint its status/nav bar to
+       match OUR near-black theme (theme-color/color-scheme, verified
+       correct but unreliably honored — a known open Chromium bug, not a
+       config gap on our end), match OUR edges to what Android is actually
+       showing (#5f5f5f, sampled directly off the installed app). Only
+       `body` changes — #app now carries its own explicit --bg0 background
+       (see its rule above) that covers the entire dashboard content area,
+       so this is only ever visible in the genuine edge gaps: the safe-
+       area-inset-top strip above #header, and faintly through #header's
+       own translucency (also retinted below) right at that seam. The
+       scrollable page content/cards underneath are completely unaffected
+       — still the original near-black theme those were designed against
+       (the --panel card overlay is a barely-there 3.5% white tint tuned
+       for a near-black base; recoloring the whole app to this mid-gray
+       would wash that out and break the card/panel contrast system). */
+    body { background:#5f5f5f; }
+    /* Retinted toward the same gray (was rgba(13,16,23,.85), near-black)
+       so the header — the thing actually sitting flush against the status
+       bar — visually continues it instead of creating its own second seam
+       a few pixels below the first. */
+    #header { background:rgba(95,95,95,.9); padding:0 12px; height:50px; }
     #server-time { display:none; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
