@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ════════════════════════════════════════════════════════════════════
+  GREENPOWER RECEIVER AGENT — WiX v3 MSI installer source
+
+  A second installer alongside GreenpowerAgent.iss (Inno Setup, produces
+  GreenpowerAgentSetup.exe). Built specifically to test whether an .msi —
+  NOT a raw PE executable, installed via the already-trusted system
+  msiexec.exe rather than being "run" directly the way an .exe is — avoids
+  Microsoft Defender ASR rule 01443614-cd74-433a-b99e-2ecdc07bfc25 ("Block
+  executable files from running unless they meet a prevalence, age, or
+  trusted list criterion"), which was confirmed (empirically, twice — see
+  telemetry_web/CLAUDE.md) to hard-block the Inno Setup .exe on Intune-
+  managed devices, with self-signing also ruled out as a workaround. See
+  that file for the full investigation this installer exists to resolve.
+
+  InstallScope="perUser" is load-bearing, same reasoning as the Inno Setup
+  installer's PrivilegesRequired=lowest: no admin rights, no UAC prompt —
+  installs to the current user's own AppData, not Program Files. Whoever's
+  running this on a laptop at the track may not have admin on that machine.
+
+  BUILD (no admin needed): from this folder, with the portable WiX v3.14.1
+  binaries (candle.exe/light.exe — NOT the .exe installer, which itself
+  needs admin to install; use the wix314-binaries.zip release asset
+  instead, extracted to a user-writable folder):
+    candle.exe -ext WixUtilExtension GreenpowerAgent.wxs
+    light.exe -ext WixUIExtension -ext WixUtilExtension GreenpowerAgent.wixobj -o dist\GreenpowerAgentSetup.msi
+  Then copy dist\GreenpowerAgentSetup.msi into telemetry_web\public\.
+  ════════════════════════════════════════════════════════════════════
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Greenpower Receiver Agent"
+           Language="1033"
+           Version="1.2.0.0"
+           Manufacturer="Greenpower"
+           UpgradeCode="1cf7948c-d8f6-410f-a05b-0b14f255a3f6">
+
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             Description="Greenpower Receiver Agent Setup"
+             Comments="Watches for the Greenpower LoRa receiver over USB and forwards telemetry to the live dashboard." />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of the Greenpower Receiver Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Per-user install dir under the current user's own AppData — no
+         admin/UAC needed, same reasoning as the Inno Setup installer's
+         {localappdata}\Programs\GreenpowerAgent. -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="ProgramsFolder" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="GreenpowerAgent" />
+        </Directory>
+      </Directory>
+      <Directory Id="StartupFolder" />
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="Greenpower Receiver Agent" />
+      </Directory>
+    </Directory>
+
+    <!-- Startup-folder shortcut runs agent-launcher.vbs hidden — this IS
+         the auto-start mechanism (equivalent to the Inno Setup installer's
+         generated VBS launcher), just registered as a native WiX Shortcut
+         pointing at the self-locating launcher instead of a runtime-
+         generated file. -->
+    <DirectoryRef Id="StartupFolder">
+      <Component Id="StartupShortcut" Guid="8a777716-33db-44fc-8c03-4e977d9074c7">
+        <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="StartupShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <Shortcut Id="StartupLauncher"
+                  Name="GreenpowerReceiverAgent"
+                  Target="[#FILE_agent_launcher_vbs]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Show="minimized" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- Start Menu shortcut + this is also where the uninstaller entry's
+         icon/name comes from (Add/Remove Programs). -->
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcut" Guid="3e2a2f9d-7b7e-4b9d-9a2f-6e4d1a2c9b3e">
+        <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="StartMenuShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <Shortcut Id="StartMenuLauncher"
+                  Name="Greenpower Receiver Agent"
+                  Target="[#FILE_agent_launcher_vbs]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AgentIcon.ico" />
+        <RemoveFolder Id="RemoveAppProgramsFolder" On="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <!-- ICE38 requires a per-user-profile component's KeyPath to be a
+           registry value under HKCU, not a file — a real WiX/MSI rule for
+           per-user installs, not a workaround; every File below drops
+           KeyPath in favor of the RegistryValue here. ICE64 requires
+           per-user-profile directories to have an explicit removal entry
+           (MSI doesn't auto-clean AppData the way it does Program Files in
+           this configuration) — RemoveFolder on uninstall covers that. -->
+      <Component Id="AgentFiles" Guid="6f2c8e1a-4b3d-4a9e-8c7f-2d1e9a6b5c4f">
+        <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="InstallPath" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <!-- ProgramsFolder (%LocalAppData%\Programs) is a SHARED folder
+             other apps use too — RemoveFolder only deletes it if it ends
+             up empty after every component's own removal runs, so this is
+             safe (satisfies ICE64, never force-deletes another app's
+             stuff sitting in a sibling subfolder). -->
+        <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+        <File Id="FILE_agent_js" Source="..\agent.js" />
+        <File Id="FILE_package_json" Source="..\package.json" />
+        <File Id="FILE_package_lock_json" Source="..\package-lock.json" />
+        <File Id="FILE_tray_icon_ico" Source="..\tray-icon.ico" />
+        <File Id="FILE_readme_md" Source="..\README.md" />
+        <File Id="FILE_claude_md" Source="..\CLAUDE.md" />
+        <File Id="FILE_config_example_json" Source="..\config.example.json" />
+        <File Id="FILE_agent_launcher_vbs" Source="agent-launcher.vbs" />
+      </Component>
+      <!-- Separate component, NeverOverwrite — a re-install/upgrade must
+           never clobber a config a user has already customized, mirroring
+           setup.bat's own "leave it as-is if config.json already exists"
+           behavior (and the equivalent onlyifdoesntexist flag in the Inno
+           Setup installer). -->
+      <Component Id="AgentConfig" Guid="d4b8f3e2-9a6c-4e1d-8b5a-7c3f2e9d6a1b" NeverOverwrite="yes">
+        <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="ConfigInstalled" Type="integer" Value="1" KeyPath="yes" />
+        <File Id="FILE_config_json" Source="..\config.json" />
+      </Component>
+    </DirectoryRef>
+
+    <Icon Id="AgentIcon.ico" SourceFile="..\tray-icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AgentIcon.ico" />
+
+    <!-- npm install runs against the just-installed files, same
+         prerequisite (Node.js + internet) setup.bat and the Inno Setup
+         installer both already require. Return="check" fails the install
+         loudly if it fails, matching setup.bat's own behavior instead of
+         silently leaving a broken half-install.
+         WixQuietExec (from WixUtilExtension), not a plain ExeCommand+
+         Directory custom action — a plain "cmd.exe /c npm install" custom
+         action popped a real, visible console window during install (the
+         user's own report); MSI's EXE custom action mechanism doesn't
+         suppress that on its own. WixQuietExec is WiX's purpose-built
+         silent-execution helper — genuinely no window, output captured to
+         the MSI's own verbose log instead. Its contract (per FireGiant's
+         docs) is specific: for a DEFERRED WixQuietExec action, the command
+         line comes from a Property with the EXACT SAME Id as the
+         CustomAction itself — not an arbitrary property name — which is
+         why RunNpmInstall appears as both a <Property> and a <CustomAction>
+         below. No separate Directory attribute exists for this mechanism,
+         so the working directory is baked into the command string itself
+         (cd /d "[INSTALLFOLDER]" && npm install) rather than expressed
+         structurally the way the old ExeCommand+Directory pattern did it. -->
+    <!-- This MUST be a "set property, formatted" CustomAction (Execute
+         defaults to immediate), not a plain static <Property Value="...">
+         — candle's own CNDL1077 warning caught this: a bare Property table
+         row is never formatted/resolved, so [INSTALLFOLDER] would reach
+         WixQuietExec as the literal 15-character bracketed text, not the
+         actual install path, and the whole step would fail. This
+         CustomAction form DOES resolve bracketed references when it runs,
+         and (per WixQuietExec's contract) must execute BEFORE the deferred
+         action of the same Id — scheduled explicitly below. -->
+    <CustomAction Id="RunNpmInstall_SetProperty" Property="RunNpmInstall"
+                  Value="&quot;[SystemFolder]cmd.exe&quot; /c cd /d &quot;[INSTALLFOLDER]&quot; &amp;&amp; npm install" />
+    <CustomAction Id="RunNpmInstall" BinaryKey="WixCA" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="yes" Return="check" />
+
+    <!-- Launches the agent immediately after install (in addition to the
+         Startup shortcut, which only takes effect on the NEXT login) —
+         same reasoning as both setup.bat and the Inno Setup installer:
+         don't make someone log out/in before the agent is actually
+         running. asyncNoWait — fire and forget, install shouldn't block
+         waiting on a background process that's meant to run indefinitely. -->
+    <CustomAction Id="LaunchAgentNow" Directory="INSTALLFOLDER"
+                  ExeCommand="wscript.exe &quot;[#FILE_agent_launcher_vbs]&quot;"
+                  Execute="deferred" Impersonate="yes" Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RunNpmInstall_SetProperty" Before="RunNpmInstall">NOT Installed</Custom>
+      <Custom Action="RunNpmInstall" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="LaunchAgentNow" After="RunNpmInstall">NOT Installed</Custom>
+    </InstallExecuteSequence>
+
+    <Feature Id="MainFeature" Title="Greenpower Receiver Agent" Level="1">
+      <ComponentRef Id="AgentFiles" />
+      <ComponentRef Id="AgentConfig" />
+      <ComponentRef Id="StartupShortcut" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+
+    <UIRef Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+  </Product>
+</Wix>

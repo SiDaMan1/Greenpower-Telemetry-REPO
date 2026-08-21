@@ -855,21 +855,33 @@
   <div id="header">
     <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
     <div id="header-right">
-      <!-- GreenpowerAgentSetup.exe is a pre-built Inno Setup installer
-           living right in this app's own public/ folder — replaced an
-           earlier plain greenpower-agent.zip (unzip + run setup.bat by
-           hand). Real installer now: Start Menu shortcut, entry in
-           Add/Remove Programs, proper uninstaller — built from
-           receiver_agent/installer/GreenpowerAgent.iss, no admin rights
-           needed (installs to the user's own AppData, not Program Files).
+      <!-- GreenpowerAgentSetup.msi is a pre-built WiX installer living
+           right in this app's own public/ folder — replaced an EARLIER
+           real installer, GreenpowerAgentSetup.exe (Inno Setup), which
+           worked fine generally but got hard-blocked on Intune-managed
+           devices by Microsoft Defender ASR rule
+           01443614-cd74-433a-b99e-2ecdc07bfc25 ("block executable files
+           unless they meet a prevalence/age/trust criterion") — confirmed
+           firsthand, not theoretical (see telemetry_web/CLAUDE.md for the
+           full investigation). That rule's documented scope is .exe/.dll/
+           .scr specifically; an .msi is not a raw PE executable (msiexec.exe,
+           already trusted, does the actual work), and confirmed empirically
+           NOT to hit the same block. Built from
+           receiver_agent/installer/GreenpowerAgent.wxs via the portable
+           WiX v3.14.1 toolset (candle.exe/light.exe — NOT WiX's own .exe
+           installer, which needs admin; use the wix314-binaries.zip
+           release asset extracted to a user-writable folder instead), no
+           admin rights needed (installs to the user's own AppData, not
+           Program Files) either way.
            MUST be rebuilt whenever anything in receiver_agent/ changes —
            this is a snapshot, not a live build. Rebuild with (from
            receiver_agent/installer/, no admin needed):
-             "%LocalAppData%\Programs\Inno Setup 7\ISCC.exe" GreenpowerAgent.iss
-           then copy installer/dist/GreenpowerAgentSetup.exe over this file.
+             candle.exe -ext WixUtilExtension GreenpowerAgent.wxs
+             light.exe -ext WixUIExtension -ext WixUtilExtension GreenpowerAgent.wixobj -o dist\GreenpowerAgentSetup.msi
+           then copy installer/dist/GreenpowerAgentSetup.msi over this file.
            This is a button, not a plain <a href download> — clicking it
            opens #download-confirm-modal first (see its markup below) since
-           this is now a real .exe someone would run, not an inert zip of
+           this is now a real installer someone would run, not an inert zip of
            source files; the modal's own Download link is what actually
            triggers the file. -->
       <button id="download-agent-btn" class="btn btn-sm" title="Download the receiver agent installer">
@@ -893,13 +905,13 @@
   <div class="confirm-modal" id="download-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="download-confirm-title">
     <div class="confirm-modal-title" id="download-confirm-title">Download Receiver Agent</div>
     <div class="confirm-modal-body">
-      This downloads <strong>GreenpowerAgentSetup.exe</strong> — a Windows installer that sets up a background app to relay telemetry from the receiver to this dashboard. It'll ask your permission before forwarding anything, every time.
+      This downloads <strong>GreenpowerAgentSetup.msi</strong> — a Windows installer that sets up a background app to relay telemetry from the receiver to this dashboard. It'll ask your permission before forwarding anything, every time.
       <br><br>
       Requires Node.js already installed; no admin rights needed. Only run installers from a source you trust.
     </div>
     <div class="confirm-modal-actions">
       <button class="btn btn-sm" id="download-confirm-cancel">Cancel</button>
-      <a class="btn btn-sm btn-accent" id="download-confirm-go" href="/GreenpowerAgentSetup.exe" download="GreenpowerAgentSetup.exe">
+      <a class="btn btn-sm btn-accent" id="download-confirm-go" href="/GreenpowerAgentSetup.msi" download="GreenpowerAgentSetup.msi">
         <span class="icon" data-icon="download"></span>Download
       </a>
     </div>
@@ -1930,7 +1942,7 @@ document.getElementById('raw-clear').addEventListener('click', () => {
 
 // ── DOWNLOAD-INSTALLER CONFIRMATION MODAL ────────────────────────────────────
 // #download-agent-btn no longer links straight to the file — it opens this
-// modal first, since GreenpowerAgentSetup.exe is a real installer someone
+// modal first, since GreenpowerAgentSetup.msi is a real installer someone
 // would run, not an inert zip of source files. #download-confirm-go is the
 // actual <a href download> that fires the browser's native save prompt;
 // clicking it also closes the modal (no reason to leave it open once the
