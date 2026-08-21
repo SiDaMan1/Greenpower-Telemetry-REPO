@@ -122,8 +122,17 @@ This reverses an earlier explicit choice ("animation stays OFF for live data upd
 ### Nothing is selectable/copyable except actual telemetry values
 `body { user-select:none }` by default, with `user-select:text` re-enabled only on `.stat-value`/`.dedicated-value`/`.stat-unit`/`.dedicated-unit`/`#raw-log`/`#sessions-table td` (and `#esc-mode`/`#esc-state`, which are also `.dedicated-value`). Adding a new numeric/string readout element outside those classes means it won't be copyable unless it's given one of them (or added explicitly) — this was deliberate, not an oversight, if a new display element ever seems to need long-press-to-copy and doesn't have it.
 
-### Mobile dedicated-value pages: even card count → all squares, odd → last one is a full-width rectangle
-Pure CSS, no JS/count-tracking: `.big-row .dedicated-big-card:nth-child(odd):last-child` only matches when the last card's position is itself odd, which is only possible when the row's total count is odd. Pages with a single card (Speed, Temperature) don't use `.big-row` at all and are untouched by this — already a full-width rectangle by default, same as before.
+### Mobile dedicated-value pages: even card count → all landscape-rectangle tiles (2/row), odd → last one is a full-width rectangle
+Pure CSS, no JS/count-tracking: `.big-row .dedicated-big-card:nth-child(odd):last-child` only matches when the last card's position is itself odd, which is only possible when the row's total count is odd. Pages with a single card (Speed, Temperature) don't use `.big-row` at all and are untouched by this — already a full-width rectangle by default, same as before. Tiles are `aspect-ratio:8/5` (a slight landscape rectangle), not `1/1` — a first pass used true squares, but that took more vertical scroll height than needed; 8/5 keeps the 2-per-row grid while shrinking each tile's height.
+
+### Only the currently-visible chart animates — `safeUpdateChart()` checks `canvas.offsetParent`
+`applyHistory()` updates every chart (all 8 overview minis + all 16 dedicated bigs + Multi) on every tick regardless of which tab is active — that part is unchanged and cheap for a plain data-swap. But animating all ~25 of them at once (see `LIVE_ANIMATION` above) turned out to be enough main-thread/GPU work on a phone to starve paint entirely: the chart actually on screen appeared frozen/blank the whole time, only catching up once updates stopped. Confirmed worst under Test Mode specifically, because its guaranteed-every-200ms cadence (no packet loss to thin it out, unlike real LoRa data) maxes out the update rate. Fix: `chart.canvas.offsetParent === null` for any chart on a hidden tab, so only the visible chart(s) get the animated `update()`; everything else still gets fresh data via `update('none')`. If a chart ever needs to animate while "hidden" (e.g. a future preview thumbnail), this check will wrongly skip it — not a real scenario today.
+
+### `color-scheme: dark` (meta tag + CSS) — separate from `theme-color`, needed for OS-drawn chrome (status/nav bar)
+`theme-color` only tints the in-browser tab/address-bar strip. The OS-level chrome around an *installed* PWA (Android's status bar AND bottom gesture/nav bar) follows the page's declared `color-scheme` in current Chrome, not `theme-color` — without it, that chrome can default to the system light/dark setting regardless of how dark the page itself is. Declared both as `<meta name="color-scheme" content="dark">` and `:root{color-scheme:dark}` (belt-and-suspenders — different engines/contexts read one or the other). Still won't retroactively fix an *already-installed* copy of the app without an uninstall+reinstall (manifest/meta values are cached at install time) — see SESSION_NOTES.md.
+
+### X-axis tick count is mobile-aware too (`IS_MOBILE`, shared with `MAX_POINTS`)
+Chart labels are hour:minute only (`fmtTimeNoSeconds`, no seconds) — fine on desktop's ~30s window, but mobile's ~12s window (`MAX_POINTS=60`) is short enough that most/all ticks land in the same minute and print the identical label repeated. `maxTicksLimit` drops to 2 on mobile (was 4/8) everywhere it's set (mini charts, dedicated "big" charts, Multi) — all three sites read the same `IS_MOBILE` constant, keep them in sync if this changes again.
 
 ---
 
@@ -137,7 +146,11 @@ Pure CSS, no JS/count-tracking: `.big-row .dedicated-big-card:nth-child(odd):las
 - **Chart scrubbing triggers light haptic feedback on Android** — see `attachHaptics()` rule above.
 - **Multi tab's legend markers are short colored lines, not boxes** (`usePointStyle:true, pointStyle:'line'`) — less horizontal space per entry across up to 18 toggleable metrics.
 - **Only telemetry values are selectable/copyable** — see rule above.
-- **Mobile dedicated-value pages (Power/RPM/ESC/IMU/Link) lay out as squares, with an odd one out spanning full-width** — see rule above.
+- **Mobile dedicated-value pages (Power/RPM/ESC/IMU/Link) lay out as 2-per-row landscape-rectangle tiles, with an odd one out spanning full-width** — see rule above.
+- **`color-scheme:dark` declared** (meta + CSS) so Android's installed-PWA status/nav bar chrome follows the page's dark theme — see rule above; still needs an uninstall+reinstall to take effect on an already-installed copy.
+- **Only the visible chart animates on update** — see `safeUpdateChart()`/`offsetParent` rule above; fixes a real bug where all charts animating at once (worst under Test Mode) starved paint on mobile.
+- **X-axis tick count is mobile-aware** (`IS_MOBILE`, shared with `MAX_POINTS`) — 2 ticks on mobile instead of 4/8, since the shorter mobile time window was otherwise printing the same minute-resolution label repeated.
+- **Download Agent button** no longer opens `target="_blank"` — the redirector page now loads in the same tab so only the native download prompt appears, not an extra tab left open.
 
 ---
 

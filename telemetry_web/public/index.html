@@ -18,6 +18,15 @@
      installed) and, together with manifest.json's matching background_color/
      theme_color, the splash screen. Kept pixel-identical to --bg0 below so
      there's no visible seam between OS chrome and the page. -->
+<!-- color-scheme tells the browser this page IS a dark UI, not just "happens
+     to use dark colors" — theme-color alone only tints the address-bar/tab
+     strip; the OS-level chrome Android draws around an installed PWA (the
+     system status bar AND the bottom gesture/3-button navigation bar) is
+     matched to color-scheme's light/dark signal, not to theme-color, in
+     current Chrome. Without this, that chrome can default to the system's
+     own light/dark setting regardless of theme-color, which is exactly the
+     "nav bar is a different color than the page" symptom. -->
+<meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0a0c11">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -51,6 +60,7 @@
      rather than fully-saturated primaries, so 18 different metric colors
      read as one coordinated system instead of a box of crayons. */
   :root {
+    color-scheme: dark;
     --bg0:#0a0c11; --bg1:#0d1017; --bg2:#131720; --bg3:#1a2029;
     --panel:rgba(255,255,255,.035); --panel-solid:#12151d; --border:rgba(255,255,255,.07);
     --accent:#6366f1; --accent2:#0ea5e9; --accent3:#10b981; --danger:#f43f5e;
@@ -391,8 +401,12 @@
        single card (Speed, Temperature) never use .big-row at all, so
        they're untouched here — already a full-width rectangle by default. */
     .big-row { grid-template-columns:repeat(2,1fr) !important; }
+    /* 8/5 (not 1/1) — a slight landscape rectangle rather than a perfect
+       square, still 2-per-row, but noticeably shorter so a 2-row page
+       (e.g. Power's 3 cards, or IMU's two 3-card sections) takes less
+       total scroll height. */
     .big-row .dedicated-big-card {
-      aspect-ratio:1/1; padding:12px; flex-direction:column; align-items:center;
+      aspect-ratio:8/5; padding:12px; flex-direction:column; align-items:center;
       justify-content:center; text-align:center; gap:2px;
     }
     .big-row .dedicated-big-card:nth-child(odd):last-child {
@@ -635,7 +649,14 @@
   <div id="header">
     <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
     <div id="header-right">
-      <a id="download-agent-btn" class="btn btn-sm" href="https://download-directory.github.io/?url=https://github.com/SiDaMan1/Greenpower-Telemetry-REPO/tree/main/receiver_agent&filename=greenpower-agent" target="_blank" rel="noopener" title="Download the receiver agent (unzip, run setup.bat)">
+      <!-- No target="_blank" — download-directory.github.io is a small
+           redirector page (builds a zip client-side from the GitHub folder,
+           then fires the browser's own download prompt), not the zip file
+           itself, so it can't be a plain <a download> straight to a file.
+           Opening it in the SAME tab means the user gets just the native
+           download prompt instead of a whole extra tab left open after
+           the zip starts downloading. -->
+      <a id="download-agent-btn" class="btn btn-sm" href="https://download-directory.github.io/?url=https://github.com/SiDaMan1/Greenpower-Telemetry-REPO/tree/main/receiver_agent&filename=greenpower-agent" title="Download the receiver agent (unzip, run setup.bat)">
         <span class="icon" data-icon="download"></span><span class="download-agent-btn-label">Download Agent</span>
       </a>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
@@ -957,17 +978,20 @@ const METRICS = {
   esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},
 };
 const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','rssi'];
+// Checked once at load, not re-checked on resize/rotation — both MAX_POINTS
+// and the x-axis tick density below are derived from this once, and mobile
+// users essentially never rotate/resize this page mid-session.
+const IS_MOBILE = window.matchMedia('(max-width:860px)').matches;
 // A phone's chart cards are maybe a third the width of a desktop chart, so
 // the same 150-point/30s window that reads as a smooth line on desktop
 // packs 5x more points per pixel on mobile — it reads as a dense, jagged
 // scribble instead. Halving the window (still ~12s at the sender's 5Hz
-// cadence) keeps roughly the same visual point-density as desktop. Checked
-// once at load via matchMedia, not re-checked on resize/rotation — history
-// arrays are pre-sized to this at page load (see initHistory below) and
-// resizing them live mid-session would mean re-deriving MAX_POINTS-worth of
-// placeholder/real data, not worth it for an orientation change that mobile
-// users essentially never do on this page.
-const MAX_POINTS = window.matchMedia('(max-width:860px)').matches ? 60 : 150;
+// cadence) keeps roughly the same visual point-density as desktop. History
+// arrays are pre-sized to this at page load (see below) — resizing them
+// live mid-session would mean re-deriving MAX_POINTS-worth of placeholder/
+// real data, not worth it for an orientation change mobile users
+// essentially never do on this page.
+const MAX_POINTS = IS_MOBILE ? 60 : 150;
 
 // ── ICONS ─────────────────────────────────────────────────────────────────────
 // Single source of truth for every icon on the page (Feather-style: 24x24
@@ -1072,7 +1096,13 @@ const BASE_OPTS = {
   interaction:{mode:'index', intersect:false},
   plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
   scales:{
-    x:{display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
+    // Labels are hour:minute only (fmtTimeNoSeconds, no seconds) but a
+    // mobile chart's visible window is only ~12s (MAX_POINTS above) — at
+    // the old maxTicksLimit:4, most/all of those ticks land inside the same
+    // minute and print the exact same "H:MM" text repeated, which reads as
+    // clutter/noise rather than useful timing info. Cut mobile down to 2 —
+    // enough to show the window is moving without repeating itself.
+    x:{display:true, ticks:{color:'#828a9c',font:{size:8},maxTicksLimit:IS_MOBILE?2:4,maxRotation:0}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
     y:{grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#828a9c',font:{size:10}},border:{color:'rgba(255,255,255,.07)'}}
   },
   // borderJoinStyle/borderCapStyle:'round' round off the corners where the
@@ -1122,7 +1152,7 @@ function safeChart(id, colorVar, label, big=false, metricKey=null) {
     const color = resolveColor(colorVar);
     const opts = JSON.parse(JSON.stringify(BASE_OPTS));
     if (big) {
-      opts.scales.x.ticks={color:'#828a9c',font:{size:9},maxTicksLimit:8,maxRotation:0};
+      opts.scales.x.ticks={color:'#828a9c',font:{size:9},maxTicksLimit:IS_MOBILE?2:8,maxRotation:0};
     }
     if (metricKey && METRICS[metricKey]) {
       const [lo,hi] = METRICS[metricKey].range;
@@ -1143,9 +1173,19 @@ function safeUpdateChart(chart, labels, data) {
   try {
     chart.data.labels = (labels||[]).map(String);
     chart.data.datasets[0].data = data||[];
-    // update() (no 'none' mode) so LIVE_ANIMATION actually plays — the line
-    // sliding/growing into its new point, instead of a hard cut every tick.
-    chart.update();
+    // applyHistory() updates EVERY chart on EVERY tick regardless of which
+    // tab is active (cheap when it's just a data swap+'none' redraw) — but
+    // animating all ~25 of them (8 overview minis + 16 dedicated bigs +
+    // multi) simultaneously every ~200ms turned out to be enough main-
+    // thread/GPU work on a phone to visibly starve paint: the chart you're
+    // actually looking at appeared frozen/blank the whole time, and only
+    // caught up once updates stopped (e.g. leaving Test Mode, whose no-
+    // packet-loss 200ms cadence maxes this out worse than real LoRa data
+    // ever does). A hidden tab's canvas has offsetParent === null, so only
+    // animate the chart(s) actually on screen right now — everything else
+    // still gets fresh data via 'none', just without the animation cost.
+    const visible = chart.canvas && chart.canvas.offsetParent !== null;
+    chart.update(visible ? undefined : 'none');
   } catch(e) { console.warn('Chart update failed:', e); }
 }
 
@@ -1302,7 +1342,7 @@ try {
   const mctx = document.getElementById('chart-multi');
   const mopts = JSON.parse(JSON.stringify(BASE_OPTS));
   mopts.responsive=true; mopts.maintainAspectRatio=false;
-  mopts.scales.x={display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
+  mopts.scales.x={display:true,ticks:{color:'#828a9c',font:{size:9},maxTicksLimit:IS_MOBILE?2:8},grid:{color:'rgba(255,255,255,.04)'},border:{color:'rgba(255,255,255,.07)'}};
   mopts.scales.y={display:true,min:-5,max:110,title:{display:true,text:'NORMALISED (%)',color:'#828a9c',font:{size:11}},ticks:{color:'#828a9c'},grid:{color:'rgba(255,255,255,.05)'},border:{color:'rgba(255,255,255,.07)'}};
   // usePointStyle + pointStyle:'line' draws each legend marker as a short
   // colored line instead of Chart.js's default filled box — matches the
