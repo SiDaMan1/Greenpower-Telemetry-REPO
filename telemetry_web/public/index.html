@@ -909,6 +909,98 @@
   .update-banner .icon { width:16px; height:16px; color:var(--accent2); flex-shrink:0; }
   .update-banner-text { flex:1; }
 
+  /* ── Onboarding / access gate ──────────────────────────────────────
+     First-visit-only, full-screen, ABOVE everything else on the page —
+     including the update banner (z-index 60) — since a fresh visitor who
+     hasn't even gotten through the password step yet should never be able
+     to see/use the dashboard underneath regardless of what else is going
+     on.
+     Step switching is ANIMATION-based (`.onboarding-step-active` adds a
+     one-shot `@keyframes` entrance animation), not a `display`↔`opacity`
+     CROSSFADE transition — deliberately, per this codebase's own
+     documented gotcha (search this file for ".mobile-navsheet's own
+     rule"): a transition needs a valid BEFORE state to animate from, and
+     toggling `display:none`→`flex` has no such state, so it either has to
+     stay permanently rendered (fine for one persistent element, wasteful
+     for N onboarding steps sitting stacked) or just snap. A CSS animation
+     has no such requirement — it starts playing the instant the element
+     enters the render tree with the class already on it, which is exactly
+     what happens here (JS swaps `display:none`→`flex` AND adds the class
+     in the same call). Still simple/robust for an access-gate flow (JS
+     only ever sets which ONE step is active — no risk of two overlapping
+     mid-crossfade, no "stuck between two steps" state to worry about). */
+  .onboarding-overlay {
+    display:none; position:fixed; inset:0; z-index:200; background:var(--bg0);
+    align-items:center; justify-content:center; padding:24px;
+    padding-top:calc(24px + env(safe-area-inset-top)); padding-bottom:calc(24px + env(safe-area-inset-bottom));
+  }
+  .onboarding-overlay.show { display:flex; animation:onboardingOverlayIn .4s var(--ease); }
+  @keyframes onboardingOverlayIn { from{opacity:0} to{opacity:1} }
+  .onboarding-card {
+    width:100%; max-width:380px; background:var(--panel-solid); border:1px solid var(--border);
+    border-radius:var(--radius); padding:28px 24px 22px; box-shadow:var(--shadow);
+    display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px;
+    animation:onboardingCardIn .5s var(--ease);
+  }
+  @keyframes onboardingCardIn { from{opacity:0; transform:translateY(14px) scale(.97)} to{opacity:1; transform:translateY(0) scale(1)} }
+  .onboarding-step { display:none; flex-direction:column; align-items:center; text-align:center; gap:10px; width:100%; }
+  .onboarding-step.onboarding-step-active { display:flex; animation:onboardingStepIn .45s var(--ease); }
+  @keyframes onboardingStepIn { from{opacity:0; transform:translateY(12px) scale(.98)} to{opacity:1; transform:translateY(0) scale(1)} }
+  .onboarding-icon {
+    width:34px; height:34px; color:var(--accent2); filter:drop-shadow(0 0 10px rgba(14,165,233,.4)); margin-bottom:4px;
+    animation:onboardingIconPop .5s cubic-bezier(.34,1.56,.64,1) .05s backwards;
+  }
+  @keyframes onboardingIconPop { from{opacity:0; transform:scale(.5) rotate(-8deg)} to{opacity:1; transform:scale(1) rotate(0)} }
+  .onboarding-title { font-family:'Space Grotesk',sans-serif; font-size:19px; font-weight:700; }
+  .onboarding-desc { font-size:13px; color:var(--muted); line-height:1.55; max-width:300px; }
+  /* Solid accent-gradient fill (same gradient install-fab/active tabs
+     already use elsewhere on this page), not the outlined .btn-accent
+     text-only style — this is the primary "move forward" action on every
+     step, so it gets the same visual weight the site already reserves
+     for its one recurring "important, colorful" button treatment. */
+  .onboarding-btn-primary {
+    width:100%; justify-content:center; padding:11px; font-size:13.5px; margin-top:8px;
+    background:linear-gradient(135deg, var(--accent), var(--accent2)); border:none; color:#fff;
+    box-shadow:0 4px 16px -4px rgba(99,102,241,.45);
+    transition:transform .15s var(--ease), box-shadow .15s var(--ease), filter .15s var(--ease);
+  }
+  .onboarding-btn-primary:hover { filter:brightness(1.08); box-shadow:0 6px 20px -4px rgba(99,102,241,.6); }
+  .onboarding-btn-primary:active { transform:scale(.97); }
+  .onboarding-btn-secondary { width:100%; justify-content:center; padding:9px; font-size:12.5px; color:var(--muted); }
+
+  .onboarding-password-row { width:100%; margin-top:6px; }
+  .onboarding-password-input {
+    width:100%; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:11px 13px; color:var(--text); font-size:14px; font-family:'Rajdhani',sans-serif; text-align:center;
+    letter-spacing:1px; transition:border-color .15s var(--ease), background .15s var(--ease);
+  }
+  .onboarding-password-input:focus { outline:none; border-color:rgba(14,165,233,.5); background:rgba(255,255,255,.07); }
+  .onboarding-password-error {
+    display:none; color:var(--danger); font-size:12px; font-weight:600; margin-top:2px;
+  }
+  .onboarding-password-error.show { display:block; animation:onboardingShake .32s var(--ease); }
+  @keyframes onboardingShake { 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} 100%{transform:translateX(0)} }
+
+  .onboarding-features { display:flex; flex-direction:column; gap:10px; width:100%; margin-top:6px; text-align:left; }
+  .onboarding-feature {
+    display:flex; align-items:flex-start; gap:10px; font-size:12.5px; line-height:1.5; color:var(--text);
+    opacity:0; animation:onboardingFeatureIn .4s var(--ease) forwards;
+  }
+  /* Staggered — each bullet pops in slightly after the last, a small
+     extra touch of "nicely animated" rather than all 5 appearing at once. */
+  .onboarding-feature:nth-child(1) { animation-delay:.08s; }
+  .onboarding-feature:nth-child(2) { animation-delay:.15s; }
+  .onboarding-feature:nth-child(3) { animation-delay:.22s; }
+  .onboarding-feature:nth-child(4) { animation-delay:.29s; }
+  .onboarding-feature:nth-child(5) { animation-delay:.36s; }
+  @keyframes onboardingFeatureIn { from{opacity:0; transform:translateX(-8px)} to{opacity:1; transform:translateX(0)} }
+  .onboarding-feature .icon { width:15px; height:15px; color:var(--accent3); flex-shrink:0; margin-top:2px; }
+  .onboarding-feature strong { font-weight:700; }
+
+  .onboarding-dots { display:flex; gap:6px; margin-top:16px; }
+  .onboarding-dot { width:6px; height:6px; border-radius:50%; background:var(--border); transition:background .25s var(--ease), transform .25s var(--ease), width .25s var(--ease); }
+  .onboarding-dot.active { background:linear-gradient(90deg, var(--accent), var(--accent2)); transform:scale(1); width:16px; border-radius:3px; }
+
   /* ── Download-installer confirmation modal ────────────────────────────
      #download-agent-btn is already desktop-only (display:none inside the
      max-width:860px block below), so this only ever needs to work on
@@ -920,12 +1012,19 @@
      reasoning applies here even though this modal doesn't animate closed
      with quite the same fanfare. */
   .confirm-modal-backdrop {
-    position:fixed; inset:0; z-index:30; background:rgba(0,0,0,.55);
+    /* z-index:210 — deliberately above .onboarding-overlay's 200, not the
+       original 30, since the onboarding flow's own "agent" step (desktop)
+       opens THIS SAME modal (showDownloadConfirm()) on top of itself. Any
+       confirm-modal instance is always an active thing the user needs to
+       resolve right now, so outranking everything else on the page
+       (including the access gate) is correct regardless of what triggered
+       it, not just this one case. */
+    position:fixed; inset:0; z-index:210; background:rgba(0,0,0,.55);
     opacity:0; pointer-events:none; transition:opacity .18s var(--ease);
   }
   .confirm-modal-backdrop.show { opacity:1; pointer-events:auto; }
   .confirm-modal {
-    position:fixed; top:50%; left:50%; z-index:31; width:min(380px, calc(100vw - 48px));
+    position:fixed; top:50%; left:50%; z-index:211; width:min(380px, calc(100vw - 48px));
     background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius);
     box-shadow:var(--shadow); padding:20px;
     transform:translate(-50%, -50%) scale(.96); opacity:0; pointer-events:none;
@@ -1204,6 +1303,91 @@
     <div class="install-popover-actions">
       <button class="btn btn-sm btn-accent" id="install-popover-action">Install</button>
       <button class="btn btn-sm" id="install-popover-dismiss">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Onboarding / access gate — first visit only (mobile AND desktop),
+       see the JS "ONBOARDING / ACCESS GATE" section for the actual step
+       sequencing/wiring. Password + overview + a final settings-tour step
+       are common to both; "install" (mobile) and "agent" (desktop) are
+       each only shown on their one respective platform — the JS step list
+       simply skips whichever doesn't apply, same reasoning #install-fab
+       is mobile-only and #download-agent-btn is desktop-only elsewhere.
+       All four non-password steps default to display:none (see the CSS
+       rule) — JS adds .onboarding-step-active to exactly one at a time,
+       which is what actually shows it AND plays its entrance animation. -->
+  <div class="onboarding-overlay" id="onboarding-overlay">
+    <div class="onboarding-card">
+      <div class="onboarding-step onboarding-step-active" id="onboarding-step-password" data-step="password">
+        <span class="icon onboarding-icon" data-icon="lock"></span>
+        <div class="onboarding-title">Access Required</div>
+        <div class="onboarding-desc">Enter the access code to continue to the dashboard.</div>
+        <div class="onboarding-password-row">
+          <input type="password" class="onboarding-password-input" id="onboarding-password-input" placeholder="Access code" autocomplete="off" autocapitalize="off" spellcheck="false">
+        </div>
+        <div class="onboarding-password-error" id="onboarding-password-error">Incorrect code — try again.</div>
+        <button class="btn btn-sm onboarding-btn-primary" id="onboarding-password-submit">Continue</button>
+      </div>
+
+      <div class="onboarding-step" id="onboarding-step-install" data-step="install">
+        <span class="icon onboarding-icon" data-icon="download"></span>
+        <div class="onboarding-title">Install the App</div>
+        <div class="onboarding-desc" id="onboarding-install-desc">Add Greenpower Telemetry to your home screen for quick, full-screen access — optional, you can always do this later too.</div>
+        <button class="btn btn-sm onboarding-btn-primary" id="onboarding-install-btn">Install</button>
+        <button class="onboarding-btn-secondary" id="onboarding-install-skip">Skip for now</button>
+      </div>
+
+      <div class="onboarding-step" id="onboarding-step-overview" data-step="overview">
+        <span class="icon onboarding-icon" data-icon="zap"></span>
+        <div class="onboarding-title">Welcome to Greenpower Telemetry</div>
+        <div class="onboarding-features">
+          <div class="onboarding-feature"><span class="icon" data-icon="check"></span><span><strong>Live telemetry</strong> — speed, power, temps, RPM, IMU, ESC and link quality, updating live several times a second.</span></div>
+          <div class="onboarding-feature"><span class="icon" data-icon="check"></span><span><strong>Raceline map</strong> — live GPS position and trail on satellite imagery.</span></div>
+          <div class="onboarding-feature"><span class="icon" data-icon="check"></span><span><strong>Sessions</strong> — every run is saved automatically and exportable as CSV.</span></div>
+          <div class="onboarding-feature"><span class="icon" data-icon="check"></span><span><strong>Multi tab</strong> — overlay several metrics on one chart to spot correlations.</span></div>
+          <div class="onboarding-feature"><span class="icon" data-icon="check"></span><span><strong>Test Mode</strong> (in Settings) — try the UI with sample data, no car needed.</span></div>
+        </div>
+        <button class="btn btn-sm onboarding-btn-primary" id="onboarding-overview-next">Next</button>
+      </div>
+
+      <!-- Desktop only (see onboardingSteps in JS) — the desktop mirror of
+           the mobile "install" step above: promotes the ONE other
+           companion install relevant to that platform instead of a home-
+           screen install. "Download Agent" opens the SAME real
+           #download-confirm-modal the header button does (see its own
+           z-index comment for why it now renders above this overlay). -->
+      <div class="onboarding-step" id="onboarding-step-agent" data-step="agent">
+        <span class="icon onboarding-icon" data-icon="download"></span>
+        <div class="onboarding-title">Forwarding From the Receiver?</div>
+        <div class="onboarding-desc">If you're at the track with the receiver plugged into this computer, install the receiver agent to relay live telemetry here. Not needed just to watch the dashboard.</div>
+        <button class="btn btn-sm onboarding-btn-primary" id="onboarding-agent-btn">Download Agent</button>
+        <button class="onboarding-btn-secondary" id="onboarding-agent-skip">Skip for now</button>
+      </div>
+
+      <div class="onboarding-step" id="onboarding-step-settings" data-step="settings">
+        <span class="icon onboarding-icon" data-icon="settings"></span>
+        <div class="onboarding-title">Make It Yours</div>
+        <div class="onboarding-desc">Settings has a few quick options — default chart time range, haptics, test mode, and (on mobile) which Overview boxes show and how many per row.</div>
+        <button class="btn btn-sm onboarding-btn-primary" id="onboarding-settings-open">Open Settings</button>
+        <button class="onboarding-btn-secondary" id="onboarding-settings-skip">Skip — Go to Dashboard</button>
+      </div>
+
+      <div class="onboarding-dots" id="onboarding-dots"></div>
+    </div>
+  </div>
+
+  <!-- Clear Website Data confirmation — reuses the same .confirm-modal
+       pattern as the download-agent and exit-app confirmations above.
+       Destructive/irreversible (wipes every local preference, including
+       re-triggering the onboarding gate above), hence a real confirm step
+       rather than firing straight from the Settings button. -->
+  <div class="confirm-modal-backdrop" id="clear-data-confirm-backdrop"></div>
+  <div class="confirm-modal" id="clear-data-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="clear-data-confirm-title">
+    <div class="confirm-modal-title" id="clear-data-confirm-title">Clear Website Data?</div>
+    <div class="confirm-modal-body">This resets every saved preference on this device (Settings, dismissed prompts, the access gate) and reloads the page. It does not affect the live telemetry itself.</div>
+    <div class="confirm-modal-actions">
+      <button class="btn btn-sm" id="clear-data-confirm-cancel">Cancel</button>
+      <button class="btn btn-sm btn-accent" id="clear-data-confirm-go">Clear Data</button>
     </div>
   </div>
 
@@ -1494,6 +1678,13 @@
           </label>
         </div>
       </div>
+
+      <div class="settings-card">
+        <div class="settings-card-row">
+          <div class="settings-card-title">Clear Website Data</div>
+          <button class="btn btn-sm" id="settings-clear-data-btn" style="color:var(--danger);border-color:rgba(244,63,94,.3)">Clear</button>
+        </div>
+      </div>
     </div>
 
   </div>
@@ -1623,6 +1814,8 @@ const ICONS = {
   refresh:      `<svg ${ICON_ATTRS}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>`,
   trash:        `<svg ${ICON_ATTRS}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
   rotate:       `<svg ${ICON_ATTRS}><rect x="6" y="8" width="12" height="18" rx="2" transform="rotate(-90 12 17)"/><path d="M18 3v5h-5"/><path d="M18 8a8 8 0 0 0-15 3"/></svg>`,
+  lock:         `<svg ${ICON_ATTRS}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+  check:        `<svg ${ICON_ATTRS}><polyline points="20 6 9 17 4 12"/></svg>`,
 };
 function applyIcons(root=document) {
   root.querySelectorAll('[data-icon]').forEach(el => {
@@ -2443,6 +2636,191 @@ document.getElementById('exit-confirm-go').addEventListener('click', () => {
   awaitingExit = true;
   window.history.go(-2);
 });
+
+// ── CLEAR WEBSITE DATA ───────────────────────────────────────────────────────
+// Wipes every locally-persisted preference this page has ever written
+// (Settings, dismissed prompts, the onboarding-complete flag, everything
+// under the gp_* localStorage keys used throughout this file) plus real
+// cookies and any service worker/cache state, then reloads — which will
+// re-show the onboarding/access gate below, since its own "complete" flag
+// just got wiped along with everything else. Shared by both the one-time
+// migration below (this deploy) and the Settings "Clear Website Data"
+// button (an ongoing user-facing reset).
+function clearAllWebsiteData() {
+  try { localStorage.clear(); } catch(e) {}
+  try { sessionStorage.clear(); } catch(e) {}
+  // This app has never set a cookie itself (everything is localStorage),
+  // but "clear website data" should mean ALL local state, not just the
+  // parts this file happens to use — defensive/thorough on purpose.
+  try {
+    document.cookie.split(';').forEach(c => {
+      const name = c.split('=')[0].trim();
+      if (name) document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+    });
+  } catch(e) {}
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(regs => regs.forEach(r => r.unregister())).catch(() => {});
+  }
+  if ('caches' in window) {
+    caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(() => {});
+  }
+  location.reload();
+}
+function showClearDataConfirm() {
+  document.getElementById('clear-data-confirm-backdrop').classList.add('show');
+  document.getElementById('clear-data-confirm-modal').classList.add('show');
+}
+function hideClearDataConfirm() {
+  document.getElementById('clear-data-confirm-backdrop').classList.remove('show');
+  document.getElementById('clear-data-confirm-modal').classList.remove('show');
+}
+document.getElementById('settings-clear-data-btn').addEventListener('click', showClearDataConfirm);
+document.getElementById('clear-data-confirm-cancel').addEventListener('click', hideClearDataConfirm);
+document.getElementById('clear-data-confirm-backdrop').addEventListener('click', hideClearDataConfirm);
+document.getElementById('clear-data-confirm-go').addEventListener('click', clearAllWebsiteData);
+
+// One-time cookie clear tied to THIS update specifically (the new
+// password-gated onboarding flow below) — per explicit request, every
+// existing visitor's local state gets a clean slate for this deploy, not
+// just new visitors. Bumping ONBOARDING_KEY to a new, previously-unused
+// name already guarantees everyone sees the new gate (see its own
+// comment) — this additionally clears any real cookies (defensive, see
+// clearAllWebsiteData()'s own comment on why this app doesn't normally
+// set any) without wiping OTHER already-saved preferences the same way
+// the Settings button deliberately does, since only the cookie-clearing
+// part of this update was actually requested, not a full reset of
+// Overview/haptics/range preferences for people who'd already set them.
+try {
+  if (localStorage.getItem('gp_cookies_cleared_v1') !== '1') {
+    document.cookie.split(';').forEach(c => {
+      const name = c.split('=')[0].trim();
+      if (name) document.cookie = `${name}=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/`;
+    });
+    localStorage.setItem('gp_cookies_cleared_v1', '1');
+  }
+} catch(e) {}
+
+// ── ONBOARDING / ACCESS GATE ─────────────────────────────────────────────────
+// First-visit-only, both mobile and desktop: a required access-code step,
+// then a platform-specific optional install step (the app itself on
+// mobile, the receiver agent on desktop), then a brief feature overview,
+// then a final "here's Settings" step. ONBOARDING_KEY is a NEW name (not
+// reused from anything earlier) specifically so this update's gate shows
+// for EVERY existing visitor too, not just genuinely new ones — nobody
+// has this key set yet.
+const ONBOARDING_KEY = 'gp_onboarding_v1_complete';
+const ONBOARDING_PASSWORD = 'SentinelRacing26!';
+const onboardingSteps = IS_MOBILE
+  ? ['password', 'install', 'overview', 'settings']
+  : ['password', 'overview', 'agent', 'settings'];
+let onboardingStepIndex = 0;
+
+function onboardingComplete() {
+  try { return localStorage.getItem(ONBOARDING_KEY) === '1'; } catch(e) { return false; }
+}
+function setOnboardingComplete() {
+  try { localStorage.setItem(ONBOARDING_KEY, '1'); } catch(e) {}
+}
+function renderOnboardingDots() {
+  document.getElementById('onboarding-dots').innerHTML = onboardingSteps
+    .map((s, i) => `<span class="onboarding-dot${i === onboardingStepIndex ? ' active' : ''}"></span>`).join('');
+}
+// .onboarding-step-active is what actually shows a step (default display
+// is none — see its CSS rule) AND is what triggers its one-shot entrance
+// animation, since a CSS @keyframes animation starts the instant an
+// element enters the render tree with the class already applied — no
+// "before" state needed the way a transition/crossfade would (see the
+// CSS rule's own comment for the full reasoning and the codebase gotcha
+// that ruled out a display↔opacity crossfade here).
+function showOnboardingStep(name) {
+  document.querySelectorAll('.onboarding-step').forEach(el => { el.classList.toggle('onboarding-step-active', el.dataset.step === name); });
+  renderOnboardingDots();
+}
+function advanceOnboarding() {
+  onboardingStepIndex++;
+  if (onboardingStepIndex >= onboardingSteps.length) { finishOnboarding(); return; }
+  showOnboardingStep(onboardingSteps[onboardingStepIndex]);
+}
+function finishOnboarding() {
+  setOnboardingComplete();
+  document.getElementById('onboarding-overlay').classList.remove('show');
+}
+
+function submitOnboardingPassword() {
+  const input = document.getElementById('onboarding-password-input');
+  const err = document.getElementById('onboarding-password-error');
+  if (input.value === ONBOARDING_PASSWORD) {
+    err.classList.remove('show');
+    advanceOnboarding();
+  } else {
+    err.classList.add('show');
+    vibrate(15);
+  }
+}
+document.getElementById('onboarding-password-submit').addEventListener('click', submitOnboardingPassword);
+document.getElementById('onboarding-password-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitOnboardingPassword(); });
+
+// The install step's exact content/behavior mirrors the existing
+// install-fab/popover logic (same three cases: real beforeinstallprompt
+// available, iOS with no such API, or already running standalone) — see
+// checkIosInstallHint() above, which this deliberately parallels rather
+// than shares code with, since the two UIs (a floating popover vs. a
+// full-screen onboarding step) render differently enough that sharing
+// isn't worth the coupling.
+(function setupOnboardingInstallStep() {
+  const btn = document.getElementById('onboarding-install-btn');
+  const desc = document.getElementById('onboarding-install-desc');
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+  if (isStandalone) {
+    desc.textContent = "You're already using the installed app.";
+    btn.style.display = 'none';
+  } else if (isIos) {
+    desc.textContent = 'Tap the Share icon in your browser, then "Add to Home Screen".';
+    btn.style.display = 'none';
+  } else {
+    btn.addEventListener('click', async () => {
+      if (deferredInstallPrompt) {
+        deferredInstallPrompt.prompt();
+        await deferredInstallPrompt.userChoice.catch(() => {});
+        deferredInstallPrompt = null;
+        hideInstallUi();   // the floating install-fab/popover would otherwise still offer this redundantly right after
+      }
+      advanceOnboarding();
+    });
+  }
+})();
+document.getElementById('onboarding-install-skip').addEventListener('click', advanceOnboarding);
+document.getElementById('onboarding-overview-next').addEventListener('click', advanceOnboarding);
+
+// Desktop-only "agent" step — opens the exact same real
+// #download-confirm-modal the header's Download Agent button does
+// (showDownloadConfirm(), defined earlier in the "DOWNLOAD-INSTALLER
+// CONFIRMATION MODAL" section), rather than duplicating that flow.
+// Actually clicking through to a real download (download-confirm-go)
+// while this onboarding step is the active one also auto-advances —
+// skipping is still available separately via its own Skip button for
+// anyone who cancels out of the confirm modal instead.
+document.getElementById('onboarding-agent-btn')?.addEventListener('click', showDownloadConfirm);
+document.getElementById('onboarding-agent-skip')?.addEventListener('click', advanceOnboarding);
+document.getElementById('download-confirm-go').addEventListener('click', () => {
+  if (onboardingSteps[onboardingStepIndex] === 'agent') advanceOnboarding();
+});
+
+// Final step — "Open Settings" finishes onboarding AND switches straight
+// to the Settings tab (reuses the real .tab click handler/wiring rather
+// than duplicating page-switch logic); "Skip" just finishes and leaves
+// whichever page was already active (Overview, on a fresh load).
+document.getElementById('onboarding-settings-open').addEventListener('click', () => {
+  finishOnboarding();
+  document.querySelector('.tab[data-page="settings"]')?.click();
+});
+document.getElementById('onboarding-settings-skip').addEventListener('click', finishOnboarding);
+
+if (!onboardingComplete()) {
+  document.getElementById('onboarding-overlay').classList.add('show');
+  showOnboardingStep(onboardingSteps[0]);
+}
 
 // ── SESSIONS (persistent history, from Postgres via server.js) ──────────────
 // Unlike everything else on this page, session data is NOT live-polled —
