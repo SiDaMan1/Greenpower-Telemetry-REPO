@@ -565,8 +565,16 @@
      (.page already has overflow-y:auto) for anything past that. */
   .raceline-top-row { display:flex; flex-direction:row; gap:14px; height:50vh; min-height:320px; max-height:520px; flex-shrink:0; }
   #raceline-info { width:190px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; }
-  #raceline-map { flex:1; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+  #raceline-map { position:relative; flex:1; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
     padding:10px; min-height:0; display:flex; flex-direction:column; }
+  /* Floating "pick geofence on map" button — a sibling of #gps-map (not a
+     descendant), so it sits entirely OUTSIDE Leaflet's own stacking context
+     (#gps-map has isolation:isolate — see that rule elsewhere) rather than
+     competing with Leaflet's internal panes, which run up to z-index~700.
+     Positioned relative to #raceline-map's own new position:relative. */
+  .raceline-map-overlay-btn { position:absolute; top:20px; right:20px; z-index:10;
+    background:rgba(10,12,17,.82); backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); }
+  .raceline-map-overlay-btn.active { background:var(--accent2); border-color:var(--accent2); color:#fff; }
 
   /* overflow: hidden auto (not a bare overflow-y:auto) — an element with
      overflow-y set but overflow-x left at its 'visible' default gets that
@@ -1436,12 +1444,12 @@
     <div class="tab active" data-page="overview"><span class="tab-icon icon" data-icon="overview"></span>Overview</div>
     <div class="tab" data-page="speed"><span class="tab-icon icon" data-icon="speed"></span>Speed</div>
     <div class="tab" data-page="power"><span class="tab-icon icon" data-icon="power"></span>Power</div>
-    <div class="tab" data-page="efficiency"><span class="tab-icon icon" data-icon="battery"></span>Efficiency</div>
     <div class="tab" data-page="temperature"><span class="tab-icon icon" data-icon="temperature"></span>Temp</div>
     <div class="tab" data-page="rpm"><span class="tab-icon icon" data-icon="rpm"></span>RPM</div>
     <div class="tab" data-page="esc"><span class="tab-icon icon" data-icon="esc"></span>ESC</div>
     <div class="tab" data-page="imu"><span class="tab-icon icon" data-icon="imu"></span>IMU</div>
     <div class="tab" data-page="raceline"><span class="tab-icon icon" data-icon="raceline"></span>Raceline</div>
+    <div class="tab" data-page="efficiency"><span class="tab-icon icon" data-icon="battery"></span>Efficiency</div>
     <div class="tab" data-page="link"><span class="tab-icon icon" data-icon="link"></span>Link</div>
     <div class="tab" data-page="multi"><span class="tab-icon icon" data-icon="multi"></span>Multi</div>
     <div class="tab" data-page="sessions"><span class="tab-icon icon" data-icon="sessions"></span>Sessions</div>
@@ -1700,7 +1708,6 @@
          trip total, not independent per-card state. -->
     <div id="page-efficiency" class="page">
       <div class="section-heading">Efficiency <button id="efficiency-reset-btn" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Reset Trip</button></div>
-      <div id="efficiency-capacity-hint" class="settings-card-hint" style="display:none">Set your battery's capacity in Settings → Efficiency to see Remaining Wh and Estimated Range.</div>
       <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Consumed</div><div class="dedicated-value size-md" id="eff-consumed-wh" style="color:var(--current)">--</div><div class="dedicated-unit">WH</div></div></div>
@@ -1787,7 +1794,16 @@
           <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">HDOP</div><div class="stat-value compact" id="rl-hdop">--</div></div>
           <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="rl-speed">--</div><div class="stat-unit">MPH</div></div>
         </div>
-        <div id="raceline-map"><div id="gps-map"></div></div>
+        <div id="raceline-map">
+          <div id="gps-map"></div>
+          <!-- Alternative to the Settings lat/lon fields — tap this, then
+               tap anywhere on the map (the car's current position or any
+               other point) to set the geofence there. See setGeofenceFromMapClick()
+               in the "EFFICIENCY / LAP TIMING" JS section. -->
+          <button type="button" class="btn btn-sm raceline-map-overlay-btn" id="raceline-pick-geofence-btn">
+            <span class="icon" data-icon="target"></span>Set Start/Finish
+          </button>
+        </div>
       </div>
 
       <!-- Lap Timing — geofence-based, see the "EFFICIENCY / LAP TIMING" JS
@@ -1926,17 +1942,6 @@
           <button class="btn btn-sm" id="settings-geofence-clear" style="color:var(--danger);border-color:rgba(244,63,94,.3)">Clear Geofence</button>
         </div>
         <div class="settings-card-hint" id="settings-geofence-msg" style="display:none"></div>
-      </div>
-
-      <!-- Efficiency — battery pack capacity, used to compute Remaining Wh/
-           Estimated Range on the Efficiency tab (both show "--" without it;
-           Consumed Wh/Wh-per-mile/Distance/Avg Power don't need it at all). -->
-      <div class="settings-card">
-        <div class="settings-card-title">Efficiency — Battery Capacity</div>
-        <div class="settings-card-hint">Your pack's usable capacity in watt-hours (Wh = amp-hours × nominal voltage). Used to estimate Remaining Wh and Range on the Efficiency tab.</div>
-        <div class="settings-input-row" style="grid-template-columns:1fr">
-          <div class="settings-input-field"><label for="settings-battery-capacity">Capacity (Wh)</label><input type="number" step="any" min="0" class="settings-input" id="settings-battery-capacity" placeholder="e.g. 1000"></div>
-        </div>
       </div>
 
       <div class="settings-card settings-mobile-only">
@@ -2109,6 +2114,7 @@ const ICONS = {
   imu:          `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`,
   raceline:     `<svg ${ICON_ATTRS}><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>`,
   battery:      `<svg ${ICON_ATTRS}><rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>`,
+  target:       `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>`,
   link:         `<svg ${ICON_ATTRS}><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`,
   multi:        `<svg ${ICON_ATTRS}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
   sessions:     `<svg ${ICON_ATTRS}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
@@ -2776,23 +2782,29 @@ const MOBILE_NAV_ITEMS = [
   { key:'temperature', label:'Temp',        icon:'temperature' },
   { key:'imu',         label:'IMU',         icon:'imu' },
   { key:'raceline',    label:'Raceline',    icon:'raceline' },
+  { key:'efficiency',  label:'Efficiency',  icon:'battery' },
   { key:'link',        label:'Link',        icon:'link' },
   { key:'multi',       label:'Multi',       icon:'multi' },
   { key:'sessions',    label:'Sessions',    icon:'sessions' },
   { key:'raw',         label:'Raw',         icon:'raw' },
-  { key:'efficiency',  label:'Efficiency',  icon:'battery' },
 ];
 const MOBILE_NAV_ORDER_KEY = 'gp_mobile_nav_order';
 const MOBILE_NAV_HIDDEN_KEY = 'gp_mobile_nav_hidden';
 const MOBILE_NAV_TOOLBAR_SLOTS = 5;
 
-// Default order/visibility matches the original static layout exactly
-// (overview/speed/power/rpm/esc in the toolbar; temp/imu/raceline/link/
-// multi/sessions/raw in the sheet) — nothing hidden by default, which is
-// also what "restores" Multi/Sessions/Raw after they were briefly removed
-// from mobile nav entirely in an earlier pass.
+// Default ORDER matches the original static layout exactly (overview/
+// speed/power/rpm/esc in the toolbar; temp/imu/raceline/efficiency/link/
+// multi/sessions/raw in the sheet). Default VISIBILITY hides Raw/Sessions/
+// Multi (per explicit request) — still fully present in mobileNavOrder and
+// reachable/reorderable via Settings → Mobile Toolbar & Pages, just start
+// unchecked, NOT removed from the list/code the way an earlier pass once
+// fully removed them from mobile nav entirely (a real difference: this is
+// "start hidden, one tap to unhide", not "doesn't exist on mobile"). 3
+// hidden of 13 total still leaves 10 visible, comfortably above the
+// MOBILE_NAV_TOOLBAR_SLOTS (5) floor the Settings page's own hide-guard
+// enforces (see its own comment further down).
 let mobileNavOrder = MOBILE_NAV_ITEMS.map(i => i.key);
-let mobileNavHidden = [];
+let mobileNavHidden = ['raw', 'sessions', 'multi'];
 (function loadMobileNavState() {
   try {
     const savedOrder = JSON.parse(localStorage.getItem(MOBILE_NAV_ORDER_KEY) || 'null');
@@ -3765,7 +3777,6 @@ let activeRunStart = null;
 const GEOFENCE_LAT_KEY = 'gp_geofence_lat';
 const GEOFENCE_LON_KEY = 'gp_geofence_lon';
 const GEOFENCE_RADIUS_KEY = 'gp_geofence_radius_m';
-const BATTERY_CAPACITY_KEY = 'gp_battery_capacity_wh';
 // A real lap can't complete this fast — debounces a GPS fix wobbling right
 // on the geofence boundary from registering a string of near-zero-length
 // "laps" instead of one real crossing.
@@ -3779,12 +3790,75 @@ try {
   if (Number.isFinite(la) && Number.isFinite(lo)) { geofenceLat = la; geofenceLon = lo; }
   if (Number.isFinite(r) && r > 0) geofenceRadiusM = r;
 } catch(e) {}
-let batteryCapacityWh = null;
-try {
-  const c = parseFloat(localStorage.getItem(BATTERY_CAPACITY_KEY));
-  if (Number.isFinite(c) && c > 0) batteryCapacityWh = c;
-} catch(e) {}
+// Fixed, not a Settings field — the car's actual pack: two Interstate
+// DCM0035 (12V, 35Ah each) in series. Series wiring adds voltage, not
+// amp-hours, so the pack is 24V at 35Ah, not 70Ah — 24 * 35 = 840Wh. If
+// the car's battery pack ever actually changes (different model/count),
+// this is the one constant to update; there's deliberately no UI for it
+// anymore since it isn't a per-user preference, it's a fact about this one
+// vehicle.
+const batteryCapacityWh = 840;
 function geofenceConfigured() { return geofenceLat != null && geofenceLon != null; }
+
+// Draws (or removes/redraws) an L.circle on the Raceline map showing the
+// current geofence — called after every change to geofenceLat/geofenceLon/
+// geofenceRadiusM (Settings inputs, "Use Current GPS Position", "Set
+// Start/Finish" map-tap below, Clear), and once on load if a geofence was
+// already saved. gpsMap/L come from the earlier GPS RACELINE section —
+// referencing them here (textually after that section, so already
+// initialized by the time this file's script finishes its first pass) is
+// safe; see this section's own top comment on why forward-referencing a
+// LATER declaration instead would be the actual problem.
+let geofenceMapLayer = null;
+function updateGeofenceMapLayer() {
+  if (!gpsMap || typeof L === 'undefined') return;
+  try {
+    if (geofenceMapLayer) { gpsMap.removeLayer(geofenceMapLayer); geofenceMapLayer = null; }
+    if (geofenceConfigured()) {
+      geofenceMapLayer = L.circle([geofenceLat, geofenceLon], {
+        radius: geofenceRadiusM, color:'#f59e0b', weight:2, fillColor:'#f59e0b', fillOpacity:.15, dashArray:'4,4'
+      }).addTo(gpsMap);
+    }
+  } catch(e) { console.warn('Geofence map layer update failed:', e); }
+}
+
+// "Set Start/Finish" map-tap mode (the floating button on the Raceline
+// map) — an alternative to typing lat/lon into Settings by hand: tap the
+// button, then tap anywhere on the map (the car's current live position,
+// or any other point on the visible trail/imagery) to set the geofence
+// there. Reuses saveGeofenceFromInputs() (defined in the Settings page
+// wiring further down — a hoisted function declaration, safe to call from
+// here despite sitting textually before its own definition, since this
+// only actually RUNS from inside the click callback below, well after the
+// whole script has finished loading) rather than duplicating the parse/
+// persist/re-render logic a third time (Settings inputs and "Use Current
+// GPS Position" are the other two).
+let geofencePickMode = false;
+function setGeofencePickMode(on) {
+  geofencePickMode = on;
+  const btn = document.getElementById('raceline-pick-geofence-btn');
+  if (btn) btn.classList.toggle('active', on);
+  if (gpsMap) {
+    const container = gpsMap.getContainer();
+    if (container) container.style.cursor = on ? 'crosshair' : '';
+  }
+}
+function setGeofenceFromMapClick(lat, lon) {
+  const latEl = document.getElementById('settings-geofence-lat');
+  const lonEl = document.getElementById('settings-geofence-lon');
+  if (latEl) latEl.value = lat;
+  if (lonEl) lonEl.value = lon;
+  saveGeofenceFromInputs();
+  setGeofencePickMode(false);
+  vibrate(15);
+}
+if (gpsMap) {
+  gpsMap.on('click', (e) => { if (geofencePickMode) setGeofenceFromMapClick(e.latlng.lat, e.latlng.lng); });
+}
+document.getElementById('raceline-pick-geofence-btn')?.addEventListener('click', () => setGeofencePickMode(!geofencePickMode));
+// Draw whatever's already saved (a returning visitor) the moment this
+// section runs, not just after the next change.
+updateGeofenceMapLayer();
 
 // Haversine great-circle distance in meters — plenty accurate at track
 // scale (rarely more than a few hundred meters), same trade-off (ignoring
@@ -3934,30 +4008,31 @@ document.getElementById('laps-reset-btn')?.addEventListener('click', () => { res
 function renderEfficiencyLive() {
   const distMi = liveDistanceMi;
   const whPerMile = distMi > 0.02 ? liveConsumedWh / distMi : null;
-  const remainingWh = batteryCapacityWh != null ? Math.max(0, batteryCapacityWh - liveConsumedWh) : null;
-  const rangeMi = (remainingWh != null && whPerMile != null && whPerMile > 0.01) ? remainingWh / whPerMile : null;
+  // batteryCapacityWh is now a fixed constant (the car's actual pack, see
+  // its own declaration), never null — remainingWh/rangeMi always compute
+  // once there's a distance to divide by, no more "-- until Settings is
+  // filled in" state to handle here.
+  const remainingWh = Math.max(0, batteryCapacityWh - liveConsumedWh);
+  const rangeMi = (whPerMile != null && whPerMile > 0.01) ? remainingWh / whPerMile : null;
   const elapsedHr = activeRunStart != null ? (Date.now() - activeRunStart) / 3600000 : 0;
   const avgPowerW = elapsedHr > 0.0005 ? liveConsumedWh / elapsedHr : 0;
 
   setText('eff-consumed-wh', liveConsumedWh.toFixed(1));
-  setText('eff-remaining-wh', remainingWh != null ? remainingWh.toFixed(1) : '--');
+  setText('eff-remaining-wh', remainingWh.toFixed(1));
   setText('eff-wh-per-mile', whPerMile != null ? whPerMile.toFixed(0) : '--');
   setText('eff-distance-mi', distMi.toFixed(2));
   setText('eff-range-mi', rangeMi != null ? rangeMi.toFixed(1) : '--');
   setText('eff-avg-power-w', avgPowerW.toFixed(0));
-
-  const hintEl = document.getElementById('efficiency-capacity-hint');
-  if (hintEl) hintEl.style.display = batteryCapacityWh == null ? 'block' : 'none';
 }
 document.getElementById('efficiency-reset-btn')?.addEventListener('click', () => { resetLapTracking(); vibrate(10); });
 
-// The current-lap running clock ticks every 100ms (10/sec) — fmtLapTime()
-// shows hundredths of a second, and a 1-second tick made it visibly JUMP
-// straight from one whole second to the next instead of counting up
-// smoothly, the .00-.99 fraction never actually moving. 100ms is frequent
-// enough to read as smooth without meaningfully adding to the cost of a
-// single small textContent write.
-setInterval(updateCurrentLapTimer, 100);
+// The current-lap running clock ticks every 10ms (100/sec) — fmtLapTime()
+// only ever displays down to hundredths of a second, so anything faster
+// than ~10ms doesn't show any additional precision on screen, but this
+// still reads as a genuinely continuous stopwatch rather than visibly
+// stepping between reads. A single small textContent write is cheap enough
+// that this cadence costs nothing meaningful.
+setInterval(updateCurrentLapTimer, 10);
 // Everything else here (the laps hint/table, efficiency numbers) still
 // only needs to tick once a second even between live packets — the
 // ELAPSED-TIME-based numbers (avgPowerW's elapsed-hours denominator) should
@@ -4365,21 +4440,20 @@ document.getElementById('settings-default-range-row').addEventListener('click', 
   try { localStorage.setItem(DEFAULT_RANGE_STORAGE_KEY, btn.dataset.rangeKey); } catch(err) {}
 });
 
-// Lap Timing geofence + battery capacity — geofenceLat/geofenceLon/
-// geofenceRadiusM/batteryCapacityWh themselves (and their localStorage
-// keys) are declared up in the "EFFICIENCY / LAP TIMING" section; this is
-// just the Settings-page UI reading/writing those same module-level
-// variables. Pre-fill the inputs from whatever's already loaded.
+// Lap Timing geofence — geofenceLat/geofenceLon/geofenceRadiusM themselves
+// (and their localStorage keys) are declared up in the "EFFICIENCY / LAP
+// TIMING" section; this is just the Settings-page UI reading/writing those
+// same module-level variables. Pre-fill the inputs from whatever's already
+// loaded. (batteryCapacityWh is a fixed constant now, not a Settings field
+// — see its own declaration for why — so there's no matching input here.)
 const geofenceLatInput = document.getElementById('settings-geofence-lat');
 const geofenceLonInput = document.getElementById('settings-geofence-lon');
 const geofenceRadiusInput = document.getElementById('settings-geofence-radius');
-const batteryCapacityInput = document.getElementById('settings-battery-capacity');
 if (geofenceLatInput) {
   geofenceLatInput.value = geofenceLat != null ? geofenceLat : '';
   geofenceLonInput.value = geofenceLon != null ? geofenceLon : '';
   geofenceRadiusInput.value = geofenceRadiusM;
 }
-if (batteryCapacityInput) batteryCapacityInput.value = batteryCapacityWh != null ? batteryCapacityWh : '';
 
 // Saves whatever's currently in the three geofence fields — shared by the
 // plain 'change' listeners below and by "Use Current GPS Position" (which
@@ -4405,6 +4479,7 @@ function saveGeofenceFromInputs() {
     try { localStorage.setItem(GEOFENCE_RADIUS_KEY, String(r)); } catch(e) {}
   }
   renderLiveLaps();
+  updateGeofenceMapLayer();
 }
 if (geofenceLatInput) {
   [geofenceLatInput, geofenceLonInput, geofenceRadiusInput].forEach(el => el.addEventListener('change', saveGeofenceFromInputs));
@@ -4434,19 +4509,6 @@ if (geofenceLatInput) {
   });
 }
 
-if (batteryCapacityInput) {
-  batteryCapacityInput.addEventListener('change', () => {
-    const c = parseFloat(batteryCapacityInput.value);
-    if (Number.isFinite(c) && c > 0) {
-      batteryCapacityWh = c;
-      try { localStorage.setItem(BATTERY_CAPACITY_KEY, String(c)); } catch(e) {}
-    } else {
-      batteryCapacityWh = null;
-      try { localStorage.removeItem(BATTERY_CAPACITY_KEY); } catch(e) {}
-    }
-    renderEfficiencyLive();
-  });
-}
 
 // Overview Boxes Per Row slider — --fill (used by the .oui-slider CSS to
 // paint the accent-colored portion of the track) has to be set from JS;
