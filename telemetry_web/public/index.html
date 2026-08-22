@@ -443,16 +443,23 @@
   .oui-toggle-thumb { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4);
     transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
-  /* to right, not 135deg — a real visible bug on a track this shape
-     (50px wide, 30px tall): a diagonal gradient's color transition
-     completes over the distance PERPENDICULAR to its angle, which on a
-     box this much wider than it is tall is close to the SHORT (height)
-     dimension, not the width — so the blend finished almost immediately
-     and most of the track's width just showed solid var(--accent2) (the
-     "bright blue" the user was seeing), not an actual gradient spanning
-     the visible background. A horizontal gradient spans the full width
-     by definition, so both colors are genuinely visible edge-to-edge. */
-  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent), var(--accent2)); border-color:transparent; }
+  /* to right (not 135deg) fixed the direction, but a SECOND, different
+     issue remained on this element specifically — reported as "cuts off
+     on the right and left end" — and it's real: the opaque white thumb
+     (22px) sits ON TOP of the track and, when checked, parks itself
+     across roughly the 23px-45px span of this 50px-wide track, leaving
+     only two thin EXPOSED strips: 0-23px on the left and 45-50px (just
+     5px!) on the right. A plain 2-stop gradient spread evenly across the
+     full 50px means that tiny 5px right-side sliver only samples the
+     very tail of the blend — nowhere near pure var(--accent2) — which is
+     exactly what read as the color "cutting off" instead of the toggle
+     visibly showing both ends of the gradient. Fixed with explicit color
+     stops that hold each color SOLID through most of its own exposed
+     strip and compress the actual blend into the ~40%-92% band, which is
+     roughly where the thumb sits anyway (hidden either way) — so both
+     visible slivers now show strong, clear color instead of a thin,
+     half-blended sample of it. */
+  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent) 0%, var(--accent) 40%, var(--accent2) 92%, var(--accent2) 100%); border-color:transparent; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
      the thumb widens slightly toward whichever edge it's closer to
