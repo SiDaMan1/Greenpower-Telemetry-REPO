@@ -23,6 +23,7 @@
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const { Pool } = require('pg');
 
 const app = express();
@@ -227,6 +228,25 @@ app.get('/api/sessions/:id/export.csv', async (req, res) => {
     } catch (e) {
         res.status(500).send(e.message);
     }
+});
+
+// ── App version (for the client's "an update is available" check) ──────
+// A content hash of the actually-served index.html, computed once at
+// boot — deliberately NOT a hand-maintained version string, so there's
+// nothing to remember to bump/keep in sync across two files. It changes
+// if and only if the served page actually did, which happens naturally
+// on every real deploy (a fresh file on disk). Public, no auth — same
+// reasoning as /api/latest, nothing sensitive in a hash.
+let APP_VERSION = 'dev';
+try {
+    const indexHtml = fs.readFileSync(path.join(__dirname, 'public', 'index.html'));
+    APP_VERSION = crypto.createHash('sha1').update(indexHtml).digest('hex').slice(0, 10);
+} catch (e) {
+    console.warn('[WARN] Could not hash public/index.html for /api/version:', e.message);
+}
+
+app.get('/api/version', (req, res) => {
+    res.json({ version: APP_VERSION });
 });
 
 app.use(express.static(path.join(__dirname, 'public')));

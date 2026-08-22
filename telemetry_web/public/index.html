@@ -877,6 +877,30 @@
     .install-fab, .install-popover { display:none !important; }
   }
 
+  /* ── App update banner ─────────────────────────────────────────────
+     Shown on BOTH desktop and mobile (unlike the install prompt) — a
+     stale build matters regardless of which layout you're using. Uses
+     opacity/pointer-events for its closed state, not display:none, same
+     reasoning as .mobile-navsheet's own rule (a real close animation
+     needs a transitionable closed state). top: not bottom — the mobile
+     bottom nav bar already owns that real estate. */
+  .update-banner {
+    position:fixed; top:calc(12px + env(safe-area-inset-top)); left:50%; z-index:60;
+    display:flex; align-items:center; gap:10px; width:min(92vw, 420px);
+    background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:10px 10px 10px 14px; box-shadow:var(--shadow); font-size:12.5px; font-weight:600;
+    opacity:0; pointer-events:none; transform:translate(-50%, -12px);
+    transition:opacity .25s var(--ease), transform .25s var(--ease);
+  }
+  .update-banner.show { opacity:1; pointer-events:auto; transform:translate(-50%, 0); }
+  .update-banner .icon { width:16px; height:16px; color:var(--accent2); flex-shrink:0; }
+  .update-banner-text { flex:1; }
+  .update-banner-dismiss { background:none; border:none; color:var(--muted); cursor:pointer;
+    display:flex; align-items:center; justify-content:center; padding:4px; flex-shrink:0; border-radius:6px;
+    transition:background .12s var(--ease), color .12s var(--ease); }
+  .update-banner-dismiss:hover { color:var(--text); background:rgba(255,255,255,.06); }
+  .update-banner-dismiss .icon { width:14px; height:14px; color:inherit; }
+
   /* ── Download-installer confirmation modal ────────────────────────────
      #download-agent-btn is already desktop-only (display:none inside the
      max-width:860px block below), so this only ever needs to work on
@@ -979,6 +1003,35 @@
        rule) so it can never affect desktop's Overview, which always shows
        the full stat bar regardless of this mobile-only preference. */
     #page-overview .stat-card.ov-mobile-hidden { display:none; }
+  }
+
+  /* ── Landscape lock (mobile) ─────────────────────────────────────────
+     A web page can't actually override the phone's own OS-level auto-
+     rotate setting — `manifest.json`'s "orientation":"portrait-primary"
+     (see its own comment) is the real lock, but that ONLY applies to an
+     installed PWA/WebAPK launched in standalone display mode, and even
+     then only takes effect on a fresh install (an already-installed copy
+     needs uninstall+reinstall, same manifest-caching limitation as the
+     other manifest fixes noted elsewhere in this file). For a plain
+     mobile browser tab (not installed) there's no reliable page-level way
+     to block rotation at all — `screen.orientation.lock()` (tried in JS,
+     see its own comment) generally requires Fullscreen mode to even be
+     allowed. This CSS is the practical fallback for every case the real
+     lock doesn't reach: a full-screen overlay that appears purely from a
+     media query (no JS needed, can't silently fail) whenever a narrow
+     viewport IS in landscape, telling the user to rotate back rather than
+     letting them use a layout that was never designed for it (every
+     mobile-specific rule in this file assumes portrait). */
+  .landscape-lock-overlay { display:none; }
+  @media (max-width:860px) and (orientation:landscape) {
+    .landscape-lock-overlay {
+      display:flex; position:fixed; inset:0; z-index:999; background:var(--bg0);
+      flex-direction:column; align-items:center; justify-content:center; gap:14px;
+      text-align:center; padding:24px;
+    }
+    .landscape-lock-icon { width:48px; height:48px; color:var(--accent2); }
+    .landscape-lock-title { font-family:'Space Grotesk',sans-serif; font-size:17px; font-weight:700; }
+    .landscape-lock-desc { font-size:13px; color:var(--muted); max-width:280px; line-height:1.5; }
   }
 </style>
 </head>
@@ -1128,6 +1181,30 @@
       <button class="btn btn-sm btn-accent" id="install-popover-action">Install</button>
       <button class="btn btn-sm" id="install-popover-dismiss">Dismiss</button>
     </div>
+  </div>
+
+  <!-- Landscape lock overlay — pure CSS (see its own rule for why: the
+       actual orientation lock lives in manifest.json + a best-effort
+       screen.orientation.lock() call, neither of which reaches every
+       case), shown purely by a max-width:860px + orientation:landscape
+       media query, no JS involved. -->
+  <div class="landscape-lock-overlay">
+    <span class="icon landscape-lock-icon" data-icon="rotate"></span>
+    <div class="landscape-lock-title">Rotate Back to Portrait</div>
+    <div class="landscape-lock-desc">This dashboard's mobile layout is portrait-only — turn your device back to keep using it.</div>
+  </div>
+
+  <!-- App update banner — see the JS "APP UPDATE CHECK" section for how
+       this gets shown. Closed state uses opacity/pointer-events, not
+       display:none, for the same reason .mobile-navsheet does (see that
+       rule) — this needs a real close/dismiss transition too. -->
+  <div class="update-banner" id="update-banner">
+    <span class="icon" data-icon="refresh"></span>
+    <span class="update-banner-text">A new version of this dashboard is available.</span>
+    <button class="btn btn-sm btn-accent" id="update-banner-reload">Reload</button>
+    <button class="update-banner-dismiss" id="update-banner-dismiss" aria-label="Dismiss">
+      <span class="icon" data-icon="x"></span>
+    </button>
   </div>
 
   <div id="pages">
@@ -1522,6 +1599,7 @@ const ICONS = {
   download:     `<svg ${ICON_ATTRS}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
   refresh:      `<svg ${ICON_ATTRS}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>`,
   trash:        `<svg ${ICON_ATTRS}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+  rotate:       `<svg ${ICON_ATTRS}><rect x="6" y="8" width="12" height="18" rx="2" transform="rotate(-90 12 17)"/><path d="M18 3v5h-5"/><path d="M18 8a8 8 0 0 0-15 3"/></svg>`,
 };
 function applyIcons(root=document) {
   root.querySelectorAll('[data-icon]').forEach(el => {
@@ -2216,6 +2294,52 @@ document.addEventListener('click', (e) => {
   }
 })();
 
+// ── APP UPDATE CHECK ─────────────────────────────────────────────────────────
+// No service-worker caching means a plain page LOAD already fetches the
+// current index.html (see the PWA rule in CLAUDE.md) — but an installed
+// PWA/WebAPK can sit open or backgrounded for a long time without ever
+// reloading, during which a real deploy could land. This periodically
+// re-checks /api/version (a content hash of index.html computed server-
+// side — see server.js — not a hand-maintained number, so there's nothing
+// to keep in sync) and prompts a reload if it ever changes mid-session.
+let appVersion = null;
+async function checkAppVersion() {
+  try {
+    const res = await fetch('/api/version', { cache:'no-store' });
+    const d = await res.json();
+    if (!d.version) return;
+    if (appVersion === null) { appVersion = d.version; return; }  // first check just establishes the baseline
+    if (d.version !== appVersion) document.getElementById('update-banner').classList.add('show');
+  } catch (e) { /* offline/unreachable — skip, the next interval tries again */ }
+}
+document.getElementById('update-banner-reload').addEventListener('click', () => location.reload());
+document.getElementById('update-banner-dismiss').addEventListener('click', () => {
+  document.getElementById('update-banner').classList.remove('show');
+});
+checkAppVersion();
+setInterval(checkAppVersion, 5 * 60 * 1000);   // 5 min — a stale build isn't urgent, no need to poll aggressively
+// Re-check the moment the app is actually looked at again, not just on a
+// timer — this is exactly the "was backgrounded for hours, missed a
+// deploy" scenario an installed PWA is most likely to hit.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkAppVersion(); });
+
+// ── ORIENTATION LOCK (best-effort) ───────────────────────────────────────────
+// The real, reliable lock is manifest.json's "orientation":"portrait-primary"
+// — but that only applies to an installed PWA/WebAPK in standalone display
+// mode, and even then only takes effect on a FRESH install (an already-
+// installed copy needs uninstall+reinstall, same manifest-caching
+// limitation noted elsewhere in this file). screen.orientation.lock() is a
+// second attempt for the standalone case specifically — most browsers only
+// allow it there (a plain browser tab generally requires Fullscreen mode
+// first, which this page doesn't use) — wrapped in try/catch and just
+// silently doing nothing if unsupported/rejected, which is most contexts.
+// The CSS landscape-lock-overlay (see its own rule) is the one fallback
+// that actually reaches every remaining case, since it needs no API
+// support at all.
+if (IS_MOBILE && screen.orientation && screen.orientation.lock) {
+  screen.orientation.lock('portrait').catch(() => { /* not supported/allowed here — the CSS overlay still covers it */ });
+}
+
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -2847,10 +2971,15 @@ const OV_MOBILE_ITEMS = [
 ];
 const OV_MOBILE_VIS_KEY = 'gp_overview_mobile_visibility';
 let ovMobileVisible = {};
+// Default set (before any localStorage override) — deliberately not "all
+// 13 on": roll/pitch/yaw/GPS/link are the least-used numbers on a phone at
+// a glance, so they start OFF, keeping the default mobile Overview to 8
+// boxes instead of a long scroll of everything.
+const OV_MOBILE_DEFAULT_ON = new Set(['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','seq']);
 (function loadOvMobileVisibility() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(OV_MOBILE_VIS_KEY) || '{}'); } catch(err) {}
-  OV_MOBILE_ITEMS.forEach(item => { ovMobileVisible[item.key] = saved[item.key] !== undefined ? !!saved[item.key] : true; });
+  OV_MOBILE_ITEMS.forEach(item => { ovMobileVisible[item.key] = saved[item.key] !== undefined ? !!saved[item.key] : OV_MOBILE_DEFAULT_ON.has(item.key); });
 })();
 function saveOvMobileVisibility() {
   try { localStorage.setItem(OV_MOBILE_VIS_KEY, JSON.stringify(ovMobileVisible)); } catch(err) {}
@@ -2872,10 +3001,17 @@ function renderOvMobileList() {
     </label>`).join('');
   list.querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', () => {
+      // Unchecking the LAST visible box would leave the mobile Overview
+      // page completely empty with no visible way back (nothing left on
+      // that page to tap) — refuse the change and snap the checkbox back
+      // on instead of saving/applying it.
+      if (!cb.checked && !OV_MOBILE_ITEMS.some(item => item.key !== cb.dataset.key && ovMobileVisible[item.key])) {
+        cb.checked = true;
+        return;
+      }
       ovMobileVisible[cb.dataset.key] = cb.checked;
       saveOvMobileVisibility();
       applyOvMobileVisibility();
-      vibrate(4);
     });
   });
 }
