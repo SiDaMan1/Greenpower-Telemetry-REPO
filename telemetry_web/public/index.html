@@ -767,7 +767,16 @@
   .mobile-navbar-tab:active { transform:scale(.88); }
   .mobile-navbar-tab.active { color:#fff; background:linear-gradient(135deg, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
   .mobile-navbar-tab .icon { width:19px; height:19px; }
-  .mobile-navbar-divider { flex-shrink:0; width:1px; margin:11px 3px; background:var(--border); }
+  /* Horizontal margin:0 — a real bug, found via measuring actual gaps
+     (getBoundingClientRect between every flex child): the old margin:11px
+     3px added its own 3px each side ON TOP OF the space-between-generated
+     gap every other pair of flex children already gets, making the space
+     around the divider ~15.3px instead of the ~12.3px between icon
+     squares — a real, measurable, visible unevenness, not the icon-
+     centering padding bug fixed earlier (that one was symmetry WITHIN a
+     square; this is symmetry BETWEEN squares). Vertical margin (11px)
+     stays — that's what gives the divider its height within the bar. */
+  .mobile-navbar-divider { flex-shrink:0; width:1px; margin:11px 0; background:var(--border); }
   .mobile-navbar-expand {
     position:relative; flex-shrink:0; aspect-ratio:1/1; margin:7px 0; display:flex; align-items:center; justify-content:center;
     background:none; border:none; color:var(--muted); cursor:pointer; border-radius:13px;
@@ -2680,10 +2689,14 @@ document.getElementById('settings-mobile-nav-list').addEventListener('change', (
   if (!cb) return;
   const key = cb.dataset.key;
   if (!cb.checked) {
-    // Refuse to hide the LAST visible page — same reasoning as the
-    // Overview-Boxes-to-Show guard elsewhere: zero visible pages would
-    // leave mobile nav with nothing to tap and no way back.
-    if (visibleMobileNavOrder().filter(k => k !== key).length === 0) {
+    // Refuse to drop below MOBILE_NAV_TOOLBAR_SLOTS (5) visible pages —
+    // not just "not zero". Per explicit request: the toolbar should never
+    // end up with fewer than 5 tabs (plus the always-pinned Settings row)
+    // just because pages kept getting hidden — same guard SHAPE as the
+    // Overview-Boxes-to-Show "can't deselect the last one" rule elsewhere,
+    // just a higher floor here since a half-empty toolbar is the specific
+    // thing being guarded against, not merely "zero pages reachable".
+    if (visibleMobileNavOrder().filter(k => k !== key).length < MOBILE_NAV_TOOLBAR_SLOTS) {
       cb.checked = true;
       return;
     }
