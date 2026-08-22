@@ -443,35 +443,25 @@
   .oui-toggle-thumb { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4);
     transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
-  /* to right (not 135deg) fixed the direction, but a SECOND, different
-     issue remained on this element specifically — reported as "cuts off
-     on the right and left end" — and it's real: the opaque white thumb
-     (22px) sits ON TOP of the track and, when checked, parks itself
-     across roughly the 23px-45px span of this 50px-wide track, leaving
-     only two thin EXPOSED strips: 0-23px on the left and 45-50px (just
-     5px!) on the right. A plain 2-stop gradient spread evenly across the
-     full 50px means that tiny 5px right-side sliver only samples the
-     very tail of the blend — nowhere near pure var(--accent2) — which is
-     exactly what read as the color "cutting off" instead of the toggle
-     visibly showing both ends of the gradient. Fixed with explicit color
-     stops that hold each color SOLID through most of its own exposed
-     strip and compress the actual blend into the ~40%-92% band, which is
-     roughly where the thumb sits anyway (hidden either way) — so both
-     visible slivers now show strong, clear color instead of a thin,
-     half-blended sample of it. */
-  /* Stops are 46%/90% (23px/45px of the 50px track), not the earlier
-     40%/92% — a real, precise leftover bug: 40%/92% left the SOLID color
-     zones ending just short of the thumb's ACTUAL edges (thumb spans
-     exactly 23px-45px = 46%-90% when checked), so a thin ~1px band right
-     next to the thumb (20-23px on the left tail, 45-46px on the right)
-     was still mid-blend, not yet pure accent/accent2 — visible as a
-     razor-thin off-color seam right where the thumb meets the track.
-     Setting the solid-color boundaries to match the thumb's real edges
-     EXACTLY means every visible (non-thumb-covered) pixel is 100% pure
-     accent or accent2, with zero blended pixels ever exposed — the whole
-     transition now happens entirely underneath the thumb, where it's
-     invisible either way. */
-  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent) 0%, var(--accent) 46%, var(--accent2) 90%, var(--accent2) 100%); border-color:transparent; }
+  /* REWORKED from two earlier attempts that both tried to hide a soft
+     BLEND zone exactly under the thumb (first roughly, then pixel-
+     precisely) — both still left a visible "razor thin" mismatch line.
+     The real problem was the approach itself, not the precision: any
+     gradient with an actual color BLEND is rendered across real, if
+     tiny, sub-pixel distance, and that blend's rendered edge doesn't
+     reliably land in exactly the same sub-pixel position as the thumb's
+     own rendered edge (anti-aliasing, GPU compositing rounding, the
+     thumb's own box-shadow blur) — no amount of stop-percentage math can
+     fully guarantee two independently-rendered edges line up to the
+     sub-pixel every time.
+     This version has NO blend at all: `accent 0% 50%, accent2 50% 100%`
+     is the "double position" hard-edge gradient syntax — both colors
+     stop at the identical 50% position, so there is zero distance for
+     the browser to interpolate across. Every visible pixel is
+     unambiguously, structurally either 100% accent or 100% accent2 —
+     there is no intermediate color for a rendering discrepancy to ever
+     expose, regardless of exactly where the thumb's own edge lands. */
+  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent) 0% 50%, var(--accent2) 50% 100%); border-color:transparent; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
      the thumb widens slightly toward whichever edge it's closer to
