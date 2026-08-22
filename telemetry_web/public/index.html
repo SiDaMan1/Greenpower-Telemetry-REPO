@@ -459,7 +459,19 @@
      roughly where the thumb sits anyway (hidden either way) — so both
      visible slivers now show strong, clear color instead of a thin,
      half-blended sample of it. */
-  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent) 0%, var(--accent) 40%, var(--accent2) 92%, var(--accent2) 100%); border-color:transparent; }
+  /* Stops are 46%/90% (23px/45px of the 50px track), not the earlier
+     40%/92% — a real, precise leftover bug: 40%/92% left the SOLID color
+     zones ending just short of the thumb's ACTUAL edges (thumb spans
+     exactly 23px-45px = 46%-90% when checked), so a thin ~1px band right
+     next to the thumb (20-23px on the left tail, 45-46px on the right)
+     was still mid-blend, not yet pure accent/accent2 — visible as a
+     razor-thin off-color seam right where the thumb meets the track.
+     Setting the solid-color boundaries to match the thumb's real edges
+     EXACTLY means every visible (non-thumb-covered) pixel is 100% pure
+     accent or accent2, with zero blended pixels ever exposed — the whole
+     transition now happens entirely underneath the thumb, where it's
+     invisible either way. */
+  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent) 0%, var(--accent) 46%, var(--accent2) 90%, var(--accent2) 100%); border-color:transparent; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
      the thumb widens slightly toward whichever edge it's closer to
