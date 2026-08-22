@@ -124,7 +124,7 @@
      highlights first. */
   body { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .stat-value, .stat-unit, .dedicated-value, .dedicated-unit,
-  #raw-log, #sessions-table td, #esc-mode, #esc-state {
+  #raw-log, #sessions-table td, .data-table td, #esc-mode, #esc-state {
     -webkit-user-select:text; user-select:text; -webkit-touch-callout:default;
   }
 
@@ -398,6 +398,32 @@
 
   .settings-card-hint { font-size:11.5px; color:var(--muted); line-height:1.5; margin-top:2px; }
 
+  /* Generic styled text/number input for Settings cards (geofence lat/lon/
+     radius, battery capacity) — this file had no reusable input style
+     before this; every other field on the page is a checkbox/toggle/range.
+     Modeled on .onboarding-password-input's look (same panel/border/radius
+     language) but left-aligned and without that field's dot-masking. */
+  .settings-input {
+    width:100%; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:9px 11px; color:var(--text); font-size:13px; font-family:'Share Tech Mono',monospace;
+    transition:border-color .15s var(--ease), background .15s var(--ease);
+  }
+  .settings-input:focus { outline:none; border-color:rgba(14,165,233,.5); background:rgba(255,255,255,.07); }
+  .settings-input::placeholder { color:var(--muted); opacity:.6; }
+  /* Firefox/Chrome number-input spin arrows read as visual clutter against
+     this file's otherwise chrome-free input styling — every number field
+     here (lat/lon/radius/capacity) is small and precise enough that a
+     spinner adds no real value over typing/pasting the value directly. */
+  .settings-input[type=number] { -moz-appearance:textfield; }
+  .settings-input[type=number]::-webkit-outer-spin-button, .settings-input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+  /* auto-fit/minmax rather than a fixed 3-column split — wraps cleanly on
+     a narrow phone width without needing a separate mobile override, the
+     same way a fixed-column grid here would (see this file's other
+     documented mobile-override-cascade-order traps). */
+  .settings-input-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(90px,1fr)); gap:8px; margin-top:10px; }
+  .settings-input-field label { display:block; font-size:10.5px; font-weight:600; letter-spacing:.4px; color:var(--muted); margin-bottom:4px; }
+  .settings-card-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+
   /* Mobile Toolbar & Pages list — one row per (non-Settings) mobile nav
      item, in the user's own order. Single column (unlike the 2-col
      Overview Boxes list above) since each row is wider — reorder arrows +
@@ -529,7 +555,15 @@
   #gps-map .leaflet-control-zoom a:hover { background:rgba(255,255,255,.08); }
   #gps-map .leaflet-control-attribution { background:rgba(13,16,23,.75); color:var(--muted); font-size:10px; }
   #gps-map .leaflet-control-attribution a { color:var(--muted); }
-  #page-raceline.active { flex-direction:row; gap:14px; }
+  /* .raceline-top-row wraps #raceline-info + #raceline-map (was: this row
+     layout lived directly on #page-raceline.active itself) — pulled out
+     into its own child so the Lap Timing section (added below the map, a
+     sibling of this row, not a third row-direction column squeezed beside
+     it) can sit in #page-raceline's own default COLUMN flow instead.
+     Fixed-ish height (not flex:1 filling 100% of the page) so there's
+     always room left below it for the lap table — the page itself scrolls
+     (.page already has overflow-y:auto) for anything past that. */
+  .raceline-top-row { display:flex; flex-direction:row; gap:14px; height:50vh; min-height:320px; max-height:520px; flex-shrink:0; }
   #raceline-info { width:190px; flex-shrink:0; display:flex; flex-direction:column; gap:8px; }
   #raceline-map { flex:1; background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
     padding:10px; min-height:0; display:flex; flex-direction:column; }
@@ -556,13 +590,20 @@
   .multi-toggle.on { opacity:1; background:rgba(255,255,255,.05); }
 
   /* ── Sessions table ─────────────────────────────────────────────── */
-  #sessions-table-wrap { overflow:auto hidden; -webkit-overflow-scrolling:touch; border-radius:var(--radius);
+  /* .data-table(-wrap) is the same look, generalized as a class rather
+     than kept ID-only — the Laps section (Raceline tab and per-session lap
+     view) reuses this exact table style instead of a second hand-copied
+     block. #sessions-table-wrap/#sessions-table keep their IDs too (JS
+     and the COPYABLE_SELECTOR rule below still reference them directly),
+     they just ALSO carry the class now. */
+  #sessions-table-wrap, .data-table-wrap { overflow:auto hidden; -webkit-overflow-scrolling:touch; border-radius:var(--radius);
     border:1px solid var(--border); background:var(--panel); }
-  #sessions-table { width:100%; border-collapse:collapse; font-family:'Share Tech Mono',monospace; font-size:12px; min-width:520px; }
-  #sessions-table thead tr { text-align:left; color:var(--muted); border-bottom:1px solid var(--border); }
-  #sessions-table th { padding:10px 12px; font-weight:600; }
-  #sessions-table td { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.04); }
-  #sessions-table tbody tr:hover { background:rgba(255,255,255,.02); }
+  #sessions-table, .data-table { width:100%; border-collapse:collapse; font-family:'Share Tech Mono',monospace; font-size:12px; min-width:520px; }
+  #sessions-table thead tr, .data-table thead tr { text-align:left; color:var(--muted); border-bottom:1px solid var(--border); }
+  #sessions-table th, .data-table th { padding:10px 12px; font-weight:600; }
+  #sessions-table td, .data-table td { padding:10px 12px; border-bottom:1px solid rgba(255,255,255,.04); }
+  #sessions-table tbody tr:hover, .data-table tbody tr:hover { background:rgba(255,255,255,.02); }
+  .data-table tbody tr.lap-row-best td { color:var(--accent3); }
 
   ::-webkit-scrollbar { width:5px; height:5px; }
   ::-webkit-scrollbar-track { background:transparent; }
@@ -640,7 +681,7 @@
     .range-toggle-row { gap:5px; }
     .range-toggle-btn { padding:5px 11px; font-size:10.5px; }
 
-    #page-raceline.active { flex-direction:column; }
+    .raceline-top-row { flex-direction:column; height:auto; min-height:0; max-height:none; }
     #overview-right { grid-template-columns:repeat(2,1fr); }
     .mini-chart-card { min-height:130px; }
 
@@ -1395,6 +1436,7 @@
     <div class="tab active" data-page="overview"><span class="tab-icon icon" data-icon="overview"></span>Overview</div>
     <div class="tab" data-page="speed"><span class="tab-icon icon" data-icon="speed"></span>Speed</div>
     <div class="tab" data-page="power"><span class="tab-icon icon" data-icon="power"></span>Power</div>
+    <div class="tab" data-page="efficiency"><span class="tab-icon icon" data-icon="battery"></span>Efficiency</div>
     <div class="tab" data-page="temperature"><span class="tab-icon icon" data-icon="temperature"></span>Temp</div>
     <div class="tab" data-page="rpm"><span class="tab-icon icon" data-icon="rpm"></span>RPM</div>
     <div class="tab" data-page="esc"><span class="tab-icon icon" data-icon="esc"></span>ESC</div>
@@ -1649,6 +1691,30 @@
       </div>
     </div>
 
+    <!-- Efficiency — trip-level energy stats, all DERIVED client-side (not
+         raw packet fields, so not in METRICS/CSV_COLUMNS — see the
+         "EFFICIENCY / LAP TIMING" JS section for the actual math). Consumed/
+         Remaining/Wh-per-mile/Distance/Est. Range/Avg Power reset together
+         (Reset Trip button, or automatically on the same stale-data-gap
+         wipe the live charts already do) since they're all one running
+         trip total, not independent per-card state. -->
+    <div id="page-efficiency" class="page">
+      <div class="section-heading">Efficiency <button id="efficiency-reset-btn" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Reset Trip</button></div>
+      <div id="efficiency-capacity-hint" class="settings-card-hint" style="display:none">Set your battery's capacity in Settings → Efficiency to see Remaining Wh and Estimated Range.</div>
+      <div class="range-toggle-row" data-range-slot></div>
+      <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Consumed</div><div class="dedicated-value size-md" id="eff-consumed-wh" style="color:var(--current)">--</div><div class="dedicated-unit">WH</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Remaining</div><div class="dedicated-value size-md" id="eff-remaining-wh" style="color:var(--accent3)">--</div><div class="dedicated-unit">WH</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Efficiency</div><div class="dedicated-value size-md" id="eff-wh-per-mile" style="color:var(--motorv)">--</div><div class="dedicated-unit">WH / MI</div></div></div>
+      </div>
+      <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Distance</div><div class="dedicated-value size-md" id="eff-distance-mi">--</div><div class="dedicated-unit">MI</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Est. Range</div><div class="dedicated-value size-md" id="eff-range-mi" style="color:var(--speed)">--</div><div class="dedicated-unit">MI</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Avg Power</div><div class="dedicated-value size-md" id="eff-avg-power-w">--</div><div class="dedicated-unit">WATTS</div></div></div>
+      </div>
+      <div class="chart-card" style="flex:1;min-height:0"><div class="chart-canvas-wrap"><canvas id="chart-power_w"></canvas></div></div>
+    </div>
+
     <div id="page-temperature" class="page">
       <div class="range-toggle-row" data-range-slot></div>
       <div class="dedicated-big-card"><div><div class="dedicated-label">Temperature</div><div class="dedicated-value" id="big-temp_f" style="color:var(--temp)">--</div><div class="dedicated-unit">°F</div></div></div>
@@ -1712,15 +1778,33 @@
     </div>
 
     <div id="page-raceline" class="page">
-      <div id="raceline-info">
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS Fix</div><div class="stat-value compact" id="rl-fix">NO FIX</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Latitude</div><div class="stat-value compact" id="rl-lat">--</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Longitude</div><div class="stat-value compact" id="rl-lon">--</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Satellites</div><div class="stat-value compact" id="rl-sat">--</div></div>
-        <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">HDOP</div><div class="stat-value compact" id="rl-hdop">--</div></div>
-        <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="rl-speed">--</div><div class="stat-unit">MPH</div></div>
+      <div class="raceline-top-row">
+        <div id="raceline-info">
+          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS Fix</div><div class="stat-value compact" id="rl-fix">NO FIX</div></div>
+          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Latitude</div><div class="stat-value compact" id="rl-lat">--</div></div>
+          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Longitude</div><div class="stat-value compact" id="rl-lon">--</div></div>
+          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">Satellites</div><div class="stat-value compact" id="rl-sat">--</div></div>
+          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">HDOP</div><div class="stat-value compact" id="rl-hdop">--</div></div>
+          <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="rl-speed">--</div><div class="stat-unit">MPH</div></div>
+        </div>
+        <div id="raceline-map"><div id="gps-map"></div></div>
       </div>
-      <div id="raceline-map"><div id="gps-map"></div></div>
+
+      <!-- Lap Timing — geofence-based, see the "EFFICIENCY / LAP TIMING" JS
+           section for the crossing-detection logic. Geofence itself is
+           configured in Settings, not here — this is display + reset only. -->
+      <div class="section-heading">Lap Timing <button id="laps-reset-btn" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Reset Laps</button></div>
+      <div id="laps-status-hint" class="settings-card-hint"></div>
+      <div class="big-row" style="grid-template-columns:1fr 1fr">
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Current Lap</div><div class="dedicated-value size-md" id="rl-current-lap-time">--</div></div></div>
+        <div class="dedicated-big-card"><div><div class="dedicated-label">Best Lap</div><div class="dedicated-value size-md" id="rl-best-lap-time" style="color:var(--accent3)">--</div></div></div>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table" id="laps-table">
+          <thead><tr><th>Lap</th><th>Time</th><th>Δ Best</th><th>Distance</th><th>Top Speed</th><th>Efficiency</th></tr></thead>
+          <tbody id="laps-tbody"></tbody>
+        </table>
+      </div>
     </div>
 
     <div id="page-link" class="page">
@@ -1775,6 +1859,23 @@
             <button id="session-view-close" class="btn btn-sm"><span class="icon" data-icon="x"></span>Close</button>
           </div>
         </div>
+
+        <!-- Lap selector — hidden entirely when this session has no
+             recorded laps (either no geofence was configured at the time
+             it was viewed, since laps are recomputed on demand from the
+             CURRENT geofence setting rather than stored, or the car never
+             actually crossed it). See computeSessionLaps()/viewSession()
+             for how selecting a lap here re-renders the charts below
+             scoped to just that lap's time range instead of the whole
+             session. -->
+        <div id="session-laps-row" style="display:none;flex-direction:column;gap:8px;flex-shrink:0">
+          <div class="settings-card-row">
+            <div class="settings-card-title">Viewing</div>
+            <select id="session-lap-select" class="settings-input" style="width:auto;min-width:160px"></select>
+          </div>
+          <div id="session-lap-summary" class="settings-card-hint"></div>
+        </div>
+
         <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
           <div class="chart-card"><div class="mini-chart-label">SPEED (MPH)</div><div class="chart-canvas-wrap"><canvas id="session-chart-speed_mph"></canvas></div></div>
           <div class="chart-card"><div class="mini-chart-label">BATTERY (V)</div><div class="chart-canvas-wrap"><canvas id="session-chart-batt_volt"></canvas></div></div>
@@ -1803,6 +1904,39 @@
       <div class="settings-card">
         <div class="settings-card-title">Default Time Range</div>
         <div class="range-toggle-row" data-range-slot id="settings-default-range-row" style="margin-top:8px"></div>
+      </div>
+
+      <!-- Lap Timing geofence — meaningful on both platforms (not
+           settings-mobile-only), same reasoning as Default Time Range/Test
+           Mode above it. Lat/lon/radius are plain number inputs (this
+           file's first — see .settings-input's own CSS comment), read/
+           written directly, no live-preview beyond the hint text below the
+           inputs (see renderLiveLaps() in the "EFFICIENCY / LAP TIMING" JS
+           section for what actually consumes these values). -->
+      <div class="settings-card">
+        <div class="settings-card-title">Lap Timing — Start/Finish Geofence</div>
+        <div class="settings-card-hint">A lap is recorded each time the car's GPS crosses into this zone. Set it once at your track's start/finish line — "Use Current GPS Position" fills it in from the live GPS fix if the car is sitting there right now.</div>
+        <div class="settings-input-row">
+          <div class="settings-input-field"><label for="settings-geofence-lat">Latitude</label><input type="number" step="any" class="settings-input" id="settings-geofence-lat" placeholder="e.g. 39.0997"></div>
+          <div class="settings-input-field"><label for="settings-geofence-lon">Longitude</label><input type="number" step="any" class="settings-input" id="settings-geofence-lon" placeholder="e.g. -94.5786"></div>
+          <div class="settings-input-field"><label for="settings-geofence-radius">Radius (m)</label><input type="number" step="1" min="3" max="500" class="settings-input" id="settings-geofence-radius" placeholder="20"></div>
+        </div>
+        <div class="settings-card-actions">
+          <button class="btn btn-sm" id="settings-geofence-use-current">Use Current GPS Position</button>
+          <button class="btn btn-sm" id="settings-geofence-clear" style="color:var(--danger);border-color:rgba(244,63,94,.3)">Clear Geofence</button>
+        </div>
+        <div class="settings-card-hint" id="settings-geofence-msg" style="display:none"></div>
+      </div>
+
+      <!-- Efficiency — battery pack capacity, used to compute Remaining Wh/
+           Estimated Range on the Efficiency tab (both show "--" without it;
+           Consumed Wh/Wh-per-mile/Distance/Avg Power don't need it at all). -->
+      <div class="settings-card">
+        <div class="settings-card-title">Efficiency — Battery Capacity</div>
+        <div class="settings-card-hint">Your pack's usable capacity in watt-hours (Wh = amp-hours × nominal voltage). Used to estimate Remaining Wh and Range on the Efficiency tab.</div>
+        <div class="settings-input-row" style="grid-template-columns:1fr">
+          <div class="settings-input-field"><label for="settings-battery-capacity">Capacity (Wh)</label><input type="number" step="any" min="0" class="settings-input" id="settings-battery-capacity" placeholder="e.g. 1000"></div>
+        </div>
       </div>
 
       <div class="settings-card settings-mobile-only">
@@ -1939,7 +2073,7 @@ applyOverviewCols(overviewCols);
 // Elements allowed to be selected/copied — kept in sync with the CSS rule
 // that re-enables user-select/-webkit-touch-callout on these same
 // elements (see that rule's own comment). Referenced again just below.
-const COPYABLE_SELECTOR = '.stat-value,.stat-unit,.dedicated-value,.dedicated-unit,#raw-log,#sessions-table td,#esc-mode,#esc-state';
+const COPYABLE_SELECTOR = '.stat-value,.stat-unit,.dedicated-value,.dedicated-unit,#raw-log,#sessions-table td,.data-table td,#esc-mode,#esc-state';
 // user-select:none / -webkit-touch-callout:none stop the text from
 // visibly highlighting and stop iOS's long-press callout, but Android
 // Chrome's "Smart Text Selection" card (the long-press popup with Search/
@@ -1974,6 +2108,7 @@ const ICONS = {
   esc:          `<svg ${ICON_ATTRS}><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`,
   imu:          `<svg ${ICON_ATTRS}><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`,
   raceline:     `<svg ${ICON_ATTRS}><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>`,
+  battery:      `<svg ${ICON_ATTRS}><rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>`,
   link:         `<svg ${ICON_ATTRS}><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>`,
   multi:        `<svg ${ICON_ATTRS}><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
   sessions:     `<svg ${ICON_ATTRS}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`,
@@ -2257,6 +2392,12 @@ OVERVIEW_MINI.forEach(k => { ovCharts[k] = safeChart('ovchart-'+k, METRICS[k].co
 
 const bigCharts = {};
 Object.keys(METRICS).forEach(k => { bigCharts[k] = safeChart('chart-'+k, METRICS[k].color, METRICS[k].label, true, k); });
+// Power (W) — not a METRICS entry since it's derived (batt_volt*current_a),
+// not a raw packet field, so it's built by hand here rather than picked up
+// by the loop above; fed by historyPowerW (see its own comment) instead of
+// history[]. No metricKey passed (4th/5th args) — there's no fixed
+// METRICS[...].range to seed the y-axis from, Chart.js just auto-scales it.
+const powerWChart = safeChart('chart-power_w', 'var(--current)', 'Power', true);
 
 // ── STATS BAR COLLAPSE (persisted) ───────────────────────────────────────────
 // Collapsing the numbers bar changes how much vertical room the chart grid
@@ -2541,6 +2682,7 @@ document.addEventListener('click', (e) => {
         Object.values(ovCharts).forEach(forceChartResize);
         Object.values(bigCharts).forEach(forceChartResize);
         forceChartResize(multiChart);
+        forceChartResize(powerWChart);
         Object.values(sessionCharts).forEach(forceChartResize);
         // applyHistory() itself now skips any chart whose offsetParent is
         // null (see its own comment) — normally harmless since it re-runs
@@ -2638,6 +2780,7 @@ const MOBILE_NAV_ITEMS = [
   { key:'multi',       label:'Multi',       icon:'multi' },
   { key:'sessions',    label:'Sessions',    icon:'sessions' },
   { key:'raw',         label:'Raw',         icon:'raw' },
+  { key:'efficiency',  label:'Efficiency',  icon:'battery' },
 ];
 const MOBILE_NAV_ORDER_KEY = 'gp_mobile_nav_order';
 const MOBILE_NAV_HIDDEN_KEY = 'gp_mobile_nav_hidden';
@@ -3310,6 +3453,120 @@ async function loadSessions() {
   }
 }
 
+// ── SESSION LAPS (recomputed on demand, not stored) ──────────────────────────
+// A past session's full point history + the CURRENT geofence/battery
+// settings are enough to reconstruct the same lap boundaries and efficiency
+// totals live tracking computes incrementally — see the "EFFICIENCY / LAP
+// TIMING" section further down for LAP_MIN_MS/GPS_JUMP_CAP_M/gpsDistanceM/
+// geofenceConfigured() (this file is one script — function declarations
+// hoist, so referencing them here, textually above their own definition, is
+// fine; nothing below is EXECUTED until viewSession() actually runs, well
+// after the whole script has finished loading — see that section's own
+// comment on why its plain top-level statements, unlike function bodies,
+// couldn't safely sit before those declarations the same way).
+// Laps are NOT stored server-side — they're recomputed fresh every time a
+// session is opened, using WHATEVER the geofence is set to right now. If the
+// geofence didn't exist yet when this session was recorded, or has since
+// been moved, that's fine — this session's laps are still sliced by today's
+// zone, not whatever (if anything) was configured back then.
+let sessionRowsFull = [];
+let sessionLapsInfo = { laps: [], totalDistanceMi: 0, totalWh: 0, totalWhPerMile: null, totalTopSpeedMph: 0 };
+
+function analyzeSessionPoints(rows) {
+  const laps = [];
+  const hasGeofence = geofenceConfigured();
+  let inside = false, lastCrossMs = 0;
+  let lapStartIdx = 0, lapStartMs = null, lapStartWh = 0, lapStartDistMi = 0, lapTopSpeed = 0;
+  let consumedWh = 0, distanceMi = 0, overallTopSpeed = 0, lastFix = null, lastT = null;
+  rows.forEach((row, idx) => {
+    const d = row.data || {};
+    const t = new Date(row.received_at).getTime();
+    if (lastT != null) {
+      const dtHours = (t - lastT) / 3600000;
+      if (dtHours > 0 && typeof d.batt_volt === 'number' && typeof d.current_a === 'number') {
+        consumedWh += d.batt_volt * d.current_a * dtHours;
+      }
+    }
+    lastT = t;
+    if (typeof d.speed_mph === 'number') {
+      if (d.speed_mph > lapTopSpeed) lapTopSpeed = d.speed_mph;
+      if (d.speed_mph > overallTopSpeed) overallTopSpeed = d.speed_mph;
+    }
+    if (gpsValid(d.flags) && typeof d.latitude === 'number' && typeof d.longitude === 'number') {
+      if (lastFix) {
+        const meters = gpsDistanceM(lastFix.lat, lastFix.lon, d.latitude, d.longitude);
+        if (meters > 0.5 && meters < GPS_JUMP_CAP_M) distanceMi += meters / 1609.344;
+      }
+      lastFix = { lat: d.latitude, lon: d.longitude };
+      if (hasGeofence) {
+        const insideNow = gpsDistanceM(d.latitude, d.longitude, geofenceLat, geofenceLon) <= geofenceRadiusM;
+        if (insideNow && !inside && (t - lastCrossMs) > LAP_MIN_MS) {
+          lastCrossMs = t;
+          if (lapStartMs != null) {
+            const durationMs = t - lapStartMs;
+            const lapDistanceMi = distanceMi - lapStartDistMi;
+            const wh = consumedWh - lapStartWh;
+            laps.push({
+              lap: laps.length + 1, startIdx: lapStartIdx, endIdx: idx,
+              durationMs, distanceMi: lapDistanceMi, wh,
+              whPerMile: lapDistanceMi > 0.02 ? wh / lapDistanceMi : null,
+              topSpeedMph: lapTopSpeed,
+              avgSpeedMph: durationMs > 0 ? lapDistanceMi / (durationMs / 3600000) : 0,
+            });
+          }
+          lapStartIdx = idx; lapStartMs = t; lapStartWh = consumedWh; lapStartDistMi = distanceMi; lapTopSpeed = 0;
+        }
+        inside = insideNow;
+      }
+    }
+  });
+  return {
+    laps,
+    totalDistanceMi: distanceMi,
+    totalWh: consumedWh,
+    totalWhPerMile: distanceMi > 0.02 ? consumedWh / distanceMi : null,
+    totalTopSpeedMph: overallTopSpeed,
+  };
+}
+
+function renderSessionLapSummary(scopeLabel, rowsSubset, lap) {
+  const el = document.getElementById('session-lap-summary');
+  if (!el) return;
+  el.textContent = lap
+    ? `${scopeLabel}: ${fmtLapTime(lap.durationMs)} · ${lap.distanceMi.toFixed(2)} mi · top ${lap.topSpeedMph.toFixed(1)} mph · avg ${lap.avgSpeedMph.toFixed(1)} mph · ${lap.wh.toFixed(2)} Wh${lap.whPerMile != null ? ` (${lap.whPerMile.toFixed(0)} Wh/mi)` : ''}`
+    : `${scopeLabel}: ${rowsSubset.length} packets · ${sessionLapsInfo.totalDistanceMi.toFixed(2)} mi · top ${sessionLapsInfo.totalTopSpeedMph.toFixed(1)} mph · ${sessionLapsInfo.totalWh.toFixed(1)} Wh${sessionLapsInfo.totalWhPerMile != null ? ` (${sessionLapsInfo.totalWhPerMile.toFixed(0)} Wh/mi)` : ''}`;
+}
+
+// Extracted out of viewSession() itself so it can be called again, scoped
+// to just one lap's row slice, when the lap <select> below changes — was
+// previously inline in viewSession() and only ever ran once per session
+// open.
+function renderSessionCharts(rows) {
+  const labels = rows.map(r => fmtTimeNoSeconds(r.received_at));
+  SESSION_CHART_KEYS.forEach(k => {
+    const canvasId = 'session-chart-'+k;
+    if (sessionCharts[k]) { try { sessionCharts[k].destroy(); } catch(e) {} }
+    const ctx = document.getElementById(canvasId);
+    if (!ctx) return;
+    const metric = METRICS[k];
+    const color = resolveColor(metric ? metric.color : 'var(--accent2)');
+    const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
+    sessionCharts[k] = attachTouchTooltipAutoHide(new Chart(ctx, {
+      type:'line',
+      data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3, borderJoinStyle:'round', borderCapStyle:'round' }] },
+      options:attachHaptics({
+        responsive:true, maintainAspectRatio:false, animation:false,
+        interaction:{mode:'index', intersect:false},
+        plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
+        scales:{
+          x:{display:true, ticks:{color:'#828a9c', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
+          y:{grid:{color:'rgba(255,255,255,.05)'}, ticks:{color:'#828a9c', font:{size:10}}, border:{color:'rgba(255,255,255,.07)'}}
+        }
+      })
+    }));
+  });
+}
+
 async function viewSession(id) {
   try {
     const res = await fetch(`/api/sessions/${id}/points`, { cache:'no-store' });
@@ -3320,34 +3577,40 @@ async function viewSession(id) {
     document.getElementById('session-view-title').textContent = `SESSION #${id} — ${rows.length} packets`;
     document.getElementById('session-view-export').href = `/api/sessions/${id}/export.csv`;
 
-    const labels = rows.map(r => fmtTimeNoSeconds(r.received_at));
+    sessionRowsFull = rows;
+    sessionLapsInfo = analyzeSessionPoints(rows);
 
-    SESSION_CHART_KEYS.forEach(k => {
-      const canvasId = 'session-chart-'+k;
-      if (sessionCharts[k]) { try { sessionCharts[k].destroy(); } catch(e) {} }
-      const ctx = document.getElementById(canvasId);
-      if (!ctx) return;
-      const metric = METRICS[k];
-      const color = resolveColor(metric ? metric.color : 'var(--accent2)');
-      const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
-      sessionCharts[k] = attachTouchTooltipAutoHide(new Chart(ctx, {
-        type:'line',
-        data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3, borderJoinStyle:'round', borderCapStyle:'round' }] },
-        options:attachHaptics({
-          responsive:true, maintainAspectRatio:false, animation:false,
-          interaction:{mode:'index', intersect:false},
-          plugins:{legend:{display:false}, tooltip:TOOLTIP_OPTS},
-          scales:{
-            x:{display:true, ticks:{color:'#828a9c', font:{size:8}, maxTicksLimit:6}, grid:{color:'rgba(255,255,255,.04)'}, border:{color:'rgba(255,255,255,.07)'}},
-            y:{grid:{color:'rgba(255,255,255,.05)'}, ticks:{color:'#828a9c', font:{size:10}}, border:{color:'rgba(255,255,255,.07)'}}
-          }
-        })
-      }));
-    });
+    const lapsRow = document.getElementById('session-laps-row');
+    const select = document.getElementById('session-lap-select');
+    if (sessionLapsInfo.laps.length) {
+      lapsRow.style.display = 'flex';
+      select.innerHTML = `<option value="all">All (${rows.length} packets)</option>` +
+        sessionLapsInfo.laps.map((l, i) => `<option value="${i}">Lap ${l.lap} — ${fmtLapTime(l.durationMs)}</option>`).join('');
+      select.value = 'all';
+    } else {
+      lapsRow.style.display = 'none';
+    }
+
+    renderSessionCharts(rows);
+    renderSessionLapSummary('All laps', rows, null);
   } catch(e) {
     console.warn('viewSession error:', e);
   }
 }
+
+document.getElementById('session-lap-select').addEventListener('change', (e) => {
+  const val = e.target.value;
+  if (val === 'all') {
+    renderSessionCharts(sessionRowsFull);
+    renderSessionLapSummary('All laps', sessionRowsFull, null);
+    return;
+  }
+  const lap = sessionLapsInfo.laps[parseInt(val, 10)];
+  if (!lap) return;
+  const subset = sessionRowsFull.slice(lap.startIdx, lap.endIdx + 1);
+  renderSessionCharts(subset);
+  renderSessionLapSummary(`Lap ${lap.lap}`, subset, lap);
+});
 
 document.getElementById('sessions-refresh').addEventListener('click', loadSessions);
 document.getElementById('session-view-close').addEventListener('click', () => {
@@ -3373,6 +3636,14 @@ const HISTORY_HARD_CAP_MS = 4 * 60 * 60 * 1000;
 const history = {};
 Object.keys(METRICS).forEach(k => history[k] = []);
 const historyTimes = [];   // real epoch-ms timestamps (server-stamped, see server.js), parallel to history[k]
+// Derived (not a raw packet field, so deliberately NOT in METRICS/history[] —
+// same "handled by hand" precedent as esc_mode/esc_state elsewhere in this
+// file) battery-power-draw history, parallel to historyTimes, feeding the
+// Efficiency tab's Power chart. Kept in sync with historyTimes/history[]'s
+// own push/gap-wipe/hard-cap-evict points in pushHistory() below — it isn't
+// swept up by the `Object.keys(METRICS).forEach(...)` loops those use since
+// it isn't a METRICS key.
+const historyPowerW = [];
 
 // ── LIVE CHART TIME RANGE (global — affects every live chart at once) ───────
 // A single shared selection rather than a per-page/per-chart one: this is
@@ -3468,6 +3739,237 @@ const CHART_GAP_STALE_MS = 5000;
 let lastPacketTime = null;
 let activeRunStart = null;
 
+// ── EFFICIENCY / LAP TIMING (geofence-based) ─────────────────────────────────
+// Two related features sharing one pass over live GPS fixes:
+// (1) lap timing — a user-configured geofence (lat/lon/radius, Settings →
+//     Lap Timing) around the track's start/finish line; crossing INTO it
+//     (outside→inside, not just "currently inside") closes the lap in
+//     progress and starts the next one.
+// (2) trip efficiency — consumed/remaining Wh, Wh/mile, distance, estimated
+//     range — accumulated continuously regardless of whether a geofence is
+//     configured at all (lap timing is optional; efficiency tracking isn't).
+// Both live entirely client-side, same scope as every other live chart/
+// history array in this file (see "Live chart history is still browser-only"
+// elsewhere in CLAUDE.md) — nothing here is persisted server-side. For a
+// PAST session, the equivalent numbers are recomputed on demand from that
+// session's stored points instead (see computeLaps()/viewSession() further
+// down) — this section only covers the LIVE, current-run path. Placed here
+// (after activeRunStart/historyTimes/HISTORY_HARD_CAP_MS above, before
+// lastSeq/rawLines below) deliberately — this section's own top-level code
+// reads activeRunStart immediately (not just from inside a later-called
+// function), and a `let` referenced before its own declaration line has
+// executed throws a real ReferenceError (see the `history`-shadowing bug
+// documented elsewhere in CLAUDE.md for the exact same trap) — the function
+// DECLARATIONS below would be safely hoisted regardless of placement, but
+// the plain top-level statements at the bottom of this section would not.
+const GEOFENCE_LAT_KEY = 'gp_geofence_lat';
+const GEOFENCE_LON_KEY = 'gp_geofence_lon';
+const GEOFENCE_RADIUS_KEY = 'gp_geofence_radius_m';
+const BATTERY_CAPACITY_KEY = 'gp_battery_capacity_wh';
+// A real lap can't complete this fast — debounces a GPS fix wobbling right
+// on the geofence boundary from registering a string of near-zero-length
+// "laps" instead of one real crossing.
+const LAP_MIN_MS = 5000;
+
+let geofenceLat = null, geofenceLon = null, geofenceRadiusM = 20;
+try {
+  const la = parseFloat(localStorage.getItem(GEOFENCE_LAT_KEY));
+  const lo = parseFloat(localStorage.getItem(GEOFENCE_LON_KEY));
+  const r  = parseFloat(localStorage.getItem(GEOFENCE_RADIUS_KEY));
+  if (Number.isFinite(la) && Number.isFinite(lo)) { geofenceLat = la; geofenceLon = lo; }
+  if (Number.isFinite(r) && r > 0) geofenceRadiusM = r;
+} catch(e) {}
+let batteryCapacityWh = null;
+try {
+  const c = parseFloat(localStorage.getItem(BATTERY_CAPACITY_KEY));
+  if (Number.isFinite(c) && c > 0) batteryCapacityWh = c;
+} catch(e) {}
+function geofenceConfigured() { return geofenceLat != null && geofenceLon != null; }
+
+// Haversine great-circle distance in meters — plenty accurate at track
+// scale (rarely more than a few hundred meters), same trade-off (ignoring
+// elevation/ellipsoid correction) any GPS-distance calc this size would make.
+function gpsDistanceM(lat1, lon1, lat2, lon2) {
+  const R = 6371000, toRad = x => x * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// Live accumulators for the CURRENT run — reset by resetLapTracking(),
+// called from pushHistory()'s existing stale-gap wipe (same trigger/timing
+// as the chart buffers being wiped, not a separate schedule).
+let liveConsumedWh = 0;             // Wh drawn from the battery so far this run
+let liveDistanceMi = 0;             // GPS-integrated distance so far this run
+let lastGpsFixForDistance = null;   // {lat,lon} distance was last integrated from
+let geofenceInside = false;         // last known inside/outside state, for edge-detecting a crossing
+let lastLapCrossMs = 0;
+let liveLaps = [];                  // completed laps this run
+let currentLapStartMs = null;
+let currentLapStartWh = 0;
+let currentLapStartDistMi = 0;
+let currentLapTopSpeed = 0;
+
+function resetLapTracking() {
+  liveConsumedWh = 0;
+  liveDistanceMi = 0;
+  lastGpsFixForDistance = null;
+  geofenceInside = false;
+  lastLapCrossMs = 0;
+  liveLaps = [];
+  currentLapStartMs = null;
+  currentLapStartWh = 0;
+  currentLapStartDistMi = 0;
+  currentLapTopSpeed = 0;
+  renderLiveLaps();
+  renderEfficiencyLive();
+}
+
+// A real vehicle can't jump this far between two ~200ms-apart fixes —
+// keeps GPS jitter (a stationary/near-stationary fix wandering a few
+// meters) from slowly accumulating fake distance, and guards against one
+// wildly-wrong fix (a real, if rare, GPS glitch) adding a huge bogus jump.
+// 50m/200ms is ~560mph — far above anything this vehicle class can do even
+// allowing generous slack for a missed packet or two before the 5s
+// stale-gap reset (CHART_GAP_STALE_MS) would have wiped the run anyway.
+const GPS_JUMP_CAP_M = 50;
+function accumulateGpsDistance(lat, lon) {
+  if (lastGpsFixForDistance) {
+    const meters = gpsDistanceM(lastGpsFixForDistance.lat, lastGpsFixForDistance.lon, lat, lon);
+    if (meters > 0.5 && meters < GPS_JUMP_CAP_M) liveDistanceMi += meters / 1609.344;
+  }
+  lastGpsFixForDistance = { lat, lon };
+}
+
+// Edge-triggered on OUTSIDE→INSIDE only (not "currently inside", which
+// would fire on every single fix for as long as the car sits inside the
+// zone) — closes the lap in progress (if any) and starts the next one.
+function checkLapCrossing(lat, lon, tMs) {
+  if (!geofenceConfigured()) return;
+  const inside = gpsDistanceM(lat, lon, geofenceLat, geofenceLon) <= geofenceRadiusM;
+  if (inside && !geofenceInside && (tMs - lastLapCrossMs) > LAP_MIN_MS) {
+    lastLapCrossMs = tMs;
+    if (currentLapStartMs != null) {
+      const durationMs = tMs - currentLapStartMs;
+      const distanceMi = liveDistanceMi - currentLapStartDistMi;
+      const wh = liveConsumedWh - currentLapStartWh;
+      liveLaps.push({
+        lap: liveLaps.length + 1,
+        startMs: currentLapStartMs, endMs: tMs, durationMs,
+        distanceMi, wh,
+        whPerMile: distanceMi > 0.02 ? wh / distanceMi : null,
+        topSpeedMph: currentLapTopSpeed,
+        avgSpeedMph: durationMs > 0 ? distanceMi / (durationMs / 3600000) : 0,
+      });
+    }
+    currentLapStartMs = tMs;
+    currentLapStartWh = liveConsumedWh;
+    currentLapStartDistMi = liveDistanceMi;
+    currentLapTopSpeed = 0;
+    renderLiveLaps();
+    vibrate(15);
+  }
+  geofenceInside = inside;
+}
+
+// Called once per valid live GPS fix (see poll()/testModeTick() below) —
+// the one shared entry point for both distance accumulation and lap-
+// crossing detection, so neither call site has to remember to do both.
+function onLiveGpsFix(lat, lon, tMs) {
+  accumulateGpsDistance(lat, lon);
+  checkLapCrossing(lat, lon, tMs);
+}
+
+function fmtLapTime(ms) {
+  if (ms == null) return '--';
+  const totalSec = ms / 1000;
+  const m = Math.floor(totalSec / 60);
+  const s = (totalSec % 60).toFixed(2).padStart(5, '0');
+  return `${m}:${s}`;
+}
+
+// Renders the Raceline tab's current-lap timer, best-lap card, and the
+// completed-laps table. Called on every crossing (a new row / possible new
+// best lap) and once a second (see the setInterval further down) so the
+// current lap's running timer visibly ticks even between live packets.
+// Just the current-lap running clock — split out from renderLiveLaps()
+// below so it can be ticked much more often (100ms) without also rebuilding
+// the completed-laps table's innerHTML 10x/second for no reason; the table
+// only actually changes on a real crossing, which already calls
+// renderLiveLaps() (and this) directly.
+function updateCurrentLapTimer() {
+  const curEl = document.getElementById('rl-current-lap-time');
+  if (curEl) curEl.textContent = currentLapStartMs != null ? fmtLapTime(Date.now() - currentLapStartMs) : '--';
+}
+
+function renderLiveLaps() {
+  const hintEl = document.getElementById('laps-status-hint');
+  if (hintEl) {
+    hintEl.textContent = geofenceConfigured()
+      ? `Geofence set — ${geofenceRadiusM}m radius. Laps recorded: ${liveLaps.length}${currentLapStartMs != null ? ' (lap in progress).' : '.'}`
+      : 'No start/finish geofence set — configure one in Settings → Lap Timing to start recording laps.';
+  }
+  updateCurrentLapTimer();
+
+  const bestMs = liveLaps.length ? Math.min(...liveLaps.map(l => l.durationMs)) : null;
+  const bestEl = document.getElementById('rl-best-lap-time');
+  if (bestEl) bestEl.textContent = fmtLapTime(bestMs);
+
+  const tbody = document.getElementById('laps-tbody');
+  if (tbody) {
+    tbody.innerHTML = liveLaps.length ? liveLaps.slice().reverse().map(l => `<tr class="${l.durationMs === bestMs ? 'lap-row-best' : ''}">
+      <td>${l.lap}</td>
+      <td>${fmtLapTime(l.durationMs)}</td>
+      <td>${bestMs != null ? (l.durationMs === bestMs ? 'BEST' : '+' + ((l.durationMs - bestMs) / 1000).toFixed(2) + 's') : '--'}</td>
+      <td>${l.distanceMi.toFixed(2)} mi</td>
+      <td>${l.topSpeedMph.toFixed(1)} mph</td>
+      <td>${l.whPerMile != null ? l.whPerMile.toFixed(0) + ' Wh/mi' : '--'}</td>
+    </tr>`).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--muted)">No completed laps yet</td></tr>`;
+  }
+}
+document.getElementById('laps-reset-btn')?.addEventListener('click', () => { resetLapTracking(); vibrate(10); });
+
+// Live efficiency numbers (Efficiency tab) — same accumulators as lap
+// timing above, but independent of whether a geofence is even configured.
+function renderEfficiencyLive() {
+  const distMi = liveDistanceMi;
+  const whPerMile = distMi > 0.02 ? liveConsumedWh / distMi : null;
+  const remainingWh = batteryCapacityWh != null ? Math.max(0, batteryCapacityWh - liveConsumedWh) : null;
+  const rangeMi = (remainingWh != null && whPerMile != null && whPerMile > 0.01) ? remainingWh / whPerMile : null;
+  const elapsedHr = activeRunStart != null ? (Date.now() - activeRunStart) / 3600000 : 0;
+  const avgPowerW = elapsedHr > 0.0005 ? liveConsumedWh / elapsedHr : 0;
+
+  setText('eff-consumed-wh', liveConsumedWh.toFixed(1));
+  setText('eff-remaining-wh', remainingWh != null ? remainingWh.toFixed(1) : '--');
+  setText('eff-wh-per-mile', whPerMile != null ? whPerMile.toFixed(0) : '--');
+  setText('eff-distance-mi', distMi.toFixed(2));
+  setText('eff-range-mi', rangeMi != null ? rangeMi.toFixed(1) : '--');
+  setText('eff-avg-power-w', avgPowerW.toFixed(0));
+
+  const hintEl = document.getElementById('efficiency-capacity-hint');
+  if (hintEl) hintEl.style.display = batteryCapacityWh == null ? 'block' : 'none';
+}
+document.getElementById('efficiency-reset-btn')?.addEventListener('click', () => { resetLapTracking(); vibrate(10); });
+
+// The current-lap running clock ticks every 100ms (10/sec) — fmtLapTime()
+// shows hundredths of a second, and a 1-second tick made it visibly JUMP
+// straight from one whole second to the next instead of counting up
+// smoothly, the .00-.99 fraction never actually moving. 100ms is frequent
+// enough to read as smooth without meaningfully adding to the cost of a
+// single small textContent write.
+setInterval(updateCurrentLapTimer, 100);
+// Everything else here (the laps hint/table, efficiency numbers) still
+// only needs to tick once a second even between live packets — the
+// ELAPSED-TIME-based numbers (avgPowerW's elapsed-hours denominator) should
+// still visibly advance every second even when Wh/distance themselves only
+// change on a new packet, same reasoning as the header's own server-time
+// clock (`setInterval(() => setText('server-time', ...), 1000)`). No need
+// for these to also run at 100ms — the table rebuild/hint text don't carry
+// sub-second-visible information the way the running clock does.
+setInterval(() => { renderLiveLaps(); renderEfficiencyLive(); }, 1000);
+renderLiveLaps();
+renderEfficiencyLive();
+
 let lastSeq = null;
 const rawLines = [];
 const MAX_RAW_LINES = 80;
@@ -3534,12 +4036,34 @@ function pushHistory(d) {
   if (lastPacketTime != null && (t - lastPacketTime) > CHART_GAP_STALE_MS) {
     historyTimes.length = 0;
     Object.keys(METRICS).forEach(k => history[k].length = 0);
+    historyPowerW.length = 0;
     activeRunStart = null;
+    // A stale gap means whatever run was in progress (laps, Wh/distance
+    // accumulation) is over too, same trigger/timing as the chart buffers
+    // being wiped above — see EFFICIENCY / LAP TIMING further up.
+    resetLapTracking();
+  } else if (lastPacketTime != null) {
+    // Integrate battery power draw (Wh) over the real elapsed time since
+    // the last packet. batt_volt (pack voltage) * current_a (pack current),
+    // not motor_volt — this is meant to reflect actual energy drawn FROM
+    // THE BATTERY, and motor_volt is downstream of the ESC/controller, not
+    // the pack itself. dtHours here is always <= CHART_GAP_STALE_MS (5s)
+    // by construction (the branch above already caught anything bigger).
+    const dtHours = (t - lastPacketTime) / 3600000;
+    if (typeof d.batt_volt === 'number' && typeof d.current_a === 'number') {
+      liveConsumedWh += d.batt_volt * d.current_a * dtHours;
+    }
   }
+  // Tracked unconditionally (not just inside the dtHours branch above) so
+  // the very first packet of a lap/run still counts toward its own top
+  // speed, not just every packet after the first.
+  if (typeof d.speed_mph === 'number' && d.speed_mph > currentLapTopSpeed) currentLapTopSpeed = d.speed_mph;
+
   lastPacketTime = t;
   if (activeRunStart == null) activeRunStart = t;
 
   Object.keys(METRICS).forEach(k => history[k].push(typeof d[k] === 'number' ? d[k] : null));
+  historyPowerW.push(typeof d.batt_volt === 'number' && typeof d.current_a === 'number' ? d.batt_volt * d.current_a : null);
   historyTimes.push(t);
   // Evict anything older than the hard retention ceiling — this is the
   // outer bound on the whole buffer, independent of whatever range is
@@ -3552,7 +4076,9 @@ function pushHistory(d) {
   if (evictCount > 0) {
     historyTimes.splice(0, evictCount);
     Object.keys(METRICS).forEach(k => history[k].splice(0, evictCount));
+    historyPowerW.splice(0, evictCount);
   }
+  renderEfficiencyLive();
 }
 
 // Hour:minute only — no seconds. Chart x-axis labels at 5 Hz would otherwise
@@ -3608,6 +4134,10 @@ function applyHistory() {
       const ch = bigCharts[k];
       if (chartIsVisible(ch)) safeUpdateChart(ch, winTimes, history[k].slice(startIdx), xMin, xMax);
     });
+    // Not a METRICS entry (see historyPowerW's own comment) so it isn't
+    // covered by the Object.keys(bigCharts) loop above — same reasoning,
+    // handled by hand right alongside it.
+    if (chartIsVisible(powerWChart)) safeUpdateChart(powerWChart, winTimes, historyPowerW.slice(startIdx), xMin, xMax);
 
     if (!multiChart || !chartIsVisible(multiChart)) return;
     const visible = Object.keys(METRICS).filter(k => multiVisible[k]);
@@ -3677,6 +4207,7 @@ async function poll() {
         // the view already caught up the moment the user switches to it,
         // instead of visibly catching up after arriving on the tab.
         updateGpsMap(lat, lon);
+        onLiveGpsFix(lat, lon, data.received_at || Date.now());
       }
     }
   } catch(e) {
@@ -3791,6 +4322,7 @@ function testModeTick() {
     gpsTrail.push([d.latitude, d.longitude]);
     if (gpsTrail.length > MAX_GPS) gpsTrail.shift();
     updateGpsMap(d.latitude, d.longitude);
+    onLiveGpsFix(d.latitude, d.longitude, d.received_at);
   }
 }
 
@@ -3832,6 +4364,89 @@ document.getElementById('settings-default-range-row').addEventListener('click', 
   if (!btn) return;
   try { localStorage.setItem(DEFAULT_RANGE_STORAGE_KEY, btn.dataset.rangeKey); } catch(err) {}
 });
+
+// Lap Timing geofence + battery capacity — geofenceLat/geofenceLon/
+// geofenceRadiusM/batteryCapacityWh themselves (and their localStorage
+// keys) are declared up in the "EFFICIENCY / LAP TIMING" section; this is
+// just the Settings-page UI reading/writing those same module-level
+// variables. Pre-fill the inputs from whatever's already loaded.
+const geofenceLatInput = document.getElementById('settings-geofence-lat');
+const geofenceLonInput = document.getElementById('settings-geofence-lon');
+const geofenceRadiusInput = document.getElementById('settings-geofence-radius');
+const batteryCapacityInput = document.getElementById('settings-battery-capacity');
+if (geofenceLatInput) {
+  geofenceLatInput.value = geofenceLat != null ? geofenceLat : '';
+  geofenceLonInput.value = geofenceLon != null ? geofenceLon : '';
+  geofenceRadiusInput.value = geofenceRadiusM;
+}
+if (batteryCapacityInput) batteryCapacityInput.value = batteryCapacityWh != null ? batteryCapacityWh : '';
+
+// Saves whatever's currently in the three geofence fields — shared by the
+// plain 'change' listeners below and by "Use Current GPS Position" (which
+// fills the lat/lon fields first, then calls this same function rather
+// than duplicating the parse/validate/persist logic a third time).
+function saveGeofenceFromInputs() {
+  const la = parseFloat(geofenceLatInput.value);
+  const lo = parseFloat(geofenceLonInput.value);
+  const r = parseFloat(geofenceRadiusInput.value);
+  if (Number.isFinite(la) && Number.isFinite(lo)) {
+    geofenceLat = la; geofenceLon = lo;
+    try { localStorage.setItem(GEOFENCE_LAT_KEY, String(la)); localStorage.setItem(GEOFENCE_LON_KEY, String(lo)); } catch(e) {}
+  } else {
+    // An incomplete/cleared pair (one filled, one blank) means "not
+    // configured" — same as never having set it, rather than half-saving
+    // one coordinate and leaving the geofence silently using a stale
+    // other-half value from before.
+    geofenceLat = null; geofenceLon = null;
+    try { localStorage.removeItem(GEOFENCE_LAT_KEY); localStorage.removeItem(GEOFENCE_LON_KEY); } catch(e) {}
+  }
+  if (Number.isFinite(r) && r > 0) {
+    geofenceRadiusM = r;
+    try { localStorage.setItem(GEOFENCE_RADIUS_KEY, String(r)); } catch(e) {}
+  }
+  renderLiveLaps();
+}
+if (geofenceLatInput) {
+  [geofenceLatInput, geofenceLonInput, geofenceRadiusInput].forEach(el => el.addEventListener('change', saveGeofenceFromInputs));
+  const geofenceMsgEl = document.getElementById('settings-geofence-msg');
+  function showGeofenceMsg(text) {
+    if (!geofenceMsgEl) return;
+    geofenceMsgEl.textContent = text;
+    geofenceMsgEl.style.display = 'block';
+    clearTimeout(showGeofenceMsg._t);
+    showGeofenceMsg._t = setTimeout(() => { geofenceMsgEl.style.display = 'none'; }, 4000);
+  }
+  document.getElementById('settings-geofence-use-current').addEventListener('click', () => {
+    // lastGpsFixForDistance is the most recent VALID live fix regardless of
+    // which tab is active (kept current by onLiveGpsFix() on every packet,
+    // same reasoning as the raceline trail itself) — reusing it here means
+    // this button doesn't require the user to be on the Raceline tab first.
+    if (!lastGpsFixForDistance) { showGeofenceMsg('No live GPS fix yet — make sure the car (or Test Mode) has a GPS fix first.'); return; }
+    geofenceLatInput.value = lastGpsFixForDistance.lat;
+    geofenceLonInput.value = lastGpsFixForDistance.lon;
+    saveGeofenceFromInputs();
+    showGeofenceMsg('Geofence set from current GPS position.');
+    vibrate(10);
+  });
+  document.getElementById('settings-geofence-clear').addEventListener('click', () => {
+    geofenceLatInput.value = ''; geofenceLonInput.value = '';
+    saveGeofenceFromInputs();
+  });
+}
+
+if (batteryCapacityInput) {
+  batteryCapacityInput.addEventListener('change', () => {
+    const c = parseFloat(batteryCapacityInput.value);
+    if (Number.isFinite(c) && c > 0) {
+      batteryCapacityWh = c;
+      try { localStorage.setItem(BATTERY_CAPACITY_KEY, String(c)); } catch(e) {}
+    } else {
+      batteryCapacityWh = null;
+      try { localStorage.removeItem(BATTERY_CAPACITY_KEY); } catch(e) {}
+    }
+    renderEfficiencyLive();
+  });
+}
 
 // Overview Boxes Per Row slider — --fill (used by the .oui-slider CSS to
 // paint the accent-colored portion of the track) has to be set from JS;
