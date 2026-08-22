@@ -90,7 +90,17 @@
     --escset:#fde047; --esclive:#fcd34d; --escramp:#fbbf24; --escmode:#fef08a;
     --text:#e7ebf3; --muted:#828a9c; --warn:#f59e0b;
     --radius:14px; --radius-sm:10px;
-    --shadow:0 1px 2px rgba(0,0,0,.35), 0 10px 24px -14px rgba(0,0,0,.6);
+    /* Zero Y-offset on both layers — was 1px/10px (downward-biased), per
+       explicit request that popup/modal shadows read as equal top and
+       bottom rather than looking like they're being cast downward.
+       Same reasoning already applied to .mobile-navbar's own shadow fix
+       elsewhere in this file (symmetric, offset:0, blur-only). This is a
+       shared token used by every floating "popup screen" on the page —
+       .confirm-modal (download-agent/exit-app/clear-data), the onboarding
+       card, .install-popover, .customize-panel, .update-banner — so
+       fixing it once here fixes all of them consistently rather than
+       needing a separate override per element. */
+    --shadow:0 0 2px rgba(0,0,0,.35), 0 0 24px -8px rgba(0,0,0,.6);
     --ease:cubic-bezier(.22,.61,.36,1);
   }
   * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
@@ -433,7 +443,16 @@
   .oui-toggle-thumb { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4);
     transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
-  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(135deg, var(--accent), var(--accent2)); border-color:transparent; }
+  /* to right, not 135deg — a real visible bug on a track this shape
+     (50px wide, 30px tall): a diagonal gradient's color transition
+     completes over the distance PERPENDICULAR to its angle, which on a
+     box this much wider than it is tall is close to the SHORT (height)
+     dimension, not the width — so the blend finished almost immediately
+     and most of the track's width just showed solid var(--accent2) (the
+     "bright blue" the user was seeing), not an actual gradient spanning
+     the visible background. A horizontal gradient spans the full width
+     by definition, so both colors are genuinely visible edge-to-edge. */
+  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent), var(--accent2)); border-color:transparent; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
      the thumb widens slightly toward whichever edge it's closer to
@@ -778,7 +797,18 @@
      stays — that's what gives the divider its height within the bar. */
   .mobile-navbar-divider { flex-shrink:0; width:1px; margin:11px 0; background:var(--border); }
   .mobile-navbar-expand {
-    position:relative; flex-shrink:0; aspect-ratio:1/1; margin:7px 0; display:flex; align-items:center; justify-content:center;
+    /* padding:0 — same real bug as .mobile-navbar-tab-primary (see its own
+       rule): this is a real <button> element, and browsers give buttons
+       non-zero default padding (Chrome: ~1px 6px) that was never reset
+       here. Unlike the tab squares (plain <div>s, so their padding bug
+       came from an inherited CSS class), this one comes from the
+       browser's own UA stylesheet — same category of bug, different
+       source, found on the same "toolbar padding isn't even" follow-up
+       report. The two overlaid icon spans are position:absolute with no
+       inset values, so they sit at their flex-computed static position —
+       centered correctly by align-items/justify-content below ONLY once
+       the button's own box isn't skewed by leftover default padding. */
+    position:relative; flex-shrink:0; aspect-ratio:1/1; margin:7px 0; padding:0; display:flex; align-items:center; justify-content:center;
     background:none; border:none; color:var(--muted); cursor:pointer; border-radius:13px;
     transition:background .15s var(--ease), color .15s var(--ease), transform .12s var(--ease);
   }
@@ -871,7 +901,12 @@
     transition:background .15s var(--ease), color .15s var(--ease);
   }
   .mobile-navsheet-tab:active { transform:scale(.98); }
-  .mobile-navsheet-tab.active { color:#fff; background:linear-gradient(135deg, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
+  /* to right, not 135deg — same reasoning as .oui-toggle-track/
+     .onboarding-btn-primary elsewhere in this file: this row is much
+     wider than it is tall, so a diagonal gradient barely shows both
+     colors across its actual visible width. Low-opacity here so it was
+     less glaring than the toggle, but the same real fix applies. */
+  .mobile-navsheet-tab.active { color:#fff; background:linear-gradient(to right, rgba(99,102,241,.32), rgba(14,165,233,.2)); box-shadow:inset 0 0 0 1px rgba(99,102,241,.35); }
   .mobile-navsheet-tab .icon { width:19px; height:19px; flex-shrink:0; }
   .mobile-navsheet-tab-label { font-size:14px; font-weight:600; }
 
@@ -1005,7 +1040,12 @@
      for its one recurring "important, colorful" button treatment. */
   .onboarding-btn-primary {
     width:100%; justify-content:center; padding:11px; font-size:13.5px; margin-top:8px;
-    background:linear-gradient(135deg, var(--accent), var(--accent2)); border:none; color:#fff;
+    /* to right, not 135deg — same real bug as .oui-toggle-track (see its
+       own comment): this button is much wider than it is tall, so a
+       diagonal gradient's blend completes within the short (height)
+       distance and most of the visible width just reads as solid
+       var(--accent2) instead of an actual two-color gradient. */
+    background:linear-gradient(to right, var(--accent), var(--accent2)); border:none; color:#fff;
     box-shadow:0 4px 16px -4px rgba(99,102,241,.45);
     transition:transform .15s var(--ease), box-shadow .15s var(--ease), filter .15s var(--ease);
   }
@@ -2631,12 +2671,16 @@ function renderMobileNav() {
   document.getElementById('mobile-navbar-scroll').innerHTML = toolbarKeys.map(k => mobileNavTabHtml(k, true)).join('');
   document.getElementById('mobile-navsheet-list').innerHTML = sheetKeys.map(k => mobileNavTabHtml(k, false)).join('');
   applyIcons();
-  // Nothing left for the sheet (everything visible already fits in the
-  // toolbar) — hide the divider/expand button rather than offering a
-  // menu that would only ever contain the pinned Settings row.
-  const hasSheetPages = sheetKeys.length > 0;
-  document.querySelector('.mobile-navbar-divider').style.display = hasSheetPages ? '' : 'none';
-  document.getElementById('mobile-navbar-expand').style.display = hasSheetPages ? '' : 'none';
+  // Divider/expand button are ALWAYS shown, even when sheetKeys is empty
+  // (every visible page fits in the 5 toolbar slots) — a real lockout bug
+  // found on follow-up report: hiding the whole expand mechanism whenever
+  // the CUSTOM sheet list was empty also hid the pinned Settings row
+  // riding along with it, since Settings lives in the sheet too but isn't
+  // part of sheetKeys. With the toolbar capped at 5 visible pages minimum
+  // (see the Settings change-handler's own guard), reaching exactly 5 is
+  // the ONE state where Settings being reachable matters most — it's the
+  // only way to un-hide anything again. Settings guarantees the sheet is
+  // never truly empty, so there's no case where hiding this is correct.
 }
 renderMobileNav();
 
@@ -2930,7 +2974,26 @@ function hideExitConfirm() {
 window.addEventListener('popstate', () => {
   if (awaitingExit) {
     awaitingExit = false;
-    window.history.back();   // the real exit-triggering step — see the comment above
+    // Reported not to reliably close the real installed WebAPK on its
+    // own — there is no universally-documented, guaranteed JS API for a
+    // page to close an installed PWA on Android; browsers deliberately
+    // restrict "close yourself" for security/UX reasons, and that
+    // restriction isn't fully lifted just because this is a standalone
+    // app rather than a plain tab. Two best-effort attempts, in order:
+    // (1) window.close() — per spec, a browsing context MAY be closed by
+    // script if "session history has only one entry", which is exactly
+    // the state right here (the guard was just consumed, only the real
+    // page-load entry is left) — some Chrome/Android versions do honor
+    // this in exactly this situation even though a plain back() from a
+    // script can't replicate a hardware back-button's own OS-level
+    // "finish the activity" decision. (2) history.back() as a fallback —
+    // the original theory (exhausting history closes a standalone app on
+    // some versions) — in case that path works where window.close()
+    // doesn't. If NEITHER does anything on a given device/Chrome version,
+    // there is currently no further JS-only lever left to pull — the user
+    // lands back on the real page instead of getting stuck on the dialog.
+    window.close();
+    window.history.back();
     return;
   }
   window.history.pushState({ gpExitGuard:true }, '');
@@ -3127,7 +3190,22 @@ document.getElementById('onboarding-password-input').addEventListener('keydown',
     btn.style.display = 'none';
   } else {
     btn.addEventListener('click', async () => {
-      if (!deferredInstallPrompt) { advanceOnboarding(); return; }   // no real prompt available — nothing to wait for
+      // A real, confirmed intermittent bug: beforeinstallprompt fires
+      // asynchronously sometime after page load, with no fixed timing
+      // guarantee — a user who races through the password step and taps
+      // Install almost immediately can genuinely get here before it's
+      // fired yet, leaving deferredInstallPrompt still null at click time.
+      // The original code treated that exactly like "the browser decided
+      // install isn't available" and silently called advanceOnboarding()
+      // — from the user's side this read as "sometimes it just skips the
+      // screen" with no explanation, since a legitimately-unavailable
+      // prompt and a not-yet-arrived one were indistinguishable. Now it
+      // says so and stays put instead of guessing which case it is —
+      // Skip is still one tap away if it really isn't coming.
+      if (!deferredInstallPrompt) {
+        desc.textContent = "Install isn't ready yet — wait a moment and try again, or tap Skip to continue.";
+        return;
+      }
       deferredInstallPrompt.prompt();
       const choice = await deferredInstallPrompt.userChoice.catch(() => null);
       deferredInstallPrompt = null;
@@ -3641,23 +3719,67 @@ const TEST_START = Date.now();
 
 function randRange(lo, hi) { return lo + Math.random() * (hi - lo); }
 
-// Smooth wandering values (sine + a little noise) instead of pure random
-// jitter every tick — reads like a real sensor drifting, not static, which
-// matters for actually eyeballing whether a chart/animation looks right.
-function wave(lo, hi, periodMs, phase=0) {
-  const mid = (lo + hi) / 2, amp = (hi - lo) / 2;
-  const t = (Date.now() - TEST_START) / periodMs;
-  return mid + amp * Math.sin(t * Math.PI * 2 + phase) * 0.85 + (Math.random() - 0.5) * amp * 0.1;
+// Damped random walk (with real momentum + occasional bigger "events"),
+// NOT a repeating sine wave — a clean sine curve was too smooth/
+// predictable and, worse, exactly periodic: watch it for 6-15s (the old
+// per-metric period) and you'd seen the entire shape it would ever draw.
+// Real telemetry never looks like that — it wanders unpredictably, drifts
+// slowly under its own "inertia" rather than snapping tick to tick, and
+// occasionally jumps a bit more than usual (a real throttle change, a
+// bump, a corner) rather than moving in perfectly uniform small steps.
+// One independent {value, velocity} state per metric, seeded at its
+// range's midpoint — no shared clock, so different metrics drift on their
+// own schedules and never fall into a visibly-looping, same-shaped
+// pattern together the way the old shared-phase sine wave could.
+const testWalkState = {};
+function initTestWalkState() {
+  Object.keys(METRICS).forEach(k => {
+    const [lo, hi] = METRICS[k].range;
+    testWalkState[k] = { value: (lo + hi) / 2, velocity: 0 };
+  });
+}
+initTestWalkState();
+function stepTestWalk(key, lo, hi) {
+  const st = testWalkState[key];
+  const mid = (lo + hi) / 2, range = hi - lo;
+  // Every quantity here (pull/jitter/velocity/value) is in the metric's
+  // own ACTUAL VALUE units, not a range-normalized fraction — a real bug
+  // in an earlier version mixed a dimensionless pull term with a range-
+  // scaled jitter term, which made pull's restoring force comically weak
+  // relative to jitter (off by roughly a factor of `range`) and let the
+  // walk get stuck oscillating right at a clamped edge for several ticks
+  // in a row — reading as an unrealistic flat "pinned at exactly 0"
+  // instead of the "closer to real data" wander this whole thing exists
+  // for. Proportional restoring force (like a spring toward the range's
+  // midpoint), consistent units throughout, fixes it.
+  const pull = (mid - st.value) * 0.004;
+  let jitter = (Math.random() - 0.5) * range * 0.0025;
+  // Roughly one bigger "event" kick per metric every ~15s on average (200ms
+  // tick, 1-in-75 chance per tick) — what actually reads as "less
+  // consistent" instead of uniformly smooth drift the whole time.
+  if (Math.random() < 1/75) jitter += (Math.random() - 0.5) * range * 0.025;
+  // velocity decays each tick (drag) rather than being reset outright —
+  // this is what makes movement read as slow momentum, not jitter: a
+  // random nudge influences the NEXT several ticks' direction too, not
+  // just the one it landed on.
+  st.velocity = st.velocity * 0.93 + pull + jitter;
+  st.value += st.velocity;
+  // Hard clamp as a safety net (mean-reversion makes this rare) — never
+  // actually leave the metric's real-world range. A fixed, decent-sized
+  // kick away from the edge (well above typical jitter magnitude) so it
+  // reliably escapes within a tick or two instead of getting stuck
+  // bouncing right at the boundary.
+  if (st.value < lo) { st.value = lo; st.velocity = range * 0.01; }
+  if (st.value > hi) { st.value = hi; st.velocity = -range * 0.01; }
+  return st.value;
 }
 
 function genTestPacket() {
   testSeq++;
   const d = { seq: testSeq, received_at: Date.now() };
-  let phase = 0;
   Object.keys(METRICS).forEach(k => {
     const [lo, hi] = METRICS[k].range;
-    d[k] = wave(lo, hi, 6000 + phase * 900, phase);
-    phase++;
+    d[k] = stepTestWalk(k, lo, hi);
   });
   // Keep GPS/IMU/ESC flagged valid so the Raceline fix indicator, IMU page,
   // and ESC mode/state all light up too, not just the chartable METRICS.
