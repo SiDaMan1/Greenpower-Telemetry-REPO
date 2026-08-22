@@ -1102,6 +1102,22 @@
     </div>
   </div>
 
+  <!-- Exit-app confirmation — see the JS "EXIT CONFIRMATION" section for
+       how the Android back-gesture/back-button gets intercepted to show
+       this instead of immediately closing the installed WebAPK. Reuses
+       the exact same .confirm-modal/.confirm-modal-backdrop markup/CSS as
+       the download confirmation above, just a second independent instance
+       — no reason to build a separate look for a second yes/no dialog. -->
+  <div class="confirm-modal-backdrop" id="exit-confirm-backdrop"></div>
+  <div class="confirm-modal" id="exit-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="exit-confirm-title">
+    <div class="confirm-modal-title" id="exit-confirm-title">Close the App?</div>
+    <div class="confirm-modal-body">Are you sure you want to close Greenpower Telemetry?</div>
+    <div class="confirm-modal-actions">
+      <button class="btn btn-sm" id="exit-confirm-cancel">Cancel</button>
+      <button class="btn btn-sm btn-accent" id="exit-confirm-go">Close App</button>
+    </div>
+  </div>
+
   <div id="tabs">
     <div class="tab active" data-page="overview"><span class="tab-icon icon" data-icon="overview"></span>Overview</div>
     <div class="tab" data-page="speed"><span class="tab-icon icon" data-icon="speed"></span>Speed</div>
@@ -2370,6 +2386,51 @@ document.getElementById('download-agent-btn').addEventListener('click', showDown
 document.getElementById('download-confirm-cancel').addEventListener('click', hideDownloadConfirm);
 document.getElementById('download-confirm-backdrop').addEventListener('click', hideDownloadConfirm);
 document.getElementById('download-confirm-go').addEventListener('click', hideDownloadConfirm);
+
+// ── EXIT CONFIRMATION (Android back gesture/button) ──────────────────────────
+// This is a single-page app with no real navigation (tabs are pure JS
+// class-toggling, no URL/hash changes) — so the browser's own history stack
+// only ever has ONE entry from a plain page load. On an installed Android
+// WebAPK, swiping back (or pressing the system back button) from that one
+// entry has nothing left to go back TO, so Android just closes the app
+// outright, with no chance to intercept it. The standard fix (used by most
+// "confirm before exit" PWAs) is to keep a spare history entry sitting in
+// front of the real one at all times: pushState() adds it once on load,
+// and every 'popstate' (fired the instant a back gesture consumes it)
+// immediately pushes a fresh replacement AND shows this confirmation —
+// consuming the gesture rather than letting it fall through to a real
+// exit. Net effect: the guard entry count never actually drops, so the
+// user can never swipe past it without going through this dialog first.
+// On confirm, `awaitingExit` skips the guard-replenish/re-show logic so a
+// programmatic go(-2) (undo the just-consumed guard AND the original real
+// entry, in one shot) is free to actually exit for real — with nothing
+// left to intercept it, Android closes the app normally.
+// window.history, NOT bare `history` — this script already has a
+// top-level `const history = {}` (the live-chart data buffer, see
+// CLAUDE.md), which shadows the global History object for any bare
+// `history` reference anywhere in this same script.
+window.history.pushState({ gpExitGuard:true }, '');
+let awaitingExit = false;
+function showExitConfirm() {
+  document.getElementById('exit-confirm-backdrop').classList.add('show');
+  document.getElementById('exit-confirm-modal').classList.add('show');
+}
+function hideExitConfirm() {
+  document.getElementById('exit-confirm-backdrop').classList.remove('show');
+  document.getElementById('exit-confirm-modal').classList.remove('show');
+}
+window.addEventListener('popstate', () => {
+  if (awaitingExit) return;   // user already confirmed — let this one actually go through
+  window.history.pushState({ gpExitGuard:true }, '');
+  showExitConfirm();
+});
+document.getElementById('exit-confirm-cancel').addEventListener('click', hideExitConfirm);
+document.getElementById('exit-confirm-backdrop').addEventListener('click', hideExitConfirm);
+document.getElementById('exit-confirm-go').addEventListener('click', () => {
+  hideExitConfirm();
+  awaitingExit = true;
+  window.history.go(-2);
+});
 
 // ── SESSIONS (persistent history, from Postgres via server.js) ──────────────
 // Unlike everything else on this page, session data is NOT live-polled —
