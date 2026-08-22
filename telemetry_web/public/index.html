@@ -103,11 +103,19 @@
      in below. Keeps mobile Safari/Chrome's press-and-hold text-selection
      bubble from appearing on random UI chrome while still letting someone
      copy an actual number (a speed reading, a raw packet line, a session
-     timestamp) if they want to. */
-  body { -webkit-user-select:none; user-select:none; }
+     timestamp) if they want to.
+     -webkit-touch-callout is a SEPARATE control from user-select on iOS
+     Safari specifically — user-select:none alone stops the text getting
+     highlighted, but iOS still pops its long-press "Copy/Look Up/Share"
+     callout menu on a long-press regardless, since that menu isn't gated
+     by selection at all there. Both have to be set together (and both
+     re-enabled together below) or a long-press on non-data text still
+     produces a working way to copy it on iOS even though nothing visibly
+     highlights first. */
+  body { -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .stat-value, .stat-unit, .dedicated-value, .dedicated-unit,
   #raw-log, #sessions-table td, #esc-mode, #esc-state {
-    -webkit-user-select:text; user-select:text;
+    -webkit-user-select:text; user-select:text; -webkit-touch-callout:default;
   }
 
   /* Safe-area padding (notch / status bar) at the top only — html/body's own
@@ -370,6 +378,13 @@
   .settings-card-desc { font-size:12px; color:var(--muted); line-height:1.5; max-width:420px; }
   .settings-card-control { flex-shrink:0; }
   .settings-section-gap { height:2px; }
+  /* Overview Boxes Per Row and Haptics only mean anything on the mobile
+     layout (desktop's Overview always shows the full chart grid, never the
+     boxes-per-row stat tiles; desktop haptics is a no-op device-wise
+     anyway) — hidden here, turned back on inside the existing
+     max-width:860px block below. Default Time Range and Test Mode stay
+     visible on both, since both are meaningful desktop settings too. */
+  .settings-mobile-only { display:none; }
 
   /* OneUI-style toggle switch: pill track, circular thumb, gradient fill
      when on (matches the accent gradient already used for active tabs/
@@ -394,20 +409,31 @@
 
   /* OneUI-style slider: thin filled track (accent up to the thumb, dim
      past it — computed live via a --fill custom property from JS, since
-     a plain <input type=range> can't do a two-tone track from CSS alone)
-     with a larger circular thumb than the browser default. */
-  .oui-slider-row { display:flex; align-items:center; gap:12px; }
-  .oui-slider { -webkit-appearance:none; appearance:none; flex:1; height:6px; border-radius:3px; outline:none;
+     a plain <input type=range> can't do a two-tone track from CSS alone).
+     Track is deliberately thick (14px) — OneUI 8.5's actual sliders read
+     as a bold filled bar with a comparatively small thumb resting on top,
+     not a thin line with a big knob (the original 6px/22px pairing here
+     read more like a stock Material slider). Thumb sized down to match
+     (18px, was 22px). */
+  /* Horizontal padding here equals the thumb's own radius (9px, half of
+     its 18px width) — native range inputs generally let the thumb's
+     CENTER (not its edge) travel the full 0%/100% of the track, so
+     without this the thumb pokes half its own width out past the track's
+     ends, which read as spilling over the settings card's border/padding
+     at the min/max positions. The padding gives it that same 9px of room
+     to sit fully inside instead. */
+  .oui-slider-row { display:flex; align-items:center; gap:12px; padding:0 9px; }
+  .oui-slider { -webkit-appearance:none; appearance:none; flex:1; height:14px; border-radius:7px; outline:none;
     background:linear-gradient(to right, var(--accent) var(--fill,0%), var(--accent2) var(--fill,0%), rgba(255,255,255,.1) var(--fill,0%));
     cursor:pointer; }
-  .oui-slider::-webkit-slider-thumb { -webkit-appearance:none; width:22px; height:22px; border-radius:50%;
-    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 5px rgba(99,102,241,.16);
+  .oui-slider::-webkit-slider-thumb { -webkit-appearance:none; width:18px; height:18px; border-radius:50%;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 4px rgba(99,102,241,.16);
     cursor:pointer; transition:box-shadow .15s var(--ease), transform .15s var(--ease); margin-top:0; }
-  .oui-slider::-webkit-slider-thumb:active { transform:scale(1.15); box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 7px rgba(99,102,241,.22); }
-  .oui-slider::-moz-range-track { height:6px; border-radius:3px; background:transparent; }
-  .oui-slider::-moz-range-progress { height:6px; border-radius:3px; background:linear-gradient(to right, var(--accent), var(--accent2)); }
-  .oui-slider::-moz-range-thumb { width:22px; height:22px; border-radius:50%; background:#fff; border:none;
-    box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 5px rgba(99,102,241,.16); cursor:pointer; }
+  .oui-slider::-webkit-slider-thumb:active { transform:scale(1.15); box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 6px rgba(99,102,241,.22); }
+  .oui-slider::-moz-range-track { height:14px; border-radius:7px; background:transparent; }
+  .oui-slider::-moz-range-progress { height:14px; border-radius:7px; background:linear-gradient(to right, var(--accent), var(--accent2)); }
+  .oui-slider::-moz-range-thumb { width:18px; height:18px; border-radius:50%; background:#fff; border:none;
+    box-shadow:0 1px 4px rgba(0,0,0,.4), 0 0 0 4px rgba(99,102,241,.16); cursor:pointer; }
   .oui-slider-value { font-family:'Space Grotesk',sans-serif; font-size:14px; font-weight:700; color:var(--text);
     min-width:20px; text-align:center; flex-shrink:0; }
   .oui-slider-ticks { display:flex; justify-content:space-between; font-size:10px; color:var(--muted); margin-top:2px; padding:0 1px; }
@@ -865,6 +891,7 @@
     #tabs { display:none; }
     .mobile-navbar { display:flex; }
     #pages { padding-left:0; padding-bottom:calc(82px + env(safe-area-inset-bottom)); }
+    .settings-mobile-only { display:flex; }
 
     /* No graphs on mobile Overview — numbers only, per design. The bar's
        collapse toggle only makes sense when there's something below it to
@@ -907,11 +934,19 @@
       display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:4px;
     }
     #page-overview .stat-card::before { left:50%; top:auto; bottom:6px; width:22px; height:2px; transform:translateX(-50%); }
-    #page-overview .stat-label { font-size:12px; letter-spacing:1.6px; }
-    #page-overview .stat-value { font-size:clamp(22px,6.2vw,29px); }
-    #page-overview .stat-value.compact { font-size:clamp(17px,4.8vw,21px); }
-    #page-overview .stat-value.tiny { font-size:clamp(13px,3.6vw,15px); }
-    #page-overview .stat-unit { font-size:12px; }
+    /* All four sizes below scale off --ov-cols (1-3, set by the Overview
+       Boxes Per Row slider in Settings) via a "* 2 / var(--ov-cols)"
+       factor — the original fixed numbers here were tuned specifically
+       for 2 columns, so multiplying by 2/cols reproduces those exact
+       values at cols=2, scales UP for the wider single-column tile, and
+       scales DOWN for the narrower 3-column tile, each still bounded by a
+       min/max clamp so text never gets large enough to overflow a narrow
+       tile or small enough to be unreadable on a wide one. */
+    #page-overview .stat-label { font-size:clamp(9px, calc(3vw / var(--ov-cols,2) + 8px), 13px); letter-spacing:clamp(.8px, calc(1.6px * 2 / var(--ov-cols,2)), 2px); }
+    #page-overview .stat-value { font-size:clamp(16px, calc(6.2vw * 2 / var(--ov-cols,2)), 40px); }
+    #page-overview .stat-value.compact { font-size:clamp(13px, calc(4.8vw * 2 / var(--ov-cols,2)), 30px); }
+    #page-overview .stat-value.tiny { font-size:clamp(11px, calc(3.6vw * 2 / var(--ov-cols,2)), 22px); }
+    #page-overview .stat-unit { font-size:clamp(10px, calc(2vw / var(--ov-cols,2) + 8px), 12px); }
   }
 </style>
 </head>
@@ -1293,7 +1328,7 @@
         <div class="range-toggle-row" data-range-slot id="settings-default-range-row" style="margin-top:6px"></div>
       </div>
 
-      <div class="settings-card">
+      <div class="settings-card settings-mobile-only">
         <div class="settings-card-row">
           <div>
             <div class="settings-card-title">Overview Boxes Per Row</div>
@@ -1302,12 +1337,12 @@
           <div class="oui-slider-value" id="settings-ov-cols-value">2</div>
         </div>
         <div class="oui-slider-row" style="margin-top:10px">
-          <input type="range" class="oui-slider" id="settings-ov-cols-slider" min="2" max="4" step="1" value="2">
+          <input type="range" class="oui-slider" id="settings-ov-cols-slider" min="1" max="3" step="1" value="2">
         </div>
-        <div class="oui-slider-ticks"><span>2</span><span>3</span><span>4</span></div>
+        <div class="oui-slider-ticks"><span>1</span><span>2</span><span>3</span></div>
       </div>
 
-      <div class="settings-card">
+      <div class="settings-card settings-mobile-only">
         <div class="settings-card-row">
           <div>
             <div class="settings-card-title">Haptics</div>
@@ -1400,6 +1435,10 @@ function applyOverviewCols(n) {
 }
 let overviewCols = 2;
 try { overviewCols = parseInt(localStorage.getItem(OV_COLS_KEY), 10) || 2; } catch(e) {}
+// Clamp to the current slider's range (1-3) even if a value from an older
+// version of this setting (previously 2-4) is still sitting in
+// localStorage on a returning visitor's device.
+overviewCols = Math.min(3, Math.max(1, overviewCols));
 applyOverviewCols(overviewCols);
 
 // ── ICONS ─────────────────────────────────────────────────────────────────────
@@ -1888,11 +1927,23 @@ function initGpsMap() {
 }
 initGpsMap();
 
+// Padding/cap shared by every fitBounds() call below, so "zoom to fit the
+// trail" always leaves a visible margin around the actual line instead of
+// clipping it flush against the map edges, and never zooms in absurdly
+// close for a trail that's only a couple points long/close together.
+const GPS_FIT_OPTS = { padding:[30,30], maxZoom:19, animate:true, duration:0.5 };
+
 // Called on every valid new GPS fix (see poll()) — extends the trail and
-// keeps the current-position marker + map view following it. First fix ever
-// snaps the view in close (zoom 17); later updates just re-center without
-// changing zoom, so a user who's manually zoomed/panned to inspect the trail
-// doesn't get yanked back out every 200ms.
+// keeps the current-position marker + map view following it/auto-zoomed to
+// it. First fix ever snaps the view in close (zoom 17, nothing to fit yet
+// — a single point). After that, most updates just re-center without
+// changing zoom (a user who's manually zoomed/panned to inspect the trail
+// shouldn't get yanked back out every 200ms) — EXCEPT when the new point
+// has moved outside the map's current visible area, which re-fits the view
+// to the WHOLE trail collected so far instead of just panning to keep up.
+// That's what makes the map "auto zoom to the data": as the car covers
+// more ground than fits in the current view, the map zooms/pans out to
+// keep showing the full route rather than needing a manual re-zoom.
 function updateGpsMap(lat, lon) {
   if (!gpsMap) return;
   try {
@@ -1913,8 +1964,13 @@ function updateGpsMap(lat, lon) {
     // tab-switch handler catches the view up to the last known position the
     // moment the user actually arrives on this tab instead.
     if (activePage === 'raceline') {
-      if (wasFirstFix) gpsMap.setView([lat, lon], 17);
-      else gpsMap.panTo([lat, lon], { animate:true, duration:0.4 });
+      if (wasFirstFix) {
+        gpsMap.setView([lat, lon], 17);
+      } else if (gpsPolyline && gpsTrail.length > 1 && !gpsMap.getBounds().contains([lat, lon])) {
+        gpsMap.fitBounds(gpsPolyline.getBounds(), GPS_FIT_OPTS);
+      } else {
+        gpsMap.panTo([lat, lon], { animate:true, duration:0.4 });
+      }
     }
   } catch(e) { console.warn('GPS map update failed:', e); }
 }
@@ -1977,7 +2033,14 @@ document.querySelectorAll('.tab').forEach(t => {
       if (activePage==='raceline' && gpsMap) {
         setTimeout(() => {
           gpsMap.invalidateSize();
-          if (gpsHasFix && gpsMarker) gpsMap.setView(gpsMarker.getLatLng(), gpsMap.getZoom());
+          // Fit the WHOLE trail collected so far, not just re-center on the
+          // last point at whatever zoom the map happened to have — arriving
+          // on this tab should show the full route at a glance, same "auto
+          // zoom to the data" behavior updateGpsMap() does live (see its
+          // own comment) rather than a single-point view the user then has
+          // to manually zoom out from.
+          if (gpsHasFix && gpsPolyline && gpsTrail.length > 1) gpsMap.fitBounds(gpsPolyline.getBounds(), GPS_FIT_OPTS);
+          else if (gpsHasFix && gpsMarker) gpsMap.setView(gpsMarker.getLatLng(), gpsMap.getZoom());
         }, 0);
       }
       if (activePage==='sessions') loadSessions();
@@ -2668,7 +2731,6 @@ document.getElementById('settings-default-range-row').addEventListener('click', 
   const btn = e.target.closest('.range-toggle-btn');
   if (!btn) return;
   try { localStorage.setItem(DEFAULT_RANGE_STORAGE_KEY, btn.dataset.rangeKey); } catch(err) {}
-  vibrate(6);
 });
 
 // Overview Boxes Per Row slider — --fill (used by the .oui-slider CSS to
