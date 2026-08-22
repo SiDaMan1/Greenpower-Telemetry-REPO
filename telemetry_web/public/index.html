@@ -445,16 +445,20 @@
     transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
   /* The switch itself stays the same 50x30 size — instead of widening
      solid-color stops inside that fixed box (which was still clipped
-     to the track's own edges), the gradient now lives on a ::before
-     pseudo-element that's wider than the track (extends 10px past each
+     to the track's own edges), the gradient lives on a ::before
+     pseudo-element that's wider than the track (extends 5px past each
      side) and sits behind it, so the color genuinely bleeds out past
      the switch's own edges rather than just holding solid color right
-     up against them. The track's own background goes transparent so
-     the pseudo shows through; the thumb, painted after ::before in
-     DOM/paint order, stays on top. */
-  .oui-toggle input:checked ~ .oui-toggle-track { background:transparent; border-color:transparent; }
-  .oui-toggle input:checked ~ .oui-toggle-track::before { content:''; position:absolute; top:0; bottom:0; left:-10px; right:-10px;
-    border-radius:15px; background:linear-gradient(to right, var(--accent), var(--accent2)); }
+     up against them. The track gets `isolation:isolate` (its own
+     stacking context) specifically so `z-index:-1` on the pseudo is
+     contained to behind the track/thumb ONLY — without it, a negative
+     z-index would place the pseudo in the PARENT's stacking context
+     instead, risking it painting behind the row's own card background.
+     The track's own background goes transparent so the pseudo shows
+     through. */
+  .oui-toggle input:checked ~ .oui-toggle-track { background:transparent; border-color:transparent; isolation:isolate; }
+  .oui-toggle input:checked ~ .oui-toggle-track::before { content:''; position:absolute; top:0; bottom:0; left:-5px; right:-5px;
+    border-radius:15px; background:linear-gradient(to right, var(--accent), var(--accent2)); z-index:-1; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
      the thumb widens slightly toward whichever edge it's closer to
