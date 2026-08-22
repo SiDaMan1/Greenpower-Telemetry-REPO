@@ -1669,21 +1669,27 @@
           <div class="stat-card" data-ov-key="temp_f" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
           <div class="stat-card" data-ov-key="motor_rpm" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
           <div class="stat-card" data-ov-key="wheel_rpm" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
-          <div class="stat-card" data-ov-key="roll_deg" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value compact" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" data-ov-key="pitch_deg" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value compact" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" data-ov-key="yaw_deg" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value compact" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" data-ov-key="roll_deg" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" data-ov-key="pitch_deg" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" data-ov-key="yaw_deg" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
+          <!-- GPS is the one deliberate exception — it's not a single short
+               number, it's two lines (lat + lon) via `white-space:pre-line`
+               (see .stat-value.tiny's own CSS), which genuinely doesn't fit
+               at the same size as every other box without wrapping oddly or
+               overflowing. Every other Overview box now shares the same
+               plain .stat-value size — see the rule in CLAUDE.md. -->
           <div class="stat-card" data-ov-key="gps" style="--card-color:var(--gps)"><div class="stat-label">GPS</div><div class="stat-value tiny" id="ov-gps">NO FIX</div></div>
-          <div class="stat-card" data-ov-key="link" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value compact" id="ov-link">--</div></div>
+          <div class="stat-card" data-ov-key="link" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value" id="ov-link">--</div></div>
           <!-- Efficiency stats — derived (not raw METRICS fields, see the
                "EFFICIENCY / LAP TIMING" JS section), written by
                renderEfficiencyLive() alongside the Efficiency tab's own
                eff-* elements, same "write to both ov- and big-/eff-
                prefixed ids" pattern applyState() already uses for every
                real METRICS field. -->
-          <div class="stat-card" data-ov-key="eff-consumed" style="--card-color:var(--current)"><div class="stat-label">Consumed</div><div class="stat-value compact" id="ov-eff-consumed-wh">--</div><div class="stat-unit">Wh</div></div>
-          <div class="stat-card" data-ov-key="eff-remaining" style="--card-color:var(--accent3)"><div class="stat-label">Remaining</div><div class="stat-value compact" id="ov-eff-remaining-wh">--</div><div class="stat-unit">Wh</div></div>
-          <div class="stat-card" data-ov-key="eff-wh-per-mile" style="--card-color:var(--motorv)"><div class="stat-label">Efficiency</div><div class="stat-value compact" id="ov-eff-wh-per-mile">--</div><div class="stat-unit">Wh/mi</div></div>
-          <div class="stat-card" data-ov-key="seq" style="--card-color:#64748b"><div class="stat-label">Packet #</div><div class="stat-value compact" id="ov-seq">0</div></div>
+          <div class="stat-card" data-ov-key="eff-consumed" style="--card-color:var(--current)"><div class="stat-label">Consumed</div><div class="stat-value" id="ov-eff-consumed-wh">--</div><div class="stat-unit">Wh</div></div>
+          <div class="stat-card" data-ov-key="eff-remaining" style="--card-color:var(--accent3)"><div class="stat-label">Remaining</div><div class="stat-value" id="ov-eff-remaining-wh">--</div><div class="stat-unit">Wh</div></div>
+          <div class="stat-card" data-ov-key="eff-wh-per-mile" style="--card-color:var(--motorv)"><div class="stat-label">Efficiency</div><div class="stat-value" id="ov-eff-wh-per-mile">--</div><div class="stat-unit">Wh/mi</div></div>
+          <div class="stat-card" data-ov-key="seq" style="--card-color:#64748b"><div class="stat-label">Packet #</div><div class="stat-value" id="ov-seq">0</div></div>
         </div>
         </div>
       </div>
@@ -1708,7 +1714,7 @@
           <div class="mini-chart-card" data-metric="temp_f"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">TEMP (°F)</div><div class="chart-canvas-wrap"><canvas id="ovchart-temp_f"></canvas></div></div>
           <div class="mini-chart-card" data-metric="motor_rpm"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">MOTOR RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-motor_rpm"></canvas></div></div>
           <div class="mini-chart-card" data-metric="wheel_rpm"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">WHEEL RPM</div><div class="chart-canvas-wrap"><canvas id="ovchart-wheel_rpm"></canvas></div></div>
-          <div class="mini-chart-card" data-metric="rssi"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">RSSI (dBm)</div><div class="chart-canvas-wrap"><canvas id="ovchart-rssi"></canvas></div></div>
+          <div class="mini-chart-card" data-metric="power_w"><button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">POWER (W)</div><div class="chart-canvas-wrap"><canvas id="ovchart-power_w"></canvas></div></div>
           <div class="ov-empty-msg" id="overview-empty" style="display:none">All charts hidden.<button class="btn btn-sm" id="ov-empty-customize"><span class="icon" data-icon="settings"></span>Customize</button></div>
         </div>
       </div>
@@ -2063,7 +2069,25 @@ const METRICS = {
   esc_live_pct:     {label:'ESC Live',     unit:'%', color:'var(--esclive)', dec:1, range:[0,100], multiDefault:true},
   esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},
 };
-const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','rssi'];
+// 'power_w' replaced 'rssi' per explicit request — it's the one entry here
+// that ISN'T a real METRICS key (it's derived, batt_volt*current_a, same as
+// the Efficiency tab's own Power chart) — see ovMiniMeta()/ovMiniValues()
+// just below, which every site that reads METRICS[k] directly for a mini-
+// chart had to be routed through instead once this stopped being true for
+// every entry in this list.
+const OVERVIEW_MINI = ['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','power_w'];
+// {color,label} for a mini-chart key — METRICS[k] for every real field,
+// hardcoded for 'power_w' since it has no METRICS entry to read from (see
+// OVERVIEW_MINI's own comment, and historyPowerW's comment in the STATE/
+// HISTORY section for why it's derived rather than a METRICS field).
+function ovMiniMeta(k) { return k === 'power_w' ? { color:'var(--current)', label:'Power' } : METRICS[k]; }
+// The values array backing a mini-chart's y data — history[k] for a real
+// METRICS field, historyPowerW for 'power_w'. Referencing historyPowerW
+// here (declared later, in STATE/HISTORY) is safe: this function is only
+// ever CALLED from applyHistory(), and applyHistory()'s own first call
+// happens well after historyPowerW's declaration has run — see that
+// section's own comment on this exact hoisting/TDZ distinction.
+function ovMiniValues(k) { return k === 'power_w' ? historyPowerW : history[k]; }
 // Checked once at load, not re-checked on resize/rotation — the x-axis tick
 // density below is derived from this, and mobile users essentially never
 // rotate/resize this page mid-session.
@@ -2429,7 +2453,11 @@ function safeUpdateChart(chart, times, values, xMin, xMax) {
 
 // ── BUILD CHARTS FROM THE METRIC REGISTRY ───────────────────────────────────
 const ovCharts = {};
-OVERVIEW_MINI.forEach(k => { ovCharts[k] = safeChart('ovchart-'+k, METRICS[k].color, METRICS[k].label, false, k); });
+// metricKey (5th arg, seeds the y-axis suggestedMin/Max from METRICS[...].range)
+// is only passed for real METRICS keys — 'power_w' has no such range to seed
+// from, so it's passed null and just auto-scales like the dedicated
+// Efficiency-tab Power chart already does.
+OVERVIEW_MINI.forEach(k => { const m = ovMiniMeta(k); ovCharts[k] = safeChart('ovchart-'+k, m.color, m.label, false, METRICS[k] ? k : null); });
 
 const bigCharts = {};
 Object.keys(METRICS).forEach(k => { bigCharts[k] = safeChart('chart-'+k, METRICS[k].color, METRICS[k].label, true, k); });
@@ -2526,7 +2554,7 @@ function renderCustomizePanel() {
   const list = document.getElementById('chart-customize-list');
   if (!list) return;
   list.innerHTML = OVERVIEW_MINI.map(k => {
-    const m = METRICS[k];
+    const m = ovMiniMeta(k);
     return `<label class="customize-row">
       <input type="checkbox" data-key="${k}" ${ovVisible[k] ? 'checked' : ''}>
       <span class="customize-swatch" style="background:${resolveColor(m.color)}"></span>
@@ -4248,7 +4276,7 @@ function applyHistory() {
 
     OVERVIEW_MINI.forEach(k => {
       const ch = ovCharts[k];
-      if (chartIsVisible(ch)) safeUpdateChart(ch, winTimes, history[k].slice(startIdx), xMin, xMax);
+      if (chartIsVisible(ch)) safeUpdateChart(ch, winTimes, ovMiniValues(k).slice(startIdx), xMin, xMax);
     });
     Object.keys(bigCharts).forEach(k => {
       const ch = bigCharts[k];
