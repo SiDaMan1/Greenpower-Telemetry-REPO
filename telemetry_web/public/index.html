@@ -443,25 +443,12 @@
   .oui-toggle-thumb { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4);
     transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
-  /* REWORKED from two earlier attempts that both tried to hide a soft
-     BLEND zone exactly under the thumb (first roughly, then pixel-
-     precisely) — both still left a visible "razor thin" mismatch line.
-     The real problem was the approach itself, not the precision: any
-     gradient with an actual color BLEND is rendered across real, if
-     tiny, sub-pixel distance, and that blend's rendered edge doesn't
-     reliably land in exactly the same sub-pixel position as the thumb's
-     own rendered edge (anti-aliasing, GPU compositing rounding, the
-     thumb's own box-shadow blur) — no amount of stop-percentage math can
-     fully guarantee two independently-rendered edges line up to the
-     sub-pixel every time.
-     This version has NO blend at all: `accent 0% 50%, accent2 50% 100%`
-     is the "double position" hard-edge gradient syntax — both colors
-     stop at the identical 50% position, so there is zero distance for
-     the browser to interpolate across. Every visible pixel is
-     unambiguously, structurally either 100% accent or 100% accent2 —
-     there is no intermediate color for a rendering discrepancy to ever
-     expose, regardless of exactly where the thumb's own edge lands. */
-  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent), var(--accent2)); border-color:transparent; }
+  /* Smooth blend across the whole 50px track, with a few px of solid
+     color held at each end (0%-8% pure accent, 92%-100% pure accent2)
+     before the blend starts — keeps both ends reading as clearly their
+     own color instead of the blend starting the instant it touches the
+     edge. */
+  .oui-toggle input:checked ~ .oui-toggle-track { background:linear-gradient(to right, var(--accent) 0%, var(--accent) 8%, var(--accent2) 92%, var(--accent2) 100%); border-color:transparent; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
      the thumb widens slightly toward whichever edge it's closer to
