@@ -877,13 +877,26 @@
     .install-fab, .install-popover { display:none !important; }
   }
 
-  /* ── App update banner ─────────────────────────────────────────────
+  /* ── App update banner (REQUIRED — blocks the app until reloaded) ────
      Shown on BOTH desktop and mobile (unlike the install prompt) — a
-     stale build matters regardless of which layout you're using. Uses
-     opacity/pointer-events for its closed state, not display:none, same
-     reasoning as .mobile-navsheet's own rule (a real close animation
-     needs a transitionable closed state). top: not bottom — the mobile
-     bottom nav bar already owns that real estate. */
+     stale build matters regardless of which layout you're using.
+     Deliberately not dismissible: `.update-banner-backdrop` is a full-
+     screen, non-transparent-enough-to-ignore dimming layer that sits
+     UNDER the banner but ABOVE everything else (including the mobile nav
+     bar/sheet, z-index 14/15 — this needs to outrank those too, not just
+     normal page content) and, critically, still carries pointer-events
+     even in its own "closed" state transition so nothing behind it is
+     clickable while an update is pending. There is no dismiss button —
+     Reload is the only exit. Uses opacity/pointer-events for its
+     closed state, not display:none, same reasoning as .mobile-navsheet's
+     own rule (a real appear/close animation needs a transitionable closed
+     state) — though in practice this is meant to never really "close"
+     again once shown short of the reload actually happening. */
+  .update-banner-backdrop {
+    position:fixed; inset:0; z-index:59; background:rgba(5,6,10,.72); backdrop-filter:blur(2px);
+    opacity:0; pointer-events:none; transition:opacity .25s var(--ease);
+  }
+  .update-banner-backdrop.show { opacity:1; pointer-events:auto; }
   .update-banner {
     position:fixed; top:calc(12px + env(safe-area-inset-top)); left:50%; z-index:60;
     display:flex; align-items:center; gap:10px; width:min(92vw, 420px);
@@ -895,11 +908,6 @@
   .update-banner.show { opacity:1; pointer-events:auto; transform:translate(-50%, 0); }
   .update-banner .icon { width:16px; height:16px; color:var(--accent2); flex-shrink:0; }
   .update-banner-text { flex:1; }
-  .update-banner-dismiss { background:none; border:none; color:var(--muted); cursor:pointer;
-    display:flex; align-items:center; justify-content:center; padding:4px; flex-shrink:0; border-radius:6px;
-    transition:background .12s var(--ease), color .12s var(--ease); }
-  .update-banner-dismiss:hover { color:var(--text); background:rgba(255,255,255,.06); }
-  .update-banner-dismiss .icon { width:14px; height:14px; color:inherit; }
 
   /* ── Download-installer confirmation modal ────────────────────────────
      #download-agent-btn is already desktop-only (display:none inside the
@@ -1210,17 +1218,16 @@
     <div class="landscape-lock-desc">This dashboard's mobile layout is portrait-only — turn your device back to keep using it.</div>
   </div>
 
-  <!-- App update banner — see the JS "APP UPDATE CHECK" section for how
-       this gets shown. Closed state uses opacity/pointer-events, not
-       display:none, for the same reason .mobile-navsheet does (see that
-       rule) — this needs a real close/dismiss transition too. -->
+  <!-- App update banner — REQUIRED, not dismissible. See the JS "APP
+       UPDATE CHECK" section for how this gets shown. The backdrop blocks
+       interaction with everything else on the page (see its own CSS
+       comment for why it has to outrank the mobile nav bar/sheet too) —
+       Reload is the only way out, on purpose, per explicit request. -->
+  <div class="update-banner-backdrop" id="update-banner-backdrop"></div>
   <div class="update-banner" id="update-banner">
     <span class="icon" data-icon="refresh"></span>
-    <span class="update-banner-text">A new version of this dashboard is available.</span>
+    <span class="update-banner-text">A new version of this dashboard is available. Reload to continue.</span>
     <button class="btn btn-sm btn-accent" id="update-banner-reload">Reload</button>
-    <button class="update-banner-dismiss" id="update-banner-dismiss" aria-label="Dismiss">
-      <span class="icon" data-icon="x"></span>
-    </button>
   </div>
 
   <div id="pages">
@@ -2317,21 +2324,26 @@ document.addEventListener('click', (e) => {
 // reloading, during which a real deploy could land. This periodically
 // re-checks /api/version (a content hash of index.html computed server-
 // side — see server.js — not a hand-maintained number, so there's nothing
-// to keep in sync) and prompts a reload if it ever changes mid-session.
+// to keep in sync) and, per explicit request, REQUIRES a reload once it
+// changes mid-session — not just a dismissible notice. showUpdateRequired()
+// shows both the banner and its full-screen blocking backdrop together and
+// is written to be safely callable more than once (a later poll tick
+// firing again while it's already showing is a no-op, not a problem).
 let appVersion = null;
+function showUpdateRequired() {
+  document.getElementById('update-banner').classList.add('show');
+  document.getElementById('update-banner-backdrop').classList.add('show');
+}
 async function checkAppVersion() {
   try {
     const res = await fetch('/api/version', { cache:'no-store' });
     const d = await res.json();
     if (!d.version) return;
     if (appVersion === null) { appVersion = d.version; return; }  // first check just establishes the baseline
-    if (d.version !== appVersion) document.getElementById('update-banner').classList.add('show');
+    if (d.version !== appVersion) showUpdateRequired();
   } catch (e) { /* offline/unreachable — skip, the next interval tries again */ }
 }
 document.getElementById('update-banner-reload').addEventListener('click', () => location.reload());
-document.getElementById('update-banner-dismiss').addEventListener('click', () => {
-  document.getElementById('update-banner').classList.remove('show');
-});
 checkAppVersion();
 setInterval(checkAppVersion, 5 * 60 * 1000);   // 5 min — a stale build isn't urgent, no need to poll aggressively
 // Re-check the moment the app is actually looked at again, not just on a
