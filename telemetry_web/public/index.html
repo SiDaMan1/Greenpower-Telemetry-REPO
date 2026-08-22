@@ -603,9 +603,25 @@
      view) reuses this exact table style instead of a second hand-copied
      block. #sessions-table-wrap/#sessions-table keep their IDs too (JS
      and the COPYABLE_SELECTOR rule below still reference them directly),
-     they just ALSO carry the class now. */
+     they just ALSO carry the class now.
+     flex-shrink:0 is required, not cosmetic — a real bug found on the
+     Raceline tab's mobile Lap Timing table (collapsed to ~2px tall,
+     effectively invisible, even with real rows in it). Per the CSS
+     Flexbox spec, a flex item's AUTOMATIC minimum size (what stops
+     flex-shrink from crushing it below its own content) is its content
+     size ONLY when `overflow:visible` — for any other `overflow` value
+     (this element sets `auto hidden`, needed for the scroll behavior
+     itself), the automatic minimum drops to 0. In a flex COLUMN with more
+     content than fits (`#page-raceline` on a short mobile viewport, once
+     `.raceline-top-row` above it claims a `flex-shrink:0`-protected 50vh),
+     every child WITHOUT the same protection gets squeezed toward its
+     automatic minimum first — and for an `overflow`-bearing element like
+     this, that minimum is 0, not "as small as its actual rows." The page
+     itself already scrolls (`.page{overflow-y:auto}`) to show what doesn't
+     fit — this table is meant to always be fully sized, never invisibly
+     crushed to make room. */
   #sessions-table-wrap, .data-table-wrap { overflow:auto hidden; -webkit-overflow-scrolling:touch; border-radius:var(--radius);
-    border:1px solid var(--border); background:var(--panel); }
+    border:1px solid var(--border); background:var(--panel); flex-shrink:0; }
   #sessions-table, .data-table { width:100%; border-collapse:collapse; font-family:'Share Tech Mono',monospace; font-size:12px; min-width:520px; }
   #sessions-table thead tr, .data-table thead tr { text-align:left; color:var(--muted); border-bottom:1px solid var(--border); }
   #sessions-table th, .data-table th { padding:10px 12px; font-weight:600; }
@@ -712,6 +728,16 @@
     .chart-row { grid-template-columns:1fr !important; }
     .dedicated-big-card { padding:16px 18px; }
     .chart-card { min-height:200px; }
+    /* Efficiency's Power chart specifically, on mobile — per explicit
+       request to make it bigger. `!important` is required (not just a
+       higher-specificity selector) because the chart-card's own inline
+       style sets `min-height:0` (needed on desktop — see .chart-canvas-wrap's
+       own min-height:0 comment on why that's the deliberate flexbox-overflow
+       fix used throughout this file), and inline styles otherwise beat any
+       external rule regardless of selector specificity; only `!important`
+       in the stylesheet can win over that. Same technique already used just
+       above for `.chart-row`'s mobile `grid-template-columns`. */
+    .chart-card-tall { min-height:340px !important; }
 
     /* Dedicated-value pages: an even number of stat cards in one .big-row
        (RPM: 2, Link: 2, ESC's mode/state row: 2) becomes a 2-column grid of
@@ -1648,6 +1674,15 @@
           <div class="stat-card" data-ov-key="yaw_deg" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value compact" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
           <div class="stat-card" data-ov-key="gps" style="--card-color:var(--gps)"><div class="stat-label">GPS</div><div class="stat-value tiny" id="ov-gps">NO FIX</div></div>
           <div class="stat-card" data-ov-key="link" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value compact" id="ov-link">--</div></div>
+          <!-- Efficiency stats — derived (not raw METRICS fields, see the
+               "EFFICIENCY / LAP TIMING" JS section), written by
+               renderEfficiencyLive() alongside the Efficiency tab's own
+               eff-* elements, same "write to both ov- and big-/eff-
+               prefixed ids" pattern applyState() already uses for every
+               real METRICS field. -->
+          <div class="stat-card" data-ov-key="eff-consumed" style="--card-color:var(--current)"><div class="stat-label">Consumed</div><div class="stat-value compact" id="ov-eff-consumed-wh">--</div><div class="stat-unit">Wh</div></div>
+          <div class="stat-card" data-ov-key="eff-remaining" style="--card-color:var(--accent3)"><div class="stat-label">Remaining</div><div class="stat-value compact" id="ov-eff-remaining-wh">--</div><div class="stat-unit">Wh</div></div>
+          <div class="stat-card" data-ov-key="eff-wh-per-mile" style="--card-color:var(--motorv)"><div class="stat-label">Efficiency</div><div class="stat-value compact" id="ov-eff-wh-per-mile">--</div><div class="stat-unit">Wh/mi</div></div>
           <div class="stat-card" data-ov-key="seq" style="--card-color:#64748b"><div class="stat-label">Packet #</div><div class="stat-value compact" id="ov-seq">0</div></div>
         </div>
         </div>
@@ -1719,7 +1754,7 @@
         <div class="dedicated-big-card"><div><div class="dedicated-label">Est. Range</div><div class="dedicated-value size-md" id="eff-range-mi" style="color:var(--speed)">--</div><div class="dedicated-unit">MI</div></div></div>
         <div class="dedicated-big-card"><div><div class="dedicated-label">Avg Power</div><div class="dedicated-value size-md" id="eff-avg-power-w">--</div><div class="dedicated-unit">WATTS</div></div></div>
       </div>
-      <div class="chart-card" style="flex:1;min-height:0"><div class="chart-canvas-wrap"><canvas id="chart-power_w"></canvas></div></div>
+      <div class="chart-card chart-card-tall" style="flex:1;min-height:0"><div class="chart-canvas-wrap"><canvas id="chart-power_w"></canvas></div></div>
     </div>
 
     <div id="page-temperature" class="page">
@@ -4023,6 +4058,16 @@ function renderEfficiencyLive() {
   setText('eff-distance-mi', distMi.toFixed(2));
   setText('eff-range-mi', rangeMi != null ? rangeMi.toFixed(1) : '--');
   setText('eff-avg-power-w', avgPowerW.toFixed(0));
+
+  // Same three numbers, also written to the Overview page's stat cards
+  // (desktop always shows them; mobile shows them if visible per
+  // OV_MOBILE_ITEMS/ovMobileVisible — see that section) — setValueText,
+  // not setText, to match every other Overview stat card's brief "value
+  // changed" flash (applyState() does the same ov-/big- double-write for
+  // every real METRICS field; this is the same pattern for a derived one).
+  setValueText('ov-eff-consumed-wh', liveConsumedWh.toFixed(1));
+  setValueText('ov-eff-remaining-wh', remainingWh.toFixed(1));
+  setValueText('ov-eff-wh-per-mile', whPerMile != null ? whPerMile.toFixed(0) : '--');
 }
 document.getElementById('efficiency-reset-btn')?.addEventListener('click', () => { resetLapTracking(); vibrate(10); });
 
@@ -4569,14 +4614,26 @@ const OV_MOBILE_ITEMS = [
   { key:'gps',        label:'GPS',        color:'var(--gps)' },
   { key:'link',       label:'Link',       color:'var(--rssi)' },
   { key:'seq',        label:'Packet #',   color:'#64748b' },
+  { key:'eff-consumed',    label:'Consumed Wh',   color:'var(--current)' },
+  { key:'eff-remaining',   label:'Remaining Wh',  color:'var(--accent3)' },
+  { key:'eff-wh-per-mile', label:'Efficiency',    color:'var(--motorv)' },
 ];
 const OV_MOBILE_VIS_KEY = 'gp_overview_mobile_visibility';
 let ovMobileVisible = {};
 // Default set (before any localStorage override) — deliberately not "all
-// 13 on": roll/pitch/yaw/GPS/link are the least-used numbers on a phone at
+// 16 on": roll/pitch/yaw/GPS/link are the least-used numbers on a phone at
 // a glance, so they start OFF, keeping the default mobile Overview to 8
 // boxes instead of a long scroll of everything.
-const OV_MOBILE_DEFAULT_ON = new Set(['speed_mph','batt_volt','motor_volt','current_a','temp_f','motor_rpm','wheel_rpm','seq']);
+// Per explicit follow-up request, the 3 new Efficiency stats (Consumed/
+// Remaining/Wh-per-mile) were added to the default-ON set IN PLACE OF
+// motor_volt/motor_rpm/seq (Motor Volt, Motor RPM, Packet #) — those three
+// specifically named as the ones to swap out, not just "add 3 more" on top
+// of the original 8. All three removed-from-default items are still fully
+// present in OV_MOBILE_ITEMS/settings-ov-mobile-list, just start unchecked
+// — exactly the same "hidden by default, one tap to bring back" treatment
+// already used for Multi/Sessions/Raw in mobile nav (see that rule
+// elsewhere) — not removed from the code or the customize list.
+const OV_MOBILE_DEFAULT_ON = new Set(['speed_mph','batt_volt','current_a','temp_f','wheel_rpm','eff-consumed','eff-remaining','eff-wh-per-mile']);
 (function loadOvMobileVisibility() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(OV_MOBILE_VIS_KEY) || '{}'); } catch(err) {}
