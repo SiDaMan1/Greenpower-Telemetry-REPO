@@ -724,7 +724,15 @@
      whatever height the flex math produces, so it's a true square no
      matter the bar's exact pixel height. */
   .mobile-navbar-tab.mobile-navbar-tab-primary {
-    flex:0 0 auto; aspect-ratio:1/1; margin:7px 0; display:flex; align-items:center; justify-content:center;
+    /* padding:0 — a real bug: this element also carries the shared .tab
+       class (for the click-handler wiring), whose base rule sets
+       padding:8px 14px (tuned for a text pill, not an icon square) and
+       was never reset here. Left uncorrected, that asymmetric 14px
+       horizontal / 8px vertical padding visibly pushed the centered icon
+       off-balance — more empty space on the left/right than above/below
+       — inside this otherwise-square, otherwise-centered box. Flex
+       centering + the icon's own fixed 19px size is all this needs. */
+    flex:0 0 auto; aspect-ratio:1/1; margin:7px 0; padding:0; display:flex; align-items:center; justify-content:center;
     color:var(--muted); cursor:pointer; border-radius:13px; background:transparent;
     transition:background .18s var(--ease), color .18s var(--ease), transform .12s var(--ease);
   }
@@ -966,13 +974,31 @@
   }
   .onboarding-btn-primary:hover { filter:brightness(1.08); box-shadow:0 6px 20px -4px rgba(99,102,241,.6); }
   .onboarding-btn-primary:active { transform:scale(.97); }
-  .onboarding-btn-secondary { width:100%; justify-content:center; padding:9px; font-size:12.5px; color:var(--muted); }
+  /* Outline-only, never filled — these are Skip buttons had `.btn`'s own
+     base fill applied (a real bug: they were missing the base .btn class
+     entirely in markup, rendering as UNSTYLED native browser buttons —
+     the "grey" the user was reacting to — not a deliberate grey-fill
+     look). Transparent background + a subtle border reads as clearly
+     secondary/optional next to the solid-gradient primary button, without
+     the flat grey-box look of a plain filled button. */
+  .onboarding-btn-secondary {
+    width:100%; justify-content:center; padding:9px; font-size:12.5px; color:var(--muted);
+    background:transparent; border:1px solid var(--border);
+  }
+  .onboarding-btn-secondary:hover { color:var(--text); border-color:rgba(255,255,255,.18); background:rgba(255,255,255,.03); }
 
   .onboarding-password-row { width:100%; margin-top:6px; }
   .onboarding-password-input {
     width:100%; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:var(--radius-sm);
     padding:11px 13px; color:var(--text); font-size:14px; font-family:'Rajdhani',sans-serif; text-align:center;
     letter-spacing:1px; transition:border-color .15s var(--ease), background .15s var(--ease);
+    /* Visual dot-masking for a type="text" field standing in for
+       type="password" — see the input's own HTML comment for why. Chrome/
+       Safari/Edge (WebKit/Blink) support -webkit-text-security; Firefox
+       doesn't and just shows plain text there, an acceptable trade-off
+       given this was never real account security to begin with (the code
+       is already plainly readable in this file's own source). */
+    -webkit-text-security:disc;
   }
   .onboarding-password-input:focus { outline:none; border-color:rgba(14,165,233,.5); background:rgba(255,255,255,.07); }
   .onboarding-password-error {
@@ -1110,6 +1136,23 @@
        rule) so it can never affect desktop's Overview, which always shows
        the full stat bar regardless of this mobile-only preference. */
     #page-overview .stat-card.ov-mobile-hidden { display:none; }
+
+    /* Onboarding overlay covers the WHOLE viewport including where the
+       Android system nav bar sits — it needs the exact same measured
+       top/bottom system-bar-matching gradient #app uses (search this file
+       for "#app { background:linear-gradient" for the full reasoning/
+       measurements), not the flat var(--bg0) it had before, or its bottom
+       edge visibly mismatches the real nav bar the same way #app's flat
+       background used to. This has to live in THIS (later) mobile media
+       block, not the earlier one #app's own rule sits in — a real bug hit
+       building this: an identical-specificity unconditional
+       `.onboarding-overlay` rule sits further down in the stylesheet than
+       that earlier block, so putting the override there let the later
+       unconditional rule win the cascade regardless of viewport width,
+       silently keeping the flat background on mobile too. Putting it
+       here, after that unconditional rule's own position in the source,
+       fixes it — verified via getComputedStyle().backgroundImage. */
+    .onboarding-overlay { background:linear-gradient(to bottom, #0b0c11, #171719 80%); }
   }
 
   /* ── Landscape lock (mobile) ─────────────────────────────────────────
@@ -1260,9 +1303,6 @@
       <div class="tab mobile-navbar-tab" data-page="imu"><span class="icon" data-icon="imu"></span></div>
       <div class="tab mobile-navbar-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span></div>
       <div class="tab mobile-navbar-tab" data-page="link"><span class="icon" data-icon="link"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="multi"><span class="icon" data-icon="multi"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="sessions"><span class="icon" data-icon="sessions"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="raw"><span class="icon" data-icon="raw"></span></div>
       <div class="tab mobile-navbar-tab" data-page="settings"><span class="icon" data-icon="settings"></span></div>
     </div>
     <div class="mobile-navbar-divider"></div>
@@ -1271,20 +1311,20 @@
       <span class="icon expand-icon expand-icon-x" data-icon="x"></span>
     </button>
   </div>
-  <!-- Only tabs NOT already reachable from the fixed bottom bar
-       (.mobile-navbar-tab-primary: overview/speed/power/rpm/esc) show up
-       here — the sheet used to list all 12 tabs, duplicating the 5 already
-       one tap away in the bar itself. Settings has no primary-bar slot, so
-       it always lives here. -->
+  <!-- Sheet lists tabs NOT already reachable from the fixed bottom bar
+       (.mobile-navbar-tab-primary: overview/speed/power/rpm/esc) — MINUS
+       Multi/Sessions/Raw, which are removed from mobile navigation
+       entirely (desktop's #tabs still has all 12, untouched; these three
+       pages/tab elements still exist in the DOM and still work if reached
+       some other way, they're just not linked from anywhere in the mobile
+       nav UI anymore). Settings has no primary-bar slot, so it always
+       lives here. -->
   <div class="mobile-navsheet-backdrop" id="mobile-navsheet-backdrop"></div>
   <div class="mobile-navsheet" id="mobile-navsheet">
     <div class="tab mobile-navsheet-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span><span class="mobile-navsheet-tab-label">Temp</span></div>
     <div class="tab mobile-navsheet-tab" data-page="imu"><span class="icon" data-icon="imu"></span><span class="mobile-navsheet-tab-label">IMU</span></div>
     <div class="tab mobile-navsheet-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span><span class="mobile-navsheet-tab-label">Raceline</span></div>
     <div class="tab mobile-navsheet-tab" data-page="link"><span class="icon" data-icon="link"></span><span class="mobile-navsheet-tab-label">Link</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="multi"><span class="icon" data-icon="multi"></span><span class="mobile-navsheet-tab-label">Multi</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="sessions"><span class="icon" data-icon="sessions"></span><span class="mobile-navsheet-tab-label">Sessions</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="raw"><span class="icon" data-icon="raw"></span><span class="mobile-navsheet-tab-label">Raw</span></div>
     <div class="tab mobile-navsheet-tab" data-page="settings"><span class="icon" data-icon="settings"></span><span class="mobile-navsheet-tab-label">Settings</span></div>
   </div>
 
@@ -1323,7 +1363,16 @@
         <div class="onboarding-title">Access Required</div>
         <div class="onboarding-desc">Enter the access code to continue to the dashboard.</div>
         <div class="onboarding-password-row">
-          <input type="password" class="onboarding-password-input" id="onboarding-password-input" placeholder="Access code" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <!-- type="text" + CSS masking (-webkit-text-security, see the
+               .onboarding-password-input rule), NOT type="password" — a
+               real fix, not a style choice: Chrome's save-password
+               infrastructure keys specifically on input[type=password]
+               (autocomplete="off" is documented to NOT reliably suppress
+               it there), so an access-code field that isn't actually a
+               real account credential is better off never registering as
+               one in the first place. Visually identical (dots) either
+               way. -->
+          <input type="text" class="onboarding-password-input" id="onboarding-password-input" placeholder="Access code" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text">
         </div>
         <div class="onboarding-password-error" id="onboarding-password-error">Incorrect code — try again.</div>
         <button class="btn btn-sm onboarding-btn-primary" id="onboarding-password-submit">Continue</button>
@@ -1334,7 +1383,7 @@
         <div class="onboarding-title">Install the App</div>
         <div class="onboarding-desc" id="onboarding-install-desc">Add Greenpower Telemetry to your home screen for quick, full-screen access — optional, you can always do this later too.</div>
         <button class="btn btn-sm onboarding-btn-primary" id="onboarding-install-btn">Install</button>
-        <button class="onboarding-btn-secondary" id="onboarding-install-skip">Skip for now</button>
+        <button class="btn btn-sm onboarding-btn-secondary" id="onboarding-install-skip">Skip for now</button>
       </div>
 
       <div class="onboarding-step" id="onboarding-step-overview" data-step="overview">
@@ -1361,7 +1410,7 @@
         <div class="onboarding-title">Forwarding From the Receiver?</div>
         <div class="onboarding-desc">If you're at the track with the receiver plugged into this computer, install the receiver agent to relay live telemetry here. Not needed just to watch the dashboard.</div>
         <button class="btn btn-sm onboarding-btn-primary" id="onboarding-agent-btn">Download Agent</button>
-        <button class="onboarding-btn-secondary" id="onboarding-agent-skip">Skip for now</button>
+        <button class="btn btn-sm onboarding-btn-secondary" id="onboarding-agent-skip">Skip for now</button>
       </div>
 
       <div class="onboarding-step" id="onboarding-step-settings" data-step="settings">
@@ -1369,7 +1418,7 @@
         <div class="onboarding-title">Make It Yours</div>
         <div class="onboarding-desc">Settings has a few quick options — default chart time range, haptics, test mode, and (on mobile) which Overview boxes show and how many per row.</div>
         <button class="btn btn-sm onboarding-btn-primary" id="onboarding-settings-open">Open Settings</button>
-        <button class="onboarding-btn-secondary" id="onboarding-settings-skip">Skip — Go to Dashboard</button>
+        <button class="btn btn-sm onboarding-btn-secondary" id="onboarding-settings-skip">Skip — Go to Dashboard</button>
       </div>
 
       <div class="onboarding-dots" id="onboarding-dots"></div>
@@ -2709,6 +2758,17 @@ try {
 // for EVERY existing visitor too, not just genuinely new ones — nobody
 // has this key set yet.
 const ONBOARDING_KEY = 'gp_onboarding_v1_complete';
+// Progress markers used ONLY to survive the install-and-relaunch gap on
+// mobile (see the install step below) — the browser tab running THIS
+// onboarding flow has no way to know when/if the user later actually
+// opens the freshly-installed app (that's a separate window/process
+// entirely); these two flags are what let a fresh launch of the newly-
+// installed app pick back up instead of restarting from the password
+// step. localStorage is shared origin storage between the browser tab
+// and an installed WebAPK for the same site, so this does survive the
+// install.
+const ONBOARDING_PASSWORD_PASSED_KEY = 'gp_onboarding_password_passed';
+const ONBOARDING_INSTALL_DONE_KEY = 'gp_onboarding_install_done';
 const ONBOARDING_PASSWORD = 'SentinelRacing26!';
 const onboardingSteps = IS_MOBILE
   ? ['password', 'install', 'overview', 'settings']
@@ -2720,6 +2780,15 @@ function onboardingComplete() {
 }
 function setOnboardingComplete() {
   try { localStorage.setItem(ONBOARDING_KEY, '1'); } catch(e) {}
+}
+function onboardingFlag(key) {
+  try { return localStorage.getItem(key) === '1'; } catch(e) { return false; }
+}
+function setOnboardingFlag(key) {
+  try { localStorage.setItem(key, '1'); } catch(e) {}
+}
+function isRunningStandalone() {
+  return window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
 }
 function renderOnboardingDots() {
   document.getElementById('onboarding-dots').innerHTML = onboardingSteps
@@ -2751,6 +2820,7 @@ function submitOnboardingPassword() {
   const err = document.getElementById('onboarding-password-error');
   if (input.value === ONBOARDING_PASSWORD) {
     err.classList.remove('show');
+    setOnboardingFlag(ONBOARDING_PASSWORD_PASSED_KEY);
     advanceOnboarding();
   } else {
     err.classList.add('show');
@@ -2760,36 +2830,58 @@ function submitOnboardingPassword() {
 document.getElementById('onboarding-password-submit').addEventListener('click', submitOnboardingPassword);
 document.getElementById('onboarding-password-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitOnboardingPassword(); });
 
-// The install step's exact content/behavior mirrors the existing
-// install-fab/popover logic (same three cases: real beforeinstallprompt
-// available, iOS with no such API, or already running standalone) — see
-// checkIosInstallHint() above, which this deliberately parallels rather
-// than shares code with, since the two UIs (a floating popover vs. a
-// full-screen onboarding step) render differently enough that sharing
-// isn't worth the coupling.
+// The install step's content mirrors the existing install-fab/popover
+// logic (same three cases: real beforeinstallprompt available, iOS with
+// no such API, or already running standalone) — see checkIosInstallHint()
+// above, which this deliberately parallels rather than shares code with,
+// since the two UIs (a floating popover vs. a full-screen onboarding
+// step) render differently enough that sharing isn't worth the coupling.
+// The BEHAVIOR is different from a plain "prompt then advance" though —
+// per explicit request, this step waits for the install to actually
+// complete AND for the freshly-installed app to actually be opened
+// before moving on, rather than advancing the instant the OS install
+// dialog is dismissed. Concretely: accepting the prompt does NOT call
+// advanceOnboarding() here at all — it swaps this step into a "waiting"
+// state and marks ONBOARDING_INSTALL_DONE_KEY once the real `appinstalled`
+// event fires (confirms the OS finished installing, NOT that the user has
+// opened it yet — this tab genuinely cannot observe that, it's a separate
+// app process). The actual advance to the overview step happens on the
+// NEXT page load, in the init logic at the bottom of this section: if
+// that load is already running standalone (isRunningStandalone()) AND
+// both progress flags are set, onboarding starts at 'overview' (the 3rd
+// page) directly instead of the password step — which is what makes
+// opening the newly-installed icon feel like it "continues" rather than
+// starting over.
 (function setupOnboardingInstallStep() {
   const btn = document.getElementById('onboarding-install-btn');
+  const skipBtn = document.getElementById('onboarding-install-skip');
   const desc = document.getElementById('onboarding-install-desc');
   const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
-  if (isStandalone) {
+  if (isRunningStandalone()) {
     desc.textContent = "You're already using the installed app.";
     btn.style.display = 'none';
   } else if (isIos) {
+    // iOS has no beforeinstallprompt/appinstalled API at all — there is
+    // no way to detect a manual Add-to-Home-Screen completing, so the
+    // "wait for it" behavior below simply isn't possible here; skipping
+    // forward manually is the only path, same as before.
     desc.textContent = 'Tap the Share icon in your browser, then "Add to Home Screen".';
     btn.style.display = 'none';
   } else {
     btn.addEventListener('click', async () => {
-      if (deferredInstallPrompt) {
-        deferredInstallPrompt.prompt();
-        await deferredInstallPrompt.userChoice.catch(() => {});
-        deferredInstallPrompt = null;
-        hideInstallUi();   // the floating install-fab/popover would otherwise still offer this redundantly right after
-      }
-      advanceOnboarding();
+      if (!deferredInstallPrompt) { advanceOnboarding(); return; }   // no real prompt available — nothing to wait for
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice.catch(() => null);
+      deferredInstallPrompt = null;
+      hideInstallUi();   // the floating install-fab/popover would otherwise still offer this redundantly right after
+      if (!choice || choice.outcome !== 'accepted') return;   // dismissed/cancelled — stay on this step, they can retry or hit Skip
+      btn.style.display = 'none';
+      skipBtn.style.display = 'none';
+      desc.textContent = 'Installing… open Greenpower Telemetry from your home screen once it finishes to continue.';
     });
   }
 })();
+window.addEventListener('appinstalled', () => setOnboardingFlag(ONBOARDING_INSTALL_DONE_KEY));
 document.getElementById('onboarding-install-skip').addEventListener('click', advanceOnboarding);
 document.getElementById('onboarding-overview-next').addEventListener('click', advanceOnboarding);
 
@@ -2818,8 +2910,22 @@ document.getElementById('onboarding-settings-open').addEventListener('click', ()
 document.getElementById('onboarding-settings-skip').addEventListener('click', finishOnboarding);
 
 if (!onboardingComplete()) {
+  // Resume logic — see the install step's own comment for the full why.
+  // Freshly launching the just-installed app (standalone + both progress
+  // flags set) jumps straight to 'overview' (page 3), skipping password
+  // and install entirely. Reloading the SAME browser tab mid-flow after
+  // only the password step (not yet standalone) resumes at 'install'
+  // instead of restarting at the password prompt. Anything else (a
+  // genuinely fresh visitor) starts at step 0 as before.
+  if (IS_MOBILE && isRunningStandalone() && onboardingFlag(ONBOARDING_PASSWORD_PASSED_KEY) && onboardingFlag(ONBOARDING_INSTALL_DONE_KEY)) {
+    onboardingStepIndex = onboardingSteps.indexOf('overview');
+  } else if (onboardingFlag(ONBOARDING_PASSWORD_PASSED_KEY)) {
+    onboardingStepIndex = 1;
+  } else {
+    onboardingStepIndex = 0;
+  }
   document.getElementById('onboarding-overlay').classList.add('show');
-  showOnboardingStep(onboardingSteps[0]);
+  showOnboardingStep(onboardingSteps[onboardingStepIndex]);
 }
 
 // ── SESSIONS (persistent history, from Postgres via server.js) ──────────────
