@@ -443,21 +443,19 @@
   .oui-toggle-thumb { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%;
     background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.4);
     transition:transform .25s cubic-bezier(.34,1.4,.64,1), width .15s var(--ease), left .15s var(--ease); }
-  /* The switch itself stays the same 50x30 size — instead of widening
-     solid-color stops inside that fixed box (which was still clipped
-     to the track's own edges), the gradient lives on a ::before
-     pseudo-element that's wider than the track (extends 5px past each
-     side) and sits behind it, so the color genuinely bleeds out past
-     the switch's own edges rather than just holding solid color right
-     up against them. The track gets `isolation:isolate` (its own
-     stacking context) specifically so `z-index:-1` on the pseudo is
-     contained to behind the track/thumb ONLY — without it, a negative
-     z-index would place the pseudo in the PARENT's stacking context
-     instead, risking it painting behind the row's own card background.
-     The track's own background goes transparent so the pseudo shows
-     through. */
+  /* The switch itself stays the same 50x30 size. The gradient lives on
+     a ::before pseudo-element sitting behind the track rather than
+     directly on the track's own background — flush with the track's
+     edges now (no overhang either side, shrunk down from an earlier
+     5px bleed each way), i.e. even with the switch, not wider than it.
+     The track gets `isolation:isolate` (its own stacking context)
+     specifically so `z-index:-1` on the pseudo is contained to behind
+     the track/thumb ONLY — without it, a negative z-index would place
+     the pseudo in the PARENT's stacking context instead, risking it
+     painting behind the row's own card background. The track's own
+     background goes transparent so the pseudo shows through. */
   .oui-toggle input:checked ~ .oui-toggle-track { background:transparent; border-color:transparent; isolation:isolate; }
-  .oui-toggle input:checked ~ .oui-toggle-track::before { content:''; position:absolute; top:0; bottom:0; left:-5px; right:-5px;
+  .oui-toggle input:checked ~ .oui-toggle-track::before { content:''; position:absolute; top:0; bottom:0; left:0; right:0;
     border-radius:15px; background:linear-gradient(to right, var(--accent), var(--accent2)); z-index:-1; }
   .oui-toggle input:checked ~ .oui-toggle-track .oui-toggle-thumb { transform:translateX(20px); }
   /* Brief "squish" on press — a subtle nod to OneUI's toggle press feel —
