@@ -2878,10 +2878,28 @@ document.getElementById('download-confirm-go').addEventListener('click', hideDow
 // consuming the gesture rather than letting it fall through to a real
 // exit. Net effect: the guard entry count never actually drops, so the
 // user can never swipe past it without going through this dialog first.
-// On confirm, `awaitingExit` skips the guard-replenish/re-show logic so a
-// programmatic go(-2) (undo the just-consumed guard AND the original real
-// entry, in one shot) is free to actually exit for real — with nothing
-// left to intercept it, Android closes the app normally.
+// On confirm, two REAL sequential back() steps are needed, not one
+// programmatic jump — a genuine bug found and fixed here: the first
+// version called window.history.go(-2) in one shot, but at the moment
+// "Close App" is clicked there are only ever 2 entries in the stack
+// (the real page at index 0, the guard at index 1, current position 1),
+// so go(-2) targets index -1 — which doesn't exist. Per the History API
+// spec, go() to an out-of-range index is a silent no-op, which is exactly
+// why the button did nothing. history.go()/back() can only ever navigate
+// to an index that already EXISTS in the joint session history; there is
+// no API to "manufacture" going past the very start of it in one call.
+// The actual two-step sequence: click sets awaitingExit and calls
+// history.back() ONCE — a real, valid step (1→0) that consumes the
+// currently-shown guard, landing back on the real page. THAT popstate
+// firing is awaitingExit's only other job: call history.back() a SECOND
+// time from there. This second step is the one that actually matters —
+// going below index 0 (nothing left in this session's history at all,
+// the normal case for a WebAPK opened fresh from its home-screen icon)
+// is specifically what Chrome/Android finishes the Activity for on a
+// standalone/installed app, which is what actually closes it. awaitingExit
+// resets to false right before that second call so this can't loop if,
+// on some platform/context, that second back() doesn't close anything —
+// the user just lands on the real page normally instead of getting stuck.
 // window.history, NOT bare `history` — this script already has a
 // top-level `const history = {}` (the live-chart data buffer, see
 // CLAUDE.md), which shadows the global History object for any bare
@@ -2897,7 +2915,11 @@ function hideExitConfirm() {
   document.getElementById('exit-confirm-modal').classList.remove('show');
 }
 window.addEventListener('popstate', () => {
-  if (awaitingExit) return;   // user already confirmed — let this one actually go through
+  if (awaitingExit) {
+    awaitingExit = false;
+    window.history.back();   // the real exit-triggering step — see the comment above
+    return;
+  }
   window.history.pushState({ gpExitGuard:true }, '');
   showExitConfirm();
 });
@@ -2906,7 +2928,7 @@ document.getElementById('exit-confirm-backdrop').addEventListener('click', hideE
 document.getElementById('exit-confirm-go').addEventListener('click', () => {
   hideExitConfirm();
   awaitingExit = true;
-  window.history.go(-2);
+  window.history.back();
 });
 
 // ── CLEAR WEBSITE DATA ───────────────────────────────────────────────────────

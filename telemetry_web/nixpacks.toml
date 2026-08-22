@@ -1,0 +1,9 @@
+# Overrides Railway's auto-generated Nixpacks install step, which sets the
+# deprecated npm `production` config flag internally (still-current npm
+# versions warn "npm warn config production Use `--omit=dev` instead" for
+# this — cosmetic, not an actual failure, but noisy in every deploy log).
+# `npm ci --omit=dev` is the modern equivalent Nixpacks would otherwise be
+# reaching for the old way — functionally identical here regardless, since
+# package.json has no devDependencies to omit either way.
+[phases.install]
+cmds = ["npm ci --omit=dev"]
