@@ -85,10 +85,35 @@
     </DirectoryRef>
 
     <!-- Start Menu shortcut. This is also where the uninstaller entry's
-         icon/name comes from (Add/Remove Programs). Right-click on this
-         shortcut in the Start Menu also surfaces an "Uninstall" option
-         (routes through Windows Settings > Apps) — confirmed working, so
-         no separate explicit uninstall shortcut is needed here. -->
+         icon/name comes from (Add/Remove Programs).
+         A real ADVERTISED shortcut (Windows' actual mechanism for
+         recognizing a Start Menu entry as "belonging" to an installed MSI
+         product and offering a native right-click "Uninstall" — the
+         genuinely "normal Windows" behavior, not a second explicit
+         shortcut standing in for it) was tried here and hits a real,
+         confirmed WiX/MSI validation conflict, not a guess: ICE19/ICE50
+         require an advertised shortcut's component to use a FILE as its
+         KeyPath, but ICE38 requires every per-user-profile component
+         (which this is — INSTALLFOLDER lives under LocalAppDataFolder) to
+         use an HKCU REGISTRY value as its KeyPath instead. Those two rules
+         directly contradict each other for the same component, and moving
+         the shortcut's file into its own separate component doesn't help
+         — that new component is still per-user-profile and hits ICE38 the
+         same way. This is a genuine limitation of a no-admin, per-user MSI
+         specifically (confirmed via an actual failed build: LGHT0204
+         ICE19/ICE50), not something fixable by rearranging this file —
+         the only real ways around it are going per-machine (needs
+         admin/UAC, defeats the reason this is perUser to begin with) or
+         suppressing ICE validation (the shortcut would then not actually
+         resolve correctly at runtime, which is worse than not having it).
+         Plain Target="[#FileId]" shortcut, same as before — right-click on
+         it in the Start Menu will show "Open file location", not
+         "Uninstall"; Settings > Apps > Installed apps is the real,
+         reliable, always-available native uninstall path for this
+         install type. See telemetry_web/CLAUDE.md / this file's own
+         history for the earlier back-and-forth (a second explicit
+         "Uninstall" shortcut was tried and explicitly rejected — not
+         reintroducing that either). -->
     <DirectoryRef Id="ApplicationProgramsFolder">
       <Component Id="StartMenuShortcut" Guid="3e2a2f9d-7b7e-4b9d-9a2f-6e4d1a2c9b3e">
         <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="StartMenuShortcutInstalled" Type="integer" Value="1" KeyPath="yes" />

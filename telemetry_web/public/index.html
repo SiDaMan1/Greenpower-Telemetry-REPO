@@ -378,6 +378,13 @@
   .settings-card-desc { font-size:12px; color:var(--muted); line-height:1.5; max-width:420px; }
   .settings-card-control { flex-shrink:0; }
   .settings-section-gap { height:2px; }
+  /* Two-column checkbox list for the "Overview Boxes to Show" card — 13
+     items in one column would be a long scroll for what's a fairly
+     low-stakes preference; reuses .customize-row/.customize-swatch (the
+     same row styling the desktop Visible Charts panel already uses) so
+     this doesn't need its own separate look. */
+  .settings-ov-mobile-list { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; margin-top:8px; }
+  .settings-ov-mobile-list .customize-row { padding:6px 4px; }
   /* Overview Boxes Per Row and Haptics only mean anything on the mobile
      layout (desktop's Overview always shows the full chart grid, never the
      boxes-per-row stat tiles; desktop haptics is a no-op device-wise
@@ -452,7 +459,18 @@
   .big-row { display:grid; gap:12px; flex-shrink:0; }
   .chart-row { display:grid; gap:12px; flex:1; min-height:0; }
 
-  #gps-map { background:#070a10; border-radius:8px; width:100%; height:100%; }
+  /* isolation:isolate is the actual fix for a real bug: Leaflet's internal
+     panes (tile/overlay/shadow/marker/popup) use z-index values up to
+     ~700, and .leaflet-container itself doesn't create its own stacking
+     context by default — without isolation those high z-index panes
+     compete directly in the PAGE's root stacking context against other
+     fixed-position UI like .mobile-navbar (z-index:15) and the nav sheet,
+     and win, painting the map on top of the toolbar despite being much
+     earlier in the DOM. isolation:isolate confines every Leaflet z-index,
+     however high, to inside this element's own stacking context — only
+     this element's position in the page's stacking order (its own
+     z-index, effectively 0/auto here) matters to anything outside it. */
+  #gps-map { background:#070a10; border-radius:8px; width:100%; height:100%; isolation:isolate; }
   /* Leaflet's own default control chrome (zoom buttons, attribution strip)
      is white-on-white by default — restyle just enough to sit on this dark
      theme instead of looking like an unstyled foreign widget. */
@@ -947,6 +965,20 @@
     #page-overview .stat-value.compact { font-size:clamp(13px, calc(4.8vw * 2 / var(--ov-cols,2)), 30px); }
     #page-overview .stat-value.tiny { font-size:clamp(11px, calc(3.6vw * 2 / var(--ov-cols,2)), 22px); }
     #page-overview .stat-unit { font-size:clamp(10px, calc(2vw / var(--ov-cols,2) + 8px), 12px); }
+    /* At 3 columns the tile is short enough that the flex-column gap (4px,
+       shared by label/value/unit) reads as too much air specifically
+       between value and unit — nudged closer with a small negative margin.
+       :root.ov-cols-3 is toggled by applyOverviewCols() in JS (alongside
+       the --ov-cols custom property itself) since a plain CSS var can't be
+       branched on with a selector the way a class can. */
+    :root.ov-cols-3 #page-overview .stat-unit { margin-top:-3px; }
+
+    /* Mobile Overview Boxes panel in Settings — hides individual stat
+       tiles the user doesn't want cluttering the mobile Overview grid.
+       Scoped inside this SAME max-width:860px block (not a standalone
+       rule) so it can never affect desktop's Overview, which always shows
+       the full stat bar regardless of this mobile-only preference. */
+    #page-overview .stat-card.ov-mobile-hidden { display:none; }
   }
 </style>
 </head>
@@ -1108,19 +1140,19 @@
         </button>
         <div class="stats-row" id="overview-stats-row">
         <div class="stats-row-inner">
-          <div class="stat-card" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="ov-speed_mph">--</div><div class="stat-unit">MPH</div></div>
-          <div class="stat-card" style="--card-color:var(--battv)"><div class="stat-label">Battery</div><div class="stat-value" id="ov-batt_volt">--</div><div class="stat-unit">Volts</div></div>
-          <div class="stat-card" style="--card-color:var(--motorv)"><div class="stat-label">Motor Volt</div><div class="stat-value" id="ov-motor_volt">--</div><div class="stat-unit">Volts</div></div>
-          <div class="stat-card" style="--card-color:var(--current)"><div class="stat-label">Current</div><div class="stat-value" id="ov-current_a">--</div><div class="stat-unit">Amps</div></div>
-          <div class="stat-card" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
-          <div class="stat-card" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
-          <div class="stat-card" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
-          <div class="stat-card" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value compact" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value compact" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value compact" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" style="--card-color:var(--gps)"><div class="stat-label">GPS</div><div class="stat-value tiny" id="ov-gps">NO FIX</div></div>
-          <div class="stat-card" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value compact" id="ov-link">--</div></div>
-          <div class="stat-card" style="--card-color:#64748b"><div class="stat-label">Packet #</div><div class="stat-value compact" id="ov-seq">0</div></div>
+          <div class="stat-card" data-ov-key="speed_mph" style="--card-color:var(--speed)"><div class="stat-label">Speed</div><div class="stat-value" id="ov-speed_mph">--</div><div class="stat-unit">MPH</div></div>
+          <div class="stat-card" data-ov-key="batt_volt" style="--card-color:var(--battv)"><div class="stat-label">Battery</div><div class="stat-value" id="ov-batt_volt">--</div><div class="stat-unit">Volts</div></div>
+          <div class="stat-card" data-ov-key="motor_volt" style="--card-color:var(--motorv)"><div class="stat-label">Motor Volt</div><div class="stat-value" id="ov-motor_volt">--</div><div class="stat-unit">Volts</div></div>
+          <div class="stat-card" data-ov-key="current_a" style="--card-color:var(--current)"><div class="stat-label">Current</div><div class="stat-value" id="ov-current_a">--</div><div class="stat-unit">Amps</div></div>
+          <div class="stat-card" data-ov-key="temp_f" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
+          <div class="stat-card" data-ov-key="motor_rpm" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
+          <div class="stat-card" data-ov-key="wheel_rpm" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
+          <div class="stat-card" data-ov-key="roll_deg" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value compact" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" data-ov-key="pitch_deg" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value compact" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" data-ov-key="yaw_deg" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value compact" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
+          <div class="stat-card" data-ov-key="gps" style="--card-color:var(--gps)"><div class="stat-label">GPS</div><div class="stat-value tiny" id="ov-gps">NO FIX</div></div>
+          <div class="stat-card" data-ov-key="link" style="--card-color:var(--rssi)"><div class="stat-label">Link</div><div class="stat-value compact" id="ov-link">--</div></div>
+          <div class="stat-card" data-ov-key="seq" style="--card-color:#64748b"><div class="stat-label">Packet #</div><div class="stat-value compact" id="ov-seq">0</div></div>
         </div>
         </div>
       </div>
@@ -1324,16 +1356,12 @@
 
       <div class="settings-card">
         <div class="settings-card-title">Default Time Range</div>
-        <div class="settings-card-desc">Which range the live charts start on when the page loads. Reuses the same buttons shown above every chart — picking one here also applies it right away.</div>
-        <div class="range-toggle-row" data-range-slot id="settings-default-range-row" style="margin-top:6px"></div>
+        <div class="range-toggle-row" data-range-slot id="settings-default-range-row" style="margin-top:8px"></div>
       </div>
 
       <div class="settings-card settings-mobile-only">
         <div class="settings-card-row">
-          <div>
-            <div class="settings-card-title">Overview Boxes Per Row</div>
-            <div class="settings-card-desc">How many stat tiles sit side-by-side on the mobile Overview page.</div>
-          </div>
+          <div class="settings-card-title">Overview Boxes Per Row</div>
           <div class="oui-slider-value" id="settings-ov-cols-value">2</div>
         </div>
         <div class="oui-slider-row" style="margin-top:10px">
@@ -1343,11 +1371,13 @@
       </div>
 
       <div class="settings-card settings-mobile-only">
+        <div class="settings-card-title">Overview Boxes to Show</div>
+        <div id="settings-ov-mobile-list" class="settings-ov-mobile-list"></div>
+      </div>
+
+      <div class="settings-card settings-mobile-only">
         <div class="settings-card-row">
-          <div>
-            <div class="settings-card-title">Haptics</div>
-            <div class="settings-card-desc">Light vibration when scrubbing a chart or tapping the toolbar. Android only — silently does nothing on iOS/desktop.</div>
-          </div>
+          <div class="settings-card-title">Haptics</div>
           <label class="oui-toggle settings-card-control">
             <input type="checkbox" id="settings-haptics-toggle" checked>
             <span class="oui-toggle-track"><span class="oui-toggle-thumb"></span></span>
@@ -1357,10 +1387,7 @@
 
       <div class="settings-card">
         <div class="settings-card-row">
-          <div>
-            <div class="settings-card-title">Test Mode</div>
-            <div class="settings-card-desc">Feed sample data through the whole dashboard for testing, no real car needed. Never touches the network.</div>
-          </div>
+          <div class="settings-card-title">Test Mode</div>
           <label class="oui-toggle settings-card-control">
             <input type="checkbox" id="settings-testmode-toggle">
             <span class="oui-toggle-track"><span class="oui-toggle-thumb"></span></span>
@@ -1432,6 +1459,11 @@ function vibrate(ms) {
 // simple (one property, read by one media-query rule).
 function applyOverviewCols(n) {
   document.documentElement.style.setProperty('--ov-cols', n);
+  // A plain CSS custom property can't be branched on with a selector — the
+  // :root.ov-cols-3 rule (nudges the unit text up a bit at 3 columns,
+  // where the tile is short enough that the normal label/value/unit gap
+  // reads as too much air) needs an actual class alongside the variable.
+  document.documentElement.classList.toggle('ov-cols-3', n === 3);
 }
 let overviewCols = 2;
 try { overviewCols = parseInt(localStorage.getItem(OV_COLS_KEY), 10) || 2; } catch(e) {}
@@ -1440,6 +1472,26 @@ try { overviewCols = parseInt(localStorage.getItem(OV_COLS_KEY), 10) || 2; } cat
 // localStorage on a returning visitor's device.
 overviewCols = Math.min(3, Math.max(1, overviewCols));
 applyOverviewCols(overviewCols);
+
+// Elements allowed to be selected/copied — kept in sync with the CSS rule
+// that re-enables user-select/-webkit-touch-callout on these same
+// elements (see that rule's own comment). Referenced again just below.
+const COPYABLE_SELECTOR = '.stat-value,.stat-unit,.dedicated-value,.dedicated-unit,#raw-log,#sessions-table td,#esc-mode,#esc-state';
+// user-select:none / -webkit-touch-callout:none stop the text from
+// visibly highlighting and stop iOS's long-press callout, but Android
+// Chrome's "Smart Text Selection" card (the long-press popup with Search/
+// Share/Copy icons — the "Google thing") and its haptic buzz can still
+// fire on plain non-selectable text regardless of either CSS property,
+// since Chrome forwards long-press coordinates to Android's system text
+// classifier as part of the same gesture pipeline that also drives the
+// desktop right-click contextmenu event. Blocking contextmenu itself
+// (passive:false is required — a passive listener can't call
+// preventDefault at all) reliably suppresses that card everywhere CSS
+// alone didn't, while leaving it untouched on the elements meant to stay
+// copyable.
+document.addEventListener('contextmenu', (e) => {
+  if (!e.target.closest(COPYABLE_SELECTOR)) e.preventDefault();
+}, { passive:false });
 
 // ── ICONS ─────────────────────────────────────────────────────────────────────
 // Single source of truth for every icon on the page (Feather-style: 24x24
@@ -2770,6 +2822,65 @@ hapticsToggleEl.addEventListener('change', () => {
 // button does; setTestMode() itself keeps this checkbox's `checked` state
 // in sync when triggered from the OTHER control (see its own comment).
 document.getElementById('settings-testmode-toggle').addEventListener('change', (e) => setTestMode(e.target.checked));
+
+// Overview Boxes to Show — same pattern as the desktop "Visible Charts"
+// customize panel (OV_VIS_KEY/ovVisible/renderCustomizePanel above), just
+// targeting the mobile stat-tile grid's `.stat-card[data-ov-key]` elements
+// instead of `.mini-chart-card[data-metric]`. Hiding is scoped to mobile
+// entirely in CSS (`.ov-mobile-hidden` only takes effect inside the
+// max-width:860px block — see its rule), so toggling this never affects
+// desktop's Overview, which always shows the full stat bar.
+const OV_MOBILE_ITEMS = [
+  { key:'speed_mph',  label:'Speed',      color:'var(--speed)' },
+  { key:'batt_volt',  label:'Battery',    color:'var(--battv)' },
+  { key:'motor_volt', label:'Motor Volt', color:'var(--motorv)' },
+  { key:'current_a',  label:'Current',    color:'var(--current)' },
+  { key:'temp_f',     label:'Temp',       color:'var(--temp)' },
+  { key:'motor_rpm',  label:'Motor RPM',  color:'var(--mrpm)' },
+  { key:'wheel_rpm',  label:'Wheel RPM',  color:'var(--wrpm)' },
+  { key:'roll_deg',   label:'Roll',       color:'var(--roll)' },
+  { key:'pitch_deg',  label:'Pitch',      color:'var(--pitch)' },
+  { key:'yaw_deg',    label:'Yaw',        color:'var(--yaw)' },
+  { key:'gps',        label:'GPS',        color:'var(--gps)' },
+  { key:'link',       label:'Link',       color:'var(--rssi)' },
+  { key:'seq',        label:'Packet #',   color:'#64748b' },
+];
+const OV_MOBILE_VIS_KEY = 'gp_overview_mobile_visibility';
+let ovMobileVisible = {};
+(function loadOvMobileVisibility() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(OV_MOBILE_VIS_KEY) || '{}'); } catch(err) {}
+  OV_MOBILE_ITEMS.forEach(item => { ovMobileVisible[item.key] = saved[item.key] !== undefined ? !!saved[item.key] : true; });
+})();
+function saveOvMobileVisibility() {
+  try { localStorage.setItem(OV_MOBILE_VIS_KEY, JSON.stringify(ovMobileVisible)); } catch(err) {}
+}
+function applyOvMobileVisibility() {
+  OV_MOBILE_ITEMS.forEach(item => {
+    const card = document.querySelector(`#page-overview .stat-card[data-ov-key="${item.key}"]`);
+    if (card) card.classList.toggle('ov-mobile-hidden', !ovMobileVisible[item.key]);
+  });
+}
+function renderOvMobileList() {
+  const list = document.getElementById('settings-ov-mobile-list');
+  if (!list) return;
+  list.innerHTML = OV_MOBILE_ITEMS.map(item => `
+    <label class="customize-row">
+      <input type="checkbox" data-key="${item.key}" ${ovMobileVisible[item.key] ? 'checked' : ''}>
+      <span class="customize-swatch" style="background:${resolveColor(item.color)}"></span>
+      ${item.label}
+    </label>`).join('');
+  list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      ovMobileVisible[cb.dataset.key] = cb.checked;
+      saveOvMobileVisibility();
+      applyOvMobileVisibility();
+      vibrate(4);
+    });
+  });
+}
+applyOvMobileVisibility();
+renderOvMobileList();
 
 poll();
 setInterval(() => { if (!testModeActive) poll(); }, 200);

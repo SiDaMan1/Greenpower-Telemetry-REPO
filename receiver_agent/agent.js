@@ -44,12 +44,38 @@ function log(line) {
 }
 
 // ── Single-instance PID file ───────────────────────────────────────
-// setup.bat reads this file to kill any previous hidden instance before
-// starting a new one — otherwise re-running setup.bat piles up multiple
-// node.exe processes, and an old one holding a serial port open causes a
-// confusing "Access denied" on that port in the NEW instance, which looks
-// like a hardware/driver problem but is actually just a stale process.
+// setup.bat ALSO reads this file to kill any previous hidden instance
+// before starting a new one, but that only covers the "re-running
+// setup.bat" path specifically. The check right below covers every other
+// way a second instance could end up running at the same time — the
+// Startup-folder auto-launch firing on login while a previous instance
+// from before a restart/sleep is somehow still alive, someone double-
+// clicking the launcher shortcut twice, running `node agent.js` manually
+// while the hidden auto-started one is already up, etc. — by having the
+// agent itself check on every single startup, not just when setup.bat
+// happens to be the one doing the (re)launching. Left running, a second
+// instance would fight the first for the same serial port — the exact
+// "Access denied, looks like a hardware/driver problem but isn't" failure
+// this file already has a rule about below.
 const PID_PATH = path.join(__dirname, 'agent.pid');
+try {
+    const existingPidRaw = fs.readFileSync(PID_PATH, 'utf8').trim();
+    const existingPid = parseInt(existingPidRaw, 10);
+    if (existingPid && existingPid !== process.pid) {
+        try {
+            // Signal 0 doesn't actually send a signal — it's the standard
+            // Node/POSIX idiom for "is this PID still alive", and it throws
+            // (ESRCH) if not. Works on Windows too via libuv's emulation.
+            process.kill(existingPid, 0);
+            log(`[WARN] Another agent instance (PID ${existingPid}) is already running — terminating it so this one can take over.`);
+            process.kill(existingPid, 'SIGTERM');
+        } catch (e) {
+            // Not alive — a stale PID file left over from a previous
+            // crash/unclean exit that skipped the cleanup handlers below.
+            // Nothing to do, just proceed to overwrite it with our own PID.
+        }
+    }
+} catch (e) { /* no existing PID file — normal on first run ever */ }
 try { fs.writeFileSync(PID_PATH, String(process.pid)); } catch (e) { /* non-fatal */ }
 function cleanupPidFile() {
     try {
