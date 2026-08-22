@@ -251,6 +251,35 @@ app.get('/api/version', (req, res) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`[READY] Greenpower telemetry web listening on port ${PORT}`);
 });
+
+// ── Graceful shutdown ──────────────────────────────────────────────────
+// Railway sends SIGTERM to the OLD container whenever a new deploy rolls
+// out (and again on a manual restart) — this is a normal, expected part
+// of every deploy, not a crash. Node has no default handler for SIGTERM
+// though, so without one the process dies mid-signal and npm's wrapper
+// reports that as "npm error / command failed / signal SIGTERM", reading
+// exactly like a real failure in Railway's logs even on a totally healthy
+// deploy. Handling it explicitly and exiting with a real code 0 (closing
+// the DB pool first, if one's configured) makes npm see a clean exit
+// instead — this is what actually stops that message from appearing on
+// every single redeploy, not a config flag.
+function shutdown(signal) {
+    console.log(`[INFO] ${signal} received — shutting down gracefully.`);
+    server.close(() => {
+        if (pool) {
+            pool.end().finally(() => process.exit(0));
+        } else {
+            process.exit(0);
+        }
+    });
+    // Belt-and-suspenders — if something (a stuck connection) keeps
+    // server.close()'s callback from ever firing, don't hang forever and
+    // force Railway to SIGKILL after its own grace period; exit cleanly
+    // on our own timeout first.
+    setTimeout(() => process.exit(0), 5000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
