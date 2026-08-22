@@ -385,6 +385,34 @@
      this doesn't need its own separate look. */
   .settings-ov-mobile-list { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; margin-top:8px; }
   .settings-ov-mobile-list .customize-row { padding:6px 4px; }
+
+  .settings-card-hint { font-size:11.5px; color:var(--muted); line-height:1.5; margin-top:2px; }
+
+  /* Mobile Toolbar & Pages list — one row per (non-Settings) mobile nav
+     item, in the user's own order. Single column (unlike the 2-col
+     Overview Boxes list above) since each row is wider — reorder arrows +
+     icon + label + a "Toolbar"/"More" badge + a visibility checkbox all
+     need to fit on one line without crowding. */
+  .settings-mobile-nav-list { display:flex; flex-direction:column; gap:2px; margin-top:8px; }
+  .settings-nav-row { display:flex; align-items:center; gap:8px; padding:6px 4px; border-radius:8px; }
+  .settings-nav-row.settings-nav-row-hidden { opacity:.45; }
+  .settings-nav-arrows { display:flex; flex-direction:column; gap:1px; flex-shrink:0; }
+  .settings-nav-arrow {
+    display:flex; align-items:center; justify-content:center; width:20px; height:16px; padding:0;
+    background:transparent; border:none; color:var(--muted); cursor:pointer; border-radius:4px;
+    transition:background .12s var(--ease), color .12s var(--ease);
+  }
+  .settings-nav-arrow .icon { width:12px; height:12px; }
+  .settings-nav-arrow:hover:not(:disabled) { color:var(--text); background:rgba(255,255,255,.06); }
+  .settings-nav-arrow:disabled { opacity:.25; cursor:default; }
+  .settings-nav-row-icon { width:16px; height:16px; color:var(--muted); flex-shrink:0; }
+  .settings-nav-row-label { font-size:12.5px; font-weight:600; flex:1; }
+  .settings-nav-row-badge {
+    font-size:9.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:var(--muted);
+    background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:5px; padding:2px 6px; flex-shrink:0;
+  }
+  .settings-nav-row-badge.toolbar { color:var(--accent2); border-color:rgba(14,165,233,.35); background:rgba(14,165,233,.1); }
+  .settings-nav-row-visible { accent-color:var(--accent2); width:16px; height:16px; flex-shrink:0; cursor:pointer; }
   /* Overview Boxes Per Row and Haptics only mean anything on the mobile
      layout (desktop's Overview always shows the full chart grid, never the
      boxes-per-row stat tiles; desktop haptics is a no-op device-wise
@@ -1153,6 +1181,27 @@
        here, after that unconditional rule's own position in the source,
        fixes it — verified via getComputedStyle().backgroundImage. */
     .onboarding-overlay { background:linear-gradient(to bottom, #0b0c11, #171719 80%); }
+
+    /* Any full-screen dimming backdrop needs the SAME "fade out before it
+       reaches the nav bar" treatment .mobile-navsheet-backdrop already
+       has (search this file for that selector for the full original
+       measurement/reasoning) — a flat rgba(...) covering the whole
+       viewport otherwise darkens the small gap/margin/rounded corners
+       AROUND the .mobile-navbar pill (which sits above it in z-index, so
+       the pill's own opaque pixels are untouched, but the page immediately
+       around it still visibly shifts), reading as a mismatch against the
+       precisely-matched Android nav-bar color right below it. Every
+       backdrop below is the SAME base color just pinned to a gradient
+       (100%→70% flat, fading to fully transparent by 84%, the exact stops
+       already validated for the nav sheet) instead of a flat fill.
+       .confirm-modal-backdrop covers download-agent/exit-app/clear-data
+       confirmations — exit-app in particular is Android-back-gesture-
+       triggered, so this one is squarely a mobile case, not just
+       theoretical. .update-banner-backdrop is shown on both platforms;
+       only the mobile override matters here, desktop keeps the flat fill
+       from its own base rule untouched. */
+    .confirm-modal-backdrop { background:linear-gradient(to bottom, rgba(0,0,0,.55) 0%, rgba(0,0,0,.55) 70%, rgba(0,0,0,0) 84%); }
+    .update-banner-backdrop { background:linear-gradient(to bottom, rgba(5,6,10,.72) 0%, rgba(5,6,10,.72) 70%, rgba(5,6,10,0) 84%); }
   }
 
   /* ── Landscape lock (mobile) ─────────────────────────────────────────
@@ -1286,45 +1335,35 @@
 
   <!-- Mobile-only nav: a bottom bar of icon-only tab buttons (thumb-reachable),
        plus an "expand" button that opens a small floating sheet listing every
-       tab again with its text label. display:none on desktop (see CSS) —
-       #tabs above is what desktop uses, completely unchanged. Every tab
-       button (bar AND sheet) shares class="tab" so the existing tab-click
-       wiring below picks all of them up automatically and keeps their
-       active state in sync across all three surfaces (desktop tabs, bottom
-       bar, sheet) for free. -->
+       remaining tab with its text label. display:none on desktop (see CSS) —
+       #tabs above is what desktop uses, completely unchanged.
+       Both #mobile-navbar-scroll and #mobile-navsheet's tab rows are now
+       rendered ENTIRELY by JS (renderMobileNav(), see the "MOBILE NAV
+       CUSTOMIZATION" script section) from the user's own order/visibility
+       choices in Settings — not static markup — so this file only needs
+       the two empty containers plus the pieces that never change
+       (Settings itself, pinned outside the customizable set; the expand
+       button). Every tab button (bar AND sheet) still shares class="tab",
+       and the click handling that used to attach one listener per element
+       is now event-delegated on `document` for exactly this reason — a
+       dynamically re-rendered tab needs to keep working without a
+       separate rebind step every time the list changes. -->
   <div class="mobile-navbar" id="mobile-navbar">
-    <div class="mobile-navbar-scroll" id="mobile-navbar-scroll">
-      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary active" data-page="overview"><span class="icon" data-icon="overview"></span></div>
-      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="speed"><span class="icon" data-icon="speed"></span></div>
-      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="power"><span class="icon" data-icon="power"></span></div>
-      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="rpm"><span class="icon" data-icon="rpm"></span></div>
-      <div class="tab mobile-navbar-tab mobile-navbar-tab-primary" data-page="esc"><span class="icon" data-icon="esc"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="imu"><span class="icon" data-icon="imu"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="link"><span class="icon" data-icon="link"></span></div>
-      <div class="tab mobile-navbar-tab" data-page="settings"><span class="icon" data-icon="settings"></span></div>
-    </div>
+    <div class="mobile-navbar-scroll" id="mobile-navbar-scroll"></div>
     <div class="mobile-navbar-divider"></div>
     <button class="mobile-navbar-expand" id="mobile-navbar-expand" aria-label="Show all tabs">
       <span class="icon expand-icon expand-icon-menu" data-icon="menu"></span>
       <span class="icon expand-icon expand-icon-x" data-icon="x"></span>
     </button>
   </div>
-  <!-- Sheet lists tabs NOT already reachable from the fixed bottom bar
-       (.mobile-navbar-tab-primary: overview/speed/power/rpm/esc) — MINUS
-       Multi/Sessions/Raw, which are removed from mobile navigation
-       entirely (desktop's #tabs still has all 12, untouched; these three
-       pages/tab elements still exist in the DOM and still work if reached
-       some other way, they're just not linked from anywhere in the mobile
-       nav UI anymore). Settings has no primary-bar slot, so it always
-       lives here. -->
   <div class="mobile-navsheet-backdrop" id="mobile-navsheet-backdrop"></div>
+  <!-- #mobile-navsheet-list is the JS-rendered, customizable part;
+       Settings itself is a separate, ALWAYS-present final row outside
+       that customization system entirely — it can't be hidden or
+       reordered out, since it's the only way back into the settings that
+       control everything else in this list. -->
   <div class="mobile-navsheet" id="mobile-navsheet">
-    <div class="tab mobile-navsheet-tab" data-page="temperature"><span class="icon" data-icon="temperature"></span><span class="mobile-navsheet-tab-label">Temp</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="imu"><span class="icon" data-icon="imu"></span><span class="mobile-navsheet-tab-label">IMU</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="raceline"><span class="icon" data-icon="raceline"></span><span class="mobile-navsheet-tab-label">Raceline</span></div>
-    <div class="tab mobile-navsheet-tab" data-page="link"><span class="icon" data-icon="link"></span><span class="mobile-navsheet-tab-label">Link</span></div>
+    <div class="mobile-navsheet-list" id="mobile-navsheet-list"></div>
     <div class="tab mobile-navsheet-tab" data-page="settings"><span class="icon" data-icon="settings"></span><span class="mobile-navsheet-tab-label">Settings</span></div>
   </div>
 
@@ -1708,6 +1747,16 @@
         <div id="settings-ov-mobile-list" class="settings-ov-mobile-list"></div>
       </div>
 
+      <!-- Mobile Toolbar & Pages — see the JS "MOBILE NAV CUSTOMIZATION"
+           section for how this actually drives the bottom bar/sheet.
+           Rendered entirely by JS (renderMobileNavSettingsList()), same
+           pattern as the Overview Boxes list above. -->
+      <div class="settings-card settings-mobile-only">
+        <div class="settings-card-title">Mobile Toolbar &amp; Pages</div>
+        <div class="settings-card-hint">First 5 shown pages sit in the bottom toolbar; the rest are under the menu. Reorder with the arrows, hide with the checkbox.</div>
+        <div id="settings-mobile-nav-list" class="settings-mobile-nav-list"></div>
+      </div>
+
       <div class="settings-card settings-mobile-only">
         <div class="settings-card-row">
           <div class="settings-card-title">Haptics</div>
@@ -1865,6 +1914,8 @@ const ICONS = {
   rotate:       `<svg ${ICON_ATTRS}><rect x="6" y="8" width="12" height="18" rx="2" transform="rotate(-90 12 17)"/><path d="M18 3v5h-5"/><path d="M18 8a8 8 0 0 0-15 3"/></svg>`,
   lock:         `<svg ${ICON_ATTRS}><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
   check:        `<svg ${ICON_ATTRS}><polyline points="20 6 9 17 4 12"/></svg>`,
+  'chevron-up':   `<svg ${ICON_ATTRS}><polyline points="18 15 12 9 6 15"/></svg>`,
+  'chevron-down': `<svg ${ICON_ATTRS}><polyline points="6 9 12 15 18 9"/></svg>`,
 };
 function applyIcons(root=document) {
   root.querySelectorAll('[data-icon]').forEach(el => {
@@ -2371,9 +2422,18 @@ function updateGpsMap(lat, lon) {
 }
 
 // ── TABS ─────────────────────────────────────────────────────────────────────
+// Event-delegated on `document` (was: one addEventListener per .tab element,
+// attached once at load) specifically because the mobile bar/sheet's tab
+// rows are now rendered dynamically by renderMobileNav() (see the "MOBILE
+// NAV CUSTOMIZATION" section below) from the user's own order/visibility
+// choices — a tab element created after page load needs to work without a
+// separate rebind step every time the list is re-rendered, which per-element
+// listeners can't do. Desktop's #tabs is still fully static, so this changes
+// nothing observable there.
 let activePage = 'overview';
-document.querySelectorAll('.tab').forEach(t => {
-  t.addEventListener('click', () => {
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('.tab');
+  if (!t) return;
     try {
       document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
       activePage = t.dataset.page;
@@ -2440,7 +2500,6 @@ document.querySelectorAll('.tab').forEach(t => {
       }
       if (activePage==='sessions') loadSessions();
     } catch(e) { console.warn('Tab switch error:', e); }
-  });
 });
 
 // ── MOBILE NAV SHEET (bottom bar's "expand" button opens a labeled list) ────
@@ -2478,6 +2537,170 @@ document.getElementById('mobile-navbar').addEventListener('click', (e) => {
   vibrate(8);
   if (e.target.closest('#mobile-navbar-expand')) return;
   closeMobileNavSheet();
+});
+
+// ── MOBILE NAV CUSTOMIZATION ─────────────────────────────────────────────────
+// Which pages appear in the mobile bottom toolbar (the first
+// MOBILE_NAV_TOOLBAR_SLOTS VISIBLE items below) vs. the "more" sheet
+// (everything else visible), in what order, and which pages are hidden
+// from mobile nav entirely — all user-configurable from Settings (the
+// "Mobile Toolbar & Pages" card, wired further down). Settings itself is
+// deliberately NOT part of this list (see the HTML markup's own comment)
+// — it always stays reachable no matter how the rest is customized.
+// Order here IS the default mobileNavOrder — first 5 land in the toolbar,
+// matching the original static layout exactly (overview/speed/power/rpm/
+// esc primary, everything else in the sheet). Keep those first 5 in this
+// relative order unless deliberately changing the shipped default.
+const MOBILE_NAV_ITEMS = [
+  { key:'overview',    label:'Overview',    icon:'overview' },
+  { key:'speed',       label:'Speed',       icon:'speed' },
+  { key:'power',       label:'Power',       icon:'power' },
+  { key:'rpm',         label:'RPM',         icon:'rpm' },
+  { key:'esc',         label:'ESC',         icon:'esc' },
+  { key:'temperature', label:'Temp',        icon:'temperature' },
+  { key:'imu',         label:'IMU',         icon:'imu' },
+  { key:'raceline',    label:'Raceline',    icon:'raceline' },
+  { key:'link',        label:'Link',        icon:'link' },
+  { key:'multi',       label:'Multi',       icon:'multi' },
+  { key:'sessions',    label:'Sessions',    icon:'sessions' },
+  { key:'raw',         label:'Raw',         icon:'raw' },
+];
+const MOBILE_NAV_ORDER_KEY = 'gp_mobile_nav_order';
+const MOBILE_NAV_HIDDEN_KEY = 'gp_mobile_nav_hidden';
+const MOBILE_NAV_TOOLBAR_SLOTS = 5;
+
+// Default order/visibility matches the original static layout exactly
+// (overview/speed/power/rpm/esc in the toolbar; temp/imu/raceline/link/
+// multi/sessions/raw in the sheet) — nothing hidden by default, which is
+// also what "restores" Multi/Sessions/Raw after they were briefly removed
+// from mobile nav entirely in an earlier pass.
+let mobileNavOrder = MOBILE_NAV_ITEMS.map(i => i.key);
+let mobileNavHidden = [];
+(function loadMobileNavState() {
+  try {
+    const savedOrder = JSON.parse(localStorage.getItem(MOBILE_NAV_ORDER_KEY) || 'null');
+    if (Array.isArray(savedOrder)) {
+      // Guard against a stale saved order not matching MOBILE_NAV_ITEMS
+      // exactly (e.g. a page added/removed from this list after someone
+      // already customized their order) — keep every saved key that's
+      // still valid, then append any canonical key missing from the
+      // saved list, so a future page addition doesn't just silently
+      // vanish from a returning visitor's nav.
+      const validKeys = new Set(MOBILE_NAV_ITEMS.map(i => i.key));
+      const cleaned = savedOrder.filter(k => validKeys.has(k));
+      MOBILE_NAV_ITEMS.forEach(i => { if (!cleaned.includes(i.key)) cleaned.push(i.key); });
+      mobileNavOrder = cleaned;
+    }
+  } catch(e) {}
+  try {
+    const savedHidden = JSON.parse(localStorage.getItem(MOBILE_NAV_HIDDEN_KEY) || 'null');
+    if (Array.isArray(savedHidden)) mobileNavHidden = savedHidden;
+  } catch(e) {}
+})();
+function saveMobileNavOrder() { try { localStorage.setItem(MOBILE_NAV_ORDER_KEY, JSON.stringify(mobileNavOrder)); } catch(e) {} }
+function saveMobileNavHidden() { try { localStorage.setItem(MOBILE_NAV_HIDDEN_KEY, JSON.stringify(mobileNavHidden)); } catch(e) {} }
+function mobileNavItem(key) { return MOBILE_NAV_ITEMS.find(i => i.key === key); }
+function visibleMobileNavOrder() { return mobileNavOrder.filter(k => !mobileNavHidden.includes(k)); }
+
+function mobileNavTabHtml(key, primary) {
+  const item = mobileNavItem(key);
+  const activeClass = key === activePage ? ' active' : '';
+  return primary
+    ? `<div class="tab mobile-navbar-tab mobile-navbar-tab-primary${activeClass}" data-page="${key}"><span class="icon" data-icon="${item.icon}"></span></div>`
+    : `<div class="tab mobile-navsheet-tab${activeClass}" data-page="${key}"><span class="icon" data-icon="${item.icon}"></span><span class="mobile-navsheet-tab-label">${item.label}</span></div>`;
+}
+
+// Re-renders the bottom bar + sheet from the current order/hidden state —
+// called once at load and again any time Settings changes either. Tab
+// click handling is event-delegated on `document` (see the TABS section
+// above), so freshly-rendered elements work immediately with no separate
+// rebind step.
+function renderMobileNav() {
+  const visible = visibleMobileNavOrder();
+  const toolbarKeys = visible.slice(0, MOBILE_NAV_TOOLBAR_SLOTS);
+  const sheetKeys = visible.slice(MOBILE_NAV_TOOLBAR_SLOTS);
+  document.getElementById('mobile-navbar-scroll').innerHTML = toolbarKeys.map(k => mobileNavTabHtml(k, true)).join('');
+  document.getElementById('mobile-navsheet-list').innerHTML = sheetKeys.map(k => mobileNavTabHtml(k, false)).join('');
+  applyIcons();
+  // Nothing left for the sheet (everything visible already fits in the
+  // toolbar) — hide the divider/expand button rather than offering a
+  // menu that would only ever contain the pinned Settings row.
+  const hasSheetPages = sheetKeys.length > 0;
+  document.querySelector('.mobile-navbar-divider').style.display = hasSheetPages ? '' : 'none';
+  document.getElementById('mobile-navbar-expand').style.display = hasSheetPages ? '' : 'none';
+}
+renderMobileNav();
+
+// ── Settings: "Mobile Toolbar & Pages" list ──────────────────────────────────
+// Same visual list pattern as "Overview Boxes to Show" elsewhere in
+// Settings, but with reorder arrows added and a live Toolbar/More badge
+// reflecting each row's CURRENT computed position (not just its raw index
+// in mobileNavOrder — a hidden row sitting before others doesn't consume
+// a toolbar slot, so the badge has to be computed off the VISIBLE list).
+function renderMobileNavSettingsList() {
+  const list = document.getElementById('settings-mobile-nav-list');
+  if (!list) return;
+  const visible = visibleMobileNavOrder();
+  list.innerHTML = mobileNavOrder.map((key, idx) => {
+    const item = mobileNavItem(key);
+    const hidden = mobileNavHidden.includes(key);
+    const visIdx = visible.indexOf(key);
+    const inToolbar = !hidden && visIdx >= 0 && visIdx < MOBILE_NAV_TOOLBAR_SLOTS;
+    const badge = hidden ? '' : `<span class="settings-nav-row-badge${inToolbar ? ' toolbar' : ''}">${inToolbar ? 'Toolbar' : 'More'}</span>`;
+    return `<div class="settings-nav-row${hidden ? ' settings-nav-row-hidden' : ''}" data-key="${key}">
+      <span class="settings-nav-arrows">
+        <button type="button" class="settings-nav-arrow" data-action="up" data-key="${key}"${idx === 0 ? ' disabled' : ''}><span class="icon" data-icon="chevron-up"></span></button>
+        <button type="button" class="settings-nav-arrow" data-action="down" data-key="${key}"${idx === mobileNavOrder.length - 1 ? ' disabled' : ''}><span class="icon" data-icon="chevron-down"></span></button>
+      </span>
+      <span class="icon settings-nav-row-icon" data-icon="${item.icon}"></span>
+      <span class="settings-nav-row-label">${item.label}</span>
+      ${badge}
+      <input type="checkbox" class="settings-nav-row-visible" data-key="${key}"${hidden ? '' : ' checked'}>
+    </div>`;
+  }).join('');
+  applyIcons(list);
+}
+renderMobileNavSettingsList();
+
+document.getElementById('settings-mobile-nav-list').addEventListener('click', (e) => {
+  const btn = e.target.closest('.settings-nav-arrow');
+  if (!btn || btn.disabled) return;
+  const key = btn.dataset.key;
+  const idx = mobileNavOrder.indexOf(key);
+  const swapWith = btn.dataset.action === 'up' ? idx - 1 : idx + 1;
+  if (swapWith < 0 || swapWith >= mobileNavOrder.length) return;
+  [mobileNavOrder[idx], mobileNavOrder[swapWith]] = [mobileNavOrder[swapWith], mobileNavOrder[idx]];
+  saveMobileNavOrder();
+  renderMobileNav();
+  renderMobileNavSettingsList();
+  vibrate(4);
+});
+document.getElementById('settings-mobile-nav-list').addEventListener('change', (e) => {
+  const cb = e.target.closest('.settings-nav-row-visible');
+  if (!cb) return;
+  const key = cb.dataset.key;
+  if (!cb.checked) {
+    // Refuse to hide the LAST visible page — same reasoning as the
+    // Overview-Boxes-to-Show guard elsewhere: zero visible pages would
+    // leave mobile nav with nothing to tap and no way back.
+    if (visibleMobileNavOrder().filter(k => k !== key).length === 0) {
+      cb.checked = true;
+      return;
+    }
+    if (!mobileNavHidden.includes(key)) mobileNavHidden.push(key);
+  } else {
+    mobileNavHidden = mobileNavHidden.filter(k => k !== key);
+  }
+  saveMobileNavHidden();
+  renderMobileNav();
+  renderMobileNavSettingsList();
+  // If the page just hidden was the one currently on screen, jump to
+  // whatever's now first in the visible list instead of stranding the
+  // user on a page with no nav entry left pointing back to it.
+  if (!cb.checked && key === activePage) {
+    const fallback = visibleMobileNavOrder()[0];
+    if (fallback) document.querySelector(`.tab[data-page="${fallback}"]`)?.click();
+  }
 });
 
 // ── PWA INSTALL PROMPT ───────────────────────────────────────────────────────
