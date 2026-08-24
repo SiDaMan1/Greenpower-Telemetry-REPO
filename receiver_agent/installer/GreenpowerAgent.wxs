@@ -29,10 +29,24 @@
   ════════════════════════════════════════════════════════════════════
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- Version MUST be bumped any time ANY Component's set of resources
+       changes (a File/Shortcut/RegistryValue added or removed inside an
+       existing Component, even with its GUID left alone) — a real, broken
+       install/uninstall/shortcut regression was caused by exactly this: a
+       <Shortcut> was removed from StartMenuShortcut's Component without
+       bumping Version, leaving Windows Installer's own bookkeeping of
+       "what does this component own" out of sync with the actual package
+       on a machine that already had the old content installed. This is a
+       genuine MSI/WiX rule, not a style preference — a component's
+       resource list and its identity (GUID) are meant to move together;
+       changing one without the other (or without a proper MajorUpgrade
+       version bump, which forces a clean uninstall-then-reinstall instead
+       of a component-by-component diff) is undefined/unreliable behavior
+       by design, not something WiX can catch for you at compile time. -->
   <Product Id="*"
            Name="Greenpower Receiver Agent"
            Language="1033"
-           Version="1.2.0.0"
+           Version="1.3.0.0"
            Manufacturer="Greenpower"
            UpgradeCode="1cf7948c-d8f6-410f-a05b-0b14f255a3f6">
 
