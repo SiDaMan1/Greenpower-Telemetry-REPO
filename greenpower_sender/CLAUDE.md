@@ -39,7 +39,7 @@ There is no `SYSTEM_INFO.md` in this folder yet.
 | ESC RX (from ESC TX) | GPIO44, Serial2 | [`esc controller`](../esc%20controller/CLAUDE.md), 115200 baud |
 | ESC TX (to ESC RX) | GPIO43, Serial2 | wired for symmetry — the ESC's firmware doesn't currently read anything back |
 
-**LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, SF7, BW125, sync word 0xF3, 22 dBm — see `config.h`.
+**LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, SF7, BW125, sync word 0xF3, 22 dBm — see `config.h`. **A move to SF12 for range was tried and reverted after confirming it hangs the board on real hardware — see the dedicated ⚠️ rule below before attempting a spreading-factor change again.**
 
 **ADS1115 (Lonely Binary board, I2C addr 0x48)** — shared bus with the IMU:
 | Channel | Signal |
@@ -75,8 +75,10 @@ Produced by `espNowSend()`, must stay field-for-field identical to what `mock_se
 ### ESP-NOW peer MAC — critical
 `ESPNOW_PEER_MAC` in `config.h` must match the MAC address `display_receiver` prints on boot. Currently `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` — same value used by `mock_sender`, so the two senders are interchangeable from the receiver's point of view.
 
-### LoRa and ESP-NOW are independent, but share one timer
-Both fire off `LORA_TX_INTERVAL_MS` (200 ms / 5 Hz) in `loop()`, using separate `lastLoraTxMs`/`lastEspNowMs` timestamps — they're two unrelated radios, don't assume one blocks or depends on the other. This matches `SENSOR_INTERVAL_MS` on purpose, so every sensor update actually gets transmitted rather than some being silently skipped — don't let these two drift apart without a reason.
+### ⚠️ SF12 was tried for range, confirmed to HANG the board on real hardware, and has been fully reverted to SF7 — don't re-attempt without solving the hang first
+Full story, since the reasoning below (async TX, separate intervals) is real and still worth understanding even though the SF change itself didn't ship: after a real-world report of the sender/receiver disconnecting at ordinary walking distance, LoRa was moved from SF7 to SF12 (max spreading factor = max range) on both sender and receiver, along with two changes SF12's ~3.8s time-on-air made necessary — an async TX rework (`startTransmit()`/`setPacketSentAction()`/`finishTransmit()`, mirroring the receiver's existing interrupt-driven RX pattern, since a blocking `radio.transmit()` at that airtime would freeze the whole `loop()`, ESP-NOW included) and a separate, much slower `LORA_TX_INTERVAL_MS` decoupled from ESP-NOW's own interval.
+**This shipped, was flashed to real receiver boards, and the boards stopped responding over USB serial entirely** — no boot beacon, no reply to the `ID?` identify handshake `receiver_agent` depends on, confirmed via Arduino IDE's own Serial Monitor showing NOTHING printed at all, on more than one board. Since `Serial.println(DEVICE_ID)` executes before `radio.begin()` in `setup()`, and `pollIdentityRequest()` runs unconditionally on every `loop()` iteration regardless of radio state, a total absence of ANY serial output — not even the boot line — means `setup()` itself never returned, which points squarely at `radio.begin()` with the SF12 parameter actually HANGING (not cleanly erroring, which the code was defensively written to handle) inside RadioLib's SX126x configuration sequence. This was reasoned as a real risk before shipping (see the removed comments' own discussion of low-data-rate-optimization, required automatically by RadioLib for SF11/SF12 at BW125) but not something testable without real hardware — and once tested, it failed.
+**Reverted in full — both `.ino` files are back to byte-identical (content-wise) with the pre-SF12 commit**: spreading factor back to 7, `LORA_TX_INTERVAL_MS` back to a single 200ms/5Hz constant shared with ESP-NOW (no separate `ESPNOW_TX_INTERVAL_MS`), `loRaTx()` back to a plain blocking `radio.transmit()` call, no `loraTxInFlight`/`loraTxDoneFlag`/`checkLoraTxComplete()`. This was a deliberate choice to fully back out rather than guess at a smaller, maybe-safer step (e.g. SF9/SF10, which don't require LDRO and might not hit the same hang) while ALSO trying to fix a live, multi-board, real-world-blocking failure — isolating variables mattered more than preserving partial progress. **The underlying range problem is still unsolved** — SF7 is short-range by design (see the original rule this replaced). If range is revisited: (1) any SF change needs to be tested on real hardware before being treated as done, not just reasoned about from a datasheet/library-behavior assumption, (2) SF9/SF10 (below the BW125 LDRO threshold) are a smaller, more conservative next step than jumping straight back to SF12, and (3) the async-TX rework described above is still architecturally correct and worth reintroducing IF a higher SF is attempted again — the reasoning that made it necessary hasn't changed, only the fact that SF12 itself turned out to hang for an unrelated (or at least undiagnosed) reason.
 
 ### ADS1115 gain is switched per-read — don't assume a fixed gain
 `readDividerVoltage()` sets `GAIN_TWOTHIRDS` (±6.144V FSR) before reading A0/A1; `readCurrentAmps()` sets `GAIN_ONE` (±4.096V FSR) before the A2-A3 differential read. These are deliberately different — the divider channels need the wider range to avoid clipping near 5V, the current channel wants the extra resolution. If you add a new ADS1115 channel, set its own gain explicitly rather than assuming the previous read's gain is still active.
@@ -127,9 +129,10 @@ VEXT power rail is enabled and given time to stabilize *before* I2C init — kee
 
 ---
 
-## Current State (V3.1)
+## Current State (V3.1 — SF12 range attempt reverted, back to known-good SF7)
 
-- Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 200 ms / 5 Hz interval
+- **A move to SF12 for range was tried, flashed to real hardware, confirmed to hang the board (no serial output at all, on multiple units), and fully reverted** — both `.ino` files are back to their pre-attempt state. See the ⚠️ rule above before trying a spreading-factor change again; the underlying range problem (SF7 is short-range by design) is still unsolved.
+- Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 200 ms / 5 Hz interval, sharing one `LORA_TX_INTERVAL_MS` constant
 - Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 5 Hz (`RPM_CALC_INTERVAL_MS = 200`) — everything in the pipeline runs at the same 5 Hz cadence, on purpose
 - ESP-NOW peer: `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` (steering wheel `display_receiver`)
 - **ESC UART telemetry restored** (Serial2, GPIO44 RX/GPIO43 TX, 115200 baud) — real mode/state/setpoint%/live%/ramp% from `esc controller`'s `throttle_controller.ino` (now on ESP32 WROOM-32), flowing through both LoRa (`telemetry_packet_t.esc_*`, `PKT_FLAG_ESC_VALID`) and ESP-NOW

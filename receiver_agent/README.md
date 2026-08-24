@@ -5,9 +5,23 @@ Runs on whatever computer the `greenpower_receiver` ESP32 is plugged into. Watch
 ## Setup (one time)
 
 1. Make sure [Node.js](https://nodejs.org) (LTS) is installed.
-2. Double-click **`setup.bat`**.
+2. Download `GreenpowerAgentSetup.msi` (from the dashboard's Download Installer button, or the repo root README) and run it.
 
-That's it. It installs dependencies, asks for your website URL and API key the first time (same `TELEMETRY_API_KEY` you set on Railway), registers itself to start silently every time you log in, and starts it immediately.
+The installer walks through a normal setup wizard — no admin rights needed (installs to your own user folder, not Program Files). It installs dependencies, config is already baked in, registers itself to start silently every time you log in, and starts it immediately. It also adds a Start Menu shortcut and shows up in Add/Remove Programs — to uninstall, use **Settings → Apps → Installed apps** (search "Greenpower") and choose Uninstall there.
+
+It's a `.msi`, not the more common `.exe` — deliberate: an earlier `.exe` build worked, but got hard-blocked by Windows on Intune-managed/corporate devices (Microsoft Defender specifically targets raw executables that way); an `.msi` isn't that kind of file, so it isn't affected. Confirmed working end-to-end on a real managed device, not just in theory.
+
+Building the installer yourself (only needed if you've changed something in this folder): see `installer/GreenpowerAgent.wxs` — compile with the portable WiX v3.14.1 `candle.exe`/`light.exe` (get the `wix314-binaries.zip` release asset from the [WiX v3 GitHub releases](https://github.com/wixtoolset/wix3/releases) — not WiX's own installer, which needs admin), no admin rights needed for the build either:
+```
+candle.exe -arch x64 -ext WixUtilExtension GreenpowerAgent.wxs
+light.exe -ext WixUIExtension -ext WixUtilExtension GreenpowerAgent.wixobj -o dist\GreenpowerAgentSetup.msi
+```
+
+<details>
+<summary>Old manual flow (still works, just not what the installer button gives you)</summary>
+
+Double-click **`setup.bat`** directly in this folder instead of using the installer — same underlying steps (installs dependencies, asks for your website URL and API key the first time, registers auto-start, starts it immediately), just without the Start Menu shortcut/uninstaller/wizard UI.
+</details>
 
 ## Using it (every time after that)
 
