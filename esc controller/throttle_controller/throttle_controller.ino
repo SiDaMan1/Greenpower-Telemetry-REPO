@@ -14,7 +14,12 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // ─── PWM (LEDC) config — ESP32, ~31kHz silent PWM ────────────────────────────
-#define LEDC_CHANNEL  0
+// ESP32 Arduino core 3.x (ESP-IDF 5) replaced the old channel-based LEDC API
+// (ledcSetup()+ledcAttachPin(pin,channel), ledcWrite(channel,duty)) with a
+// pin-based one (ledcAttach(pin,freq,res), ledcWrite(pin,duty)) — the channel
+// is now managed internally by the core, not chosen by the sketch. LEDC_CHANNEL
+// is gone; nothing else in this file needs to change, since every call already
+// used PWM_PIN as the value that now goes where a channel number used to.
 #define LEDC_FREQ_HZ  31372
 #define LEDC_RES_BITS 8       // 8-bit resolution keeps output math (0-255) the same
 
@@ -201,14 +206,13 @@ void updateDisplay(float potPct, float outputPct) {
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
 void setup() {
-  ledcSetup(LEDC_CHANNEL, LEDC_FREQ_HZ, LEDC_RES_BITS);  // ~31kHz silent PWM
-  ledcAttachPin(PWM_PIN, LEDC_CHANNEL);
+  ledcAttach(PWM_PIN, LEDC_FREQ_HZ, LEDC_RES_BITS);  // ~31kHz silent PWM
   pinMode(ECO_PIN,    INPUT_PULLUP);
   pinMode(SPORT_PIN,  INPUT_PULLUP);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   Serial.begin(9600);
-  Serial.println("Throttle controller ready. V23");
+  Serial.println("Throttle controller ready. V24");
 
   Serial1.begin(115200, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
   Serial.printf("Serial1 UART ready on GPIO%d(TX)/GPIO%d(RX)\n", UART_TX_PIN, UART_RX_PIN);
@@ -222,7 +226,7 @@ void setup() {
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Throttle Ctrl V23");
+  display.println("Throttle Ctrl V24");
   display.display();
 
   lastTick    = millis();
@@ -347,7 +351,7 @@ void loop() {
   // ── Output ──────────────────────────────────────────────────────────────────
   // Hard zero if trigger not held — always safe regardless of state.
   float outputPct = triggerHeld ? clamp(currentPwm, 0.0f, 100.0f) : 0.0f;
-  ledcWrite(LEDC_CHANNEL, (int)(outputPct / 100.0f * 255.0f));
+  ledcWrite(PWM_PIN, (int)(outputPct / 100.0f * 255.0f));
 
   // ── Serial telemetry ─────────────────────────────────────────────────────────
   Serial.print(modeName(currentMode));   Serial.print(" | ");

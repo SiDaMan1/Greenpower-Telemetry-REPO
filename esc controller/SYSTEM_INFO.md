@@ -15,7 +15,7 @@ Originally built on an Arduino Nano ESP32 (ESP32-S3); switched to a plain ESP32 
 | Microcontroller | ESP32 WROOM-32 dev board (plain ESP32, 3.3V) |
 | OLED | 128×64 SSD1306 via I2C |
 | OLED wiring | SDA → GPIO21, SCL → GPIO22 |
-| PWM output | LEDC channel 0, ~31 kHz (silent), 8-bit (0–255) |
+| PWM output | LEDC, pin-based API (core 3.x+), ~31 kHz (silent), 8-bit (0–255) |
 | ADC | 12-bit (0–4095) — same as the previous Nano ESP32 |
 | Libraries | Adafruit SSD1306, Adafruit GFX, Wire, Arduino |
 
@@ -160,3 +160,4 @@ Wiring: GPIO17(TX) → receiver RX, GPIO16(RX) → receiver TX, GND → GND.
 | V20 | Fixed UART GPIO bug — Serial1.begin() needs GPIO numbers (21/38), not Arduino pin labels (10/11) |
 | V21–V22 | Undocumented — the `.ino` had already reached V22 (with `UART_TX_PIN`/`UART_RX_PIN` at 12/11) by the time this history table was last updated. Whatever changed here wasn't recorded; noting the gap rather than guessing at it. |
 | V23 | **Hardware changed: Arduino Nano ESP32 → plain ESP32 WROOM-32.** Full pin remap (previous pins fell inside WROOM-32's internal flash range or on strapping pins), upload procedure changed (no more DFU double-tap — standard IDE upload via the board's USB-serial bridge), board setting changed to "ESP32 Dev Module". Throttle pot deliberately placed on an ADC1 pin (GPIO34) so it stays readable if a WiFi/ESP-NOW link is ever added to this board. |
+| V24 | **Fixed a compile break caused by an ESP32 Arduino core upgrade (core 3.x / ESP-IDF 5), not a code bug that was always there.** That core version removed the old channel-based LEDC API (`ledcSetup()` + `ledcAttachPin(pin, channel)`, `ledcWrite(channel, duty)`) in favor of a pin-based one (`ledcAttach(pin, freq, resolutionBits)`, `ledcWrite(pin, duty)`) — the concept of a separately-numbered LEDC channel is gone from the sketch's point of view; the core manages that internally now. `LEDC_CHANNEL` constant removed; every call site now uses `PWM_PIN` directly. No pin/behavior change — this only affects which underlying Arduino-ESP32 core version the sketch compiles against. |
