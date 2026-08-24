@@ -651,14 +651,33 @@
        single #5f5f5f for both — that measurement was wrong/stale; the two
        system bars are NOT the same color as each other, hence two values
        here, not one.
-       body only needs the top value: #app carries its own explicit --bg0
-       background (see its rule above) covering the entire dashboard
-       content area, so body is only ever visible in the genuine top edge
-       gap (the safe-area-inset-top strip above #header) — never at the
-       bottom, since #app's box already extends the full 100dvh height
-       down to the physical bottom edge (no gap exists there for body to
-       show through). */
-    body { background:#0b0c11; }
+       body was originally given just the flat top value here on the
+       reasoning that #app's own 100dvh box always reaches the exact
+       physical bottom edge, leaving nothing for body to ever show through
+       down there. Real user report on an iPhone (Safari, INSTALLED to the
+       home screen — not a regular browser tab, so this isn't Safari's own
+       chrome) contradicted that: a plain-colored empty strip was visible
+       at the bottom even in standalone mode. iOS/WebKit has a documented
+       history of `100dvh`/`100vh` computing slightly short of the true
+       screen height specifically in standalone (home-screen-launched) web
+       apps — a platform bug, not something this page's own layout
+       controls — which would leave exactly this kind of gap: real,
+       visible pixels below #app's box where body's own flat background
+       shows through instead. Fixed defensively rather than by chasing the
+       exact WebKit shortfall amount: body now carries the SAME gradient
+       #app uses (below), not a flat color, so IF any such gap exists —
+       from this or any future edge case — it shows the correct blended
+       color instead of a flat, mismatched one. Costs nothing at the top
+       edge, where body was already showing through with the gradient's
+       own start color to begin with. */
+    body { background:linear-gradient(to bottom, #0b0c11, #171719 80%); }
+    /* html sits one layer further out than body — if body's own 100% height
+       ever falls short of the true screen (the same category of gap this
+       whole fix defends against, just one level out), html's background is
+       the next thing that would show through. Matched to the same gradient
+       for the same reason body was above, not because html is expected to
+       normally be visible at all. */
+    html { background:linear-gradient(to bottom, #0b0c11, #171719 80%); }
     /* #app's own background carries the bottom-edge fix instead: a subtle
        top→bottom gradient from the (near-identical-to-existing) status-bar
        color down to the real, different nav-bar color, so the interior's
