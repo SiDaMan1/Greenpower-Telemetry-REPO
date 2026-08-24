@@ -119,7 +119,12 @@ if (!WEBSITE_URL || !API_KEY) {
 const DEVICE_ID   = 'GREENPOWER_RX_V1';   // must match greenpower_receiver.ino
 const BAUD_RATE   = 115200;
 const SCAN_MS     = 2000;    // how often to check for newly plugged-in ports
-const IDENTIFY_TIMEOUT_MS = 4000;
+// Opening the port can reset the board (see identifyPort()'s own comment on
+// the DTR-triggered reset finding), and this receiver's own boot sequence
+// has a worst-case ~3s wait (`while(!Serial) ... < 3000`) before it's even
+// running loop()/answering ID? — 4000ms left almost no margin for a retry
+// to land and get answered after that. 6000ms gives real headroom.
+const IDENTIFY_TIMEOUT_MS = 6000;
 const NOTIFY_TIMEOUT_S    = 20;   // how long the accept/decline prompt stays up
 
 // Ports we've already looked at (identified as Greenpower / not / still
@@ -229,6 +234,7 @@ function identifyPort(portPath) {
         buffer += chunk.toString('utf8');
         if (buffer.includes(DEVICE_ID)) {
             settled = true;
+            clearInterval(retryTimer);
             clearTimeout(timeout);
             port.removeListener('data', onData);
             knownPorts.set(portPath, 'ours');
@@ -238,13 +244,34 @@ function identifyPort(portPath) {
     port.on('data', onData);
     port.on('error', () => { /* handled by open callback / timeout */ });
 
-    // In case the boot beacon already went by before we opened the port,
-    // ask directly — the firmware answers ID? immediately either way.
-    port.write('ID?\n', (err) => { /* ignore write errors, timeout covers it */ });
+    // Opening a serial port to an Arduino-style board commonly toggles DTR,
+    // which on many boards (including the auto-reset circuit this receiver
+    // uses) triggers a genuine hardware RESET of the board — a real,
+    // confirmed cause of silent identify failures: the ORIGINAL single
+    // ID?\n write (sent once, immediately on open) can race that reset and
+    // land while the board is still rebooting, well before its ~3s boot
+    // wait finishes and loop()/pollIdentityRequest() is even running to
+    // see it. Nothing ever asked again after that one lost write, so a
+    // board that was genuinely fine (and DID show up correctly in Device
+    // Manager) would still silently fail to identify. Retrying every
+    // 500ms for the whole identify window fixes this — whichever write
+    // lands after the board's actually finished booting gets answered;
+    // the ones lost to an in-progress reset are cheap, harmless no-ops.
+    port.write('ID?\n', (err) => { /* ignore write errors, retries/timeout cover it */ });
+    const retryTimer = setInterval(() => {
+        if (settled) return;
+        port.write('ID?\n', (err) => { /* ignore — same reasoning as the first write above */ });
+    }, 500);
 
     const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
+        clearInterval(retryTimer);
+        // Previously silent — a real gap that made this exact failure mode
+        // (port opens fine, never answers ID?) indistinguishable in
+        // agent.log from "nothing ever tried". Logging it here is what
+        // actually surfaced the DTR-reset race above during diagnosis.
+        log(`[INFO] ${portPath} didn't answer the identify handshake within ${IDENTIFY_TIMEOUT_MS}ms — assuming it's not the Greenpower receiver.`);
         knownPorts.set(portPath, 'not-ours');
         port.removeListener('data', onData);
         port.close(() => {});
