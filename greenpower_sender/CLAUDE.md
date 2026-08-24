@@ -39,7 +39,7 @@ There is no `SYSTEM_INFO.md` in this folder yet.
 | ESC RX (from ESC TX) | GPIO44, Serial2 | [`esc controller`](../esc%20controller/CLAUDE.md), 115200 baud |
 | ESC TX (to ESC RX) | GPIO43, Serial2 | wired for symmetry — the ESC's firmware doesn't currently read anything back |
 
-**LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, SF7, BW125, sync word 0xF3, 22 dBm — see `config.h`.
+**LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, **SF12** (was SF7 — bumped for real-world range after the sender/receiver were found to disconnect at walking distance; see the dedicated rule below), BW125, sync word 0xF3, 22 dBm — see `config.h`. SF12's ~3.8s time-on-air means LoRa now transmits roughly once every ~4.5s (`LORA_TX_INTERVAL_MS`), not 5x/sec — ESP-NOW to the steering wheel is unaffected, still 5Hz on its own separate interval.
 
 **ADS1115 (Lonely Binary board, I2C addr 0x48)** — shared bus with the IMU:
 | Channel | Signal |
@@ -75,8 +75,15 @@ Produced by `espNowSend()`, must stay field-for-field identical to what `mock_se
 ### ESP-NOW peer MAC — critical
 `ESPNOW_PEER_MAC` in `config.h` must match the MAC address `display_receiver` prints on boot. Currently `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` — same value used by `mock_sender`, so the two senders are interchangeable from the receiver's point of view.
 
-### LoRa and ESP-NOW are independent, but share one timer
-Both fire off `LORA_TX_INTERVAL_MS` (200 ms / 5 Hz) in `loop()`, using separate `lastLoraTxMs`/`lastEspNowMs` timestamps — they're two unrelated radios, don't assume one blocks or depends on the other. This matches `SENSOR_INTERVAL_MS` on purpose, so every sensor update actually gets transmitted rather than some being silently skipped — don't let these two drift apart without a reason.
+### LoRa and ESP-NOW are independent, and now run at genuinely different rates — `LORA_TX_INTERVAL_MS` vs `ESPNOW_TX_INTERVAL_MS`
+Used to share one constant (`LORA_TX_INTERVAL_MS`, 200ms/5Hz, matching `SENSOR_INTERVAL_MS`) — that stopped being correct once LoRa moved to SF12 (see the dedicated rule below): ESP-NOW is a completely different radio (2.4GHz WiFi-based) with no LoRa-style airtime constraint, and the steering wheel display it feeds has no reason to slow down just because the LoRa base-station link did. `ESPNOW_TX_INTERVAL_MS` (200ms, unchanged) and `LORA_TX_INTERVAL_MS` (now ~4.5s) are two separate constants, each with its own `lastEspNowMs`/`lastLoraTxMs` timestamp — don't reunify them without a reason; they're deliberately decoupled now, not just historically two variables that happened to read the same constant.
+
+### LoRa TX is async now (`startTransmit()`/`setPacketSentAction()`), not blocking `transmit()` — required by SF12, not a style preference
+At SF7 (the original setting), a single `radio.transmit()` call blocked for roughly 50ms — imperceptible against a 200ms cadence, so blocking was never a problem. SF12's real time-on-air for this packet's 94-byte payload is **~3.8 seconds** (Semtech's LoRa time-on-air formula: ~401ms preamble + ~3375ms payload at BW125/CR4:5/explicit header/CRC on/low-data-rate-optimize on — RadioLib enables LDRO automatically for SX126x once symbol duration exceeds 16ms, true for SF11/SF12 at this bandwidth). Calling the blocking `transmit()` at that airtime would freeze the ENTIRE `loop()` — GPS parsing, ESC UART polling, RPM period calc, and critically ESP-NOW TX to the steering wheel — for 3.8 out of every ~4.5 seconds, silently defeating the point of giving ESP-NOW its own separate fast interval (see the rule above). Fixed by mirroring the exact interrupt-driven pattern `greenpower_receiver` already uses on its RX side (`setPacketReceivedAction`), just for TX instead of RX:
+- `radio.setPacketSentAction(setLoraTxFlag)` (wired in `setup()`, right alongside `setDio2AsRfSwitch`) sets `volatile bool loraTxDoneFlag` from the radio's own IRQ — the ISR touches nothing else, same "keep the ISR trivial" rule the receiver's `setPacketFlag()` already follows.
+- `loRaTx()` now calls `radio.startTransmit()` (returns immediately) instead of `radio.transmit()`, and guards against starting a second transmit while `loraTxInFlight` is still true from an unfinished previous one (skips + logs rather than corrupting radio state or blocking) — this should be rare given `LORA_TX_INTERVAL_MS`'s real headroom above SF12's actual airtime, not a normal steady-state occurrence.
+- `checkLoraTxComplete()` (called every `loop()` iteration, alongside `pollGps()`/`pollEsc()`, NOT gated behind `SENSOR_INTERVAL_MS`) polls `loraTxDoneFlag` and calls `radio.finishTransmit()` — the required cleanup pairing for an async `startTransmit()`, same idea as the receiver always re-arming `startReceive()` after every `readData()` regardless of success. Checking every iteration (not just once per sensor tick) matters because TX completion can land anywhere within that ~3.8s window, not neatly aligned to the 200ms sensor cadence.
+**If LoRa's spreading factor ever changes again, re-derive the real time-on-air** (the formula/assumptions are spelled out in `LORA_TX_INTERVAL_MS`'s own comment) rather than guessing — going back down to SF7-SF9 territory might make blocking `transmit()` viable again, but there's no reason to revert the async pattern just because it's no longer strictly required; it's strictly safer than blocking regardless of spreading factor.
 
 ### ADS1115 gain is switched per-read — don't assume a fixed gain
 `readDividerVoltage()` sets `GAIN_TWOTHIRDS` (±6.144V FSR) before reading A0/A1; `readCurrentAmps()` sets `GAIN_ONE` (±4.096V FSR) before the A2-A3 differential read. These are deliberately different — the divider channels need the wider range to avoid clipping near 5V, the current channel wants the extra resolution. If you add a new ADS1115 channel, set its own gain explicitly rather than assuming the previous read's gain is still active.
@@ -127,10 +134,13 @@ VEXT power rail is enabled and given time to stabilize *before* I2C init — kee
 
 ---
 
-## Current State (V3.1)
+## Current State (V3.2 — LoRa SF12 for real-world range, async TX)
 
-- Dual-radio: LoRa (SX1262, 915 MHz, SF7/BW125, 22 dBm) + ESP-NOW, both @ 200 ms / 5 Hz interval
-- Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 5 Hz (`RPM_CALC_INTERVAL_MS = 200`) — everything in the pipeline runs at the same 5 Hz cadence, on purpose
+- **LoRa moved from SF7 to SF12** (max range for this radio) after real-world testing found the sender/receiver disconnecting at ordinary walking distance — see the dedicated rule above for the full reasoning and the async-TX rework it required.
+- **LoRa TX is now async** (`startTransmit()`/`setPacketSentAction()`/`finishTransmit()`, mirroring the receiver's existing interrupt-driven RX pattern) instead of a blocking `transmit()` call — required once SF12's ~3.8s airtime made blocking the whole `loop()` for that long per transmission unacceptable. See the dedicated rule above.
+- **LoRa and ESP-NOW now run on genuinely separate intervals** — `LORA_TX_INTERVAL_MS` (~4.5s, SF12 airtime + headroom) and `ESPNOW_TX_INTERVAL_MS` (200ms/5Hz, unchanged) — previously one shared constant paced both. The steering wheel display (ESP-NOW) is unaffected by the LoRa range change.
+- Dual-radio: LoRa (SX1262, 915 MHz, SF12/BW125, 22 dBm) + ESP-NOW, each on its own interval (see above)
+- Sensor loop @ 5 Hz (`SENSOR_INTERVAL_MS = 200`), RPM recalculated @ 5 Hz (`RPM_CALC_INTERVAL_MS = 200`), ESP-NOW TX @ 5 Hz — **LoRa TX is the one exception now**, at ~4.5s per the SF12 change above; everything else in the pipeline still shares the same 5 Hz cadence, on purpose
 - ESP-NOW peer: `{0x44, 0x1B, 0xF6, 0xCA, 0x38, 0xE4}` (steering wheel `display_receiver`)
 - **ESC UART telemetry restored** (Serial2, GPIO44 RX/GPIO43 TX, 115200 baud) — real mode/state/setpoint%/live%/ramp% from `esc controller`'s `throttle_controller.ino` (now on ESP32 WROOM-32), flowing through both LoRa (`telemetry_packet_t.esc_*`, `PKT_FLAG_ESC_VALID`) and ESP-NOW
 - Voltage and current sensing moved entirely to the ADS1115; the ESP32's internal ADC is no longer used for anything in this sketch (temp probe is 1-Wire digital, not analog)

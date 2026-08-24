@@ -36,6 +36,7 @@ No other peripherals — no sensors, no GPS, no display. Just the radio and USB.
 
 ### `config.h` must stay in sync with `greenpower_sender/config.h`
 This is two independently-maintained copies of the same file, not a shared include — Arduino sketches in separate folders can't easily share a header across sketch boundaries, so both sides keep their own copy by convention (same pattern used by `mock_sender`/`display_receiver` elsewhere in this repo). If `telemetry_packet_t` or the LoRa RF settings (frequency, bandwidth, spreading factor, coding rate, sync word) change on the sender side, copy the change here too, in the same commit — a mismatch means packets either won't decode or won't be heard at all, usually with no obvious error message pointing at the real cause.
+**Caught exactly this trap once already, worth remembering**: the spreading factor isn't actually in `config.h` on either side — it's a literal argument to each sketch's own `radio.begin(...)` call in the `.ino` file, so "keep `config.h` in sync" doesn't automatically cover it. When the sender moved from SF7 to SF12 for real-world range (see `greenpower_sender/CLAUDE.md`), the receiver's own `radio.begin()` spreading-factor argument had to be changed by hand in the SAME pass — it's not something a `config.h` diff would ever surface on its own.
 
 ### Interrupt-driven receive — keep the ISR trivial
 `setPacketFlag()` only sets a `volatile bool`; all real work (`radio.readData()`, parsing, printing) happens in `loop()`. Don't add radio calls or `Serial.print` inside the ISR itself — RadioLib's SPI transactions aren't ISR-safe, and blocking work in an interrupt handler risks missing the next packet or crashing.
@@ -56,8 +57,9 @@ Added in the V1.1 pass to support the local forwarder agent (`../receiver_agent`
 
 ---
 
-## Current State (V1.1)
+## Current State (V1.2 — SF12, matching the sender's range change)
 
+- **LoRa spreading factor bumped from SF7 to SF12** to match `greenpower_sender`'s move to max range (real-world disconnects at walking distance on SF7) — `radio.begin()`'s spreading-factor argument updated to `12`, same as the sender. See that project's CLAUDE.md for the full reasoning (time-on-air math, the sender-side async-TX rework this required). Nothing else on the RX side needed to change — this device only listens, so SF12's long airtime doesn't create a blocking-call problem here the way it did on the sender's TX path; packets now just arrive roughly once every ~4.5s instead of 5x/sec.
 - LoRa RX only — no ESP-NOW, no display, no packet forwarding beyond USB serial
 - Interrupt-driven receive via RadioLib (`setPacketReceivedAction` + `startReceive()`), not blocking/polled
 - Prints full packet contents plus RSSI/SNR/packet count on every successful receive; CRC mismatches and other read errors are counted and logged, not silently dropped
