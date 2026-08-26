@@ -21,7 +21,8 @@
 //                          20 Hz CSV: mode,state,setpointPct,livePct,rampPct
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Transmits telemetry_packet_t (now includes ESC fields) every 200 ms (5 Hz)
+//           Transmits telemetry_packet_t (now includes ESC fields) every
+//           ~2s (SF10, real range gain over the original SF7/200ms)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
 //              mock_sender — see espNowSend() below. Mode/state/percent
@@ -71,7 +72,30 @@
 #define LORA_SCK           9
 #define LORA_MISO         11
 #define LORA_MOSI         10
-#define LORA_TX_INTERVAL_MS  200   // 5 Hz — also paces ESP-NOW TX; matches SENSOR_INTERVAL_MS so every sensor update actually gets sent
+// LoRa moved to SF10 (up from SF7) for real range, per explicit request
+// after the sender/receiver were found to disconnect at ordinary walking
+// distance. NOT SF12 — an earlier SF12 attempt hung the board completely
+// during radio.begin() on real hardware (confirmed: zero serial output,
+// on multiple physical boards), and the exact cause was never confirmed,
+// only reverted. SF10 is a deliberately more conservative step: it sits
+// BELOW the symbol-duration threshold (>16ms) that requires RadioLib to
+// enable low-data-rate-optimization for SX126x, which is the leading (but
+// still unconfirmed) suspect for what actually hung at SF11/SF12 — SF10's
+// time-on-air is short enough (~944ms for this packet, computed via
+// Semtech's LoRa time-on-air formula: ~100ms preamble + ~844ms payload at
+// BW125/CR4:5/explicit header/CRC on/DE=0) that it doesn't need LDRO at
+// all. Real range improvement over SF7, without re-gambling on the exact
+// mechanism that broke real boards last time. **Test on ONE board with a
+// Serial Monitor attached before flashing others** — this has NOT been
+// confirmed safe on real hardware, it's a smaller, better-reasoned bet,
+// not a proven one.
+// LORA_TX_INTERVAL_MS (~2s, real headroom above the ~944ms airtime) is
+// separate from ESP-NOW's own interval now — ESP-NOW is a different radio
+// (2.4GHz WiFi-based) with no LoRa-style airtime constraint, and the
+// steering wheel display it feeds has no reason to slow down just because
+// the LoRa base-station link did.
+#define LORA_TX_INTERVAL_MS   2000   // ~SF10 time-on-air (~944ms) + headroom
+#define ESPNOW_TX_INTERVAL_MS  200   // unchanged — 5 Hz, matches SENSOR_INTERVAL_MS
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
 #define GPS_TX_PIN        33   // ESP32 TX  → GPS RX
@@ -147,6 +171,21 @@ DallasTemperature tempSensor(&oneWire);
 // SX1262 radio (NSS, DIO1, RST, BUSY)
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 bool   loraReady   = false;
+
+// ── Async LoRa TX ───────────────────────────────────────────────────
+// At SF10 a single transmit's airtime is ~944ms — long enough that a
+// blocking radio.transmit() would stall this loop() (GPS parsing, ESC
+// UART polling, RPM period calc, and ESP-NOW TX to the steering wheel)
+// for nearly a full second every ~2s cycle. Non-blocking async TX avoids
+// that regardless of exactly how long a transmit takes — same
+// interrupt-driven pattern greenpower_receiver already uses proven on its
+// RX side (setPacketReceivedAction), mirrored here for TX instead of RX.
+volatile bool loraTxDoneFlag = false;
+void IRAM_ATTR setLoraTxFlag() { loraTxDoneFlag = true; }
+// Only ever read/written from loop() (unlike loraTxDoneFlag, which the ISR
+// also touches) — true from the moment startTransmit() successfully kicks
+// off a transmission until finishTransmit() has been called for it.
+bool loraTxInFlight = false;
 
 // ESP-NOW peer (steering wheel display)
 static const uint8_t PEER_MAC[6] = ESPNOW_PEER_MAC;
@@ -469,10 +508,44 @@ static void updateSensors() {
 //  LORA TX
 // ════════════════════════════════════════════════════════════════════
 
+// Kicks off a transmission and returns immediately — does NOT block for the
+// ~944ms SF10 airtime. See loraTxDoneFlag's own comment (near the radio's
+// declaration) for why. Completion is picked up later by
+// checkLoraTxComplete(), called every loop() iteration independent of
+// LORA_TX_INTERVAL_MS's own timing.
 static void loRaTx() {
     if (!loraReady) return;
+    if (loraTxInFlight) {
+        // The previous transmission hasn't finished yet — LORA_TX_INTERVAL_MS
+        // has real headroom above SF10's actual airtime specifically so this
+        // should be rare, not a normal steady-state occurrence. Skip this
+        // cycle rather than call startTransmit() on top of an in-progress
+        // one (undefined radio state) or block waiting for it.
+        Serial.println("  [LoRa] TX skipped — previous transmit still in flight");
+        return;
+    }
 
-    int state = radio.transmit((uint8_t*)&pkt, sizeof(pkt));
+    int state = radio.startTransmit((uint8_t*)&pkt, sizeof(pkt));
+    if (state == RADIOLIB_ERR_NONE) {
+        loraTxInFlight = true;
+    } else {
+        Serial.printf("  [LoRa] startTransmit() ERR %d\n", state);
+    }
+}
+
+// Called every loop() iteration (cheap — one volatile bool check on every
+// pass when nothing's pending) so a completed transmission is noticed
+// promptly regardless of where LORA_TX_INTERVAL_MS's own next check lands.
+static void checkLoraTxComplete() {
+    if (!loraTxDoneFlag) return;
+    loraTxDoneFlag = false;
+
+    // finishTransmit() is the required cleanup call after an async
+    // startTransmit() (puts the radio back into standby, clears IRQ flags)
+    // — RadioLib's documented pairing, same idea as the receiver always
+    // re-arming startReceive() after every readData(), successful or not.
+    int state = radio.finishTransmit();
+    loraTxInFlight = false;
 
     if (state == RADIOLIB_ERR_NONE) {
         Serial.printf("  [LoRa] TX OK  %u bytes  RSSI:%.0f dBm\n",
@@ -611,7 +684,7 @@ void setup() {
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
         125.0,                // bandwidth kHz
-        7,                    // spreading factor
+        10,                   // spreading factor — SF10, real range gain (was SF7), deliberately NOT SF12 (hung on real hardware last attempt) — see LORA_TX_INTERVAL_MS's own comment
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // 22 dBm
@@ -621,8 +694,9 @@ void setup() {
         Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
     } else {
         radio.setDio2AsRfSwitch(true);   // required on Heltec V4
+        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — see loraTxDoneFlag's own comment for why this can't be a blocking transmit() at SF10's airtime
         loraReady = true;
-        Serial.println("[OK]   SX1262  915 MHz  SF7  BW125  22dBm");
+        Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm");
     }
 
     Serial.println("[RDY]  Sensor loop starting\n");
@@ -634,9 +708,13 @@ void setup() {
 // ════════════════════════════════════════════════════════════════════
 
 void loop() {
-    // These two run every loop iteration to keep their UART buffers drained
+    // These run every loop iteration — pollGps()/pollEsc() to keep their
+    // UART buffers drained, checkLoraTxComplete() so an async LoRa TX
+    // finishing mid-cycle (anywhere in its ~944ms SF10 airtime) is noticed
+    // promptly rather than only at the next SENSOR_INTERVAL_MS tick.
     pollGps();
     pollEsc();
+    checkLoraTxComplete();
 
     uint32_t now = millis();
     if (now - lastSensorMs < SENSOR_INTERVAL_MS) return;
@@ -644,14 +722,14 @@ void loop() {
 
     updateSensors();
 
-    // ── LoRa TX — every LORA_TX_INTERVAL_MS ─────────────────────────
+    // ── LoRa TX — every LORA_TX_INTERVAL_MS (~2s, SF10 airtime + headroom) ──
     if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
         lastLoraTxMs = now;
         loRaTx();
     }
 
-    // ── ESP-NOW TX — every LORA_TX_INTERVAL_MS ───────────────────────
-    if (now - lastEspNowMs >= LORA_TX_INTERVAL_MS) {
+    // ── ESP-NOW TX — every ESPNOW_TX_INTERVAL_MS (200ms/5Hz, unchanged) ──
+    if (now - lastEspNowMs >= ESPNOW_TX_INTERVAL_MS) {
         lastEspNowMs = now;
         espNowSend();
     }

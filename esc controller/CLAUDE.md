@@ -31,12 +31,12 @@ Every edit to `throttle_controller.ino` **must** increment the version number in
 1. `Serial.println("Throttle controller ready. VX");` inside `setup()`
 2. `display.println("Throttle Ctrl VX");` in the OLED boot message inside `setup()`
 
-Both must match. Current version: **V23**. Next edit → V24.
+Both must match. Current version: **V24**. Next edit → V25.
 
 ### Hardware Constraints (ESP32 WROOM-32)
 - **3.3V logic** — do not connect 5V signals directly to any pin.
 - **I2C on standard pins:** SDA = GPIO21, SCL = GPIO22. No Arduino pin-label aliases exist on this board (unlike the Nano ESP32) — pin numbers in code are raw GPIO numbers, full stop.
-- **PWM on GPIO25 via LEDC** — do not use `analogWrite()` on ESP32; always use `ledcWrite()`.
+- **PWM on GPIO25 via LEDC** — do not use `analogWrite()` on ESP32; always use `ledcWrite()`. As of V24 this is the **pin-based** LEDC API (`ledcAttach(pin, freq, res)` / `ledcWrite(pin, duty)`, ESP32 core 3.x+) — there is no separate channel number anymore (`LEDC_CHANNEL` was removed). If a future core upgrade breaks this again, check the core's changelog for LEDC API changes before assuming it's a real code bug.
 - **12-bit ADC** — pot reads 0–4095, not 0–1023. Same on this chip as the Nano ESP32's S3.
 - **Active-low inputs** — ECO_PIN, SPORT_PIN, BUTTON_PIN all use `INPUT_PULLUP`. LOW = pressed/active.
 - **GPIO6–11 are never usable** — wired internally to the module's flash chip on WROOM-32. Don't route anything to them, ever, even temporarily for testing.
@@ -57,8 +57,9 @@ GPIO4, 15, 18, 19, 23, 26, 32, 33, 35–39 (35/36/39 are input-only). GPIO16/17 
 
 ---
 
-## Current State (V23)
+## Current State (V24)
 
+- **LEDC PWM API updated for ESP32 Arduino core 3.x** — `ledcSetup()`/`ledcAttachPin()`/channel-based `ledcWrite()` were removed by a core upgrade; now uses the pin-based `ledcAttach(PWM_PIN, LEDC_FREQ_HZ, LEDC_RES_BITS)` / `ledcWrite(PWM_PIN, duty)`. `LEDC_CHANNEL` constant is gone. Pure compile-fix, no behavior change.
 - **Hardware changed from Arduino Nano ESP32 to plain ESP32 WROOM-32** — full pin remap, upload procedure changed (no more DFU double-tap), board setting changed to "ESP32 Dev Module"
 - Three modes: ECO (~30 s ramp), NORMAL (~15 s), SPORT (~5 s)
 - Four states: IDLE, REENGAGING, RAMPING, HOLDING

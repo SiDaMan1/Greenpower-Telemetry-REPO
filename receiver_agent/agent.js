@@ -44,12 +44,38 @@ function log(line) {
 }
 
 // ── Single-instance PID file ───────────────────────────────────────
-// setup.bat reads this file to kill any previous hidden instance before
-// starting a new one — otherwise re-running setup.bat piles up multiple
-// node.exe processes, and an old one holding a serial port open causes a
-// confusing "Access denied" on that port in the NEW instance, which looks
-// like a hardware/driver problem but is actually just a stale process.
+// setup.bat ALSO reads this file to kill any previous hidden instance
+// before starting a new one, but that only covers the "re-running
+// setup.bat" path specifically. The check right below covers every other
+// way a second instance could end up running at the same time — the
+// Startup-folder auto-launch firing on login while a previous instance
+// from before a restart/sleep is somehow still alive, someone double-
+// clicking the launcher shortcut twice, running `node agent.js` manually
+// while the hidden auto-started one is already up, etc. — by having the
+// agent itself check on every single startup, not just when setup.bat
+// happens to be the one doing the (re)launching. Left running, a second
+// instance would fight the first for the same serial port — the exact
+// "Access denied, looks like a hardware/driver problem but isn't" failure
+// this file already has a rule about below.
 const PID_PATH = path.join(__dirname, 'agent.pid');
+try {
+    const existingPidRaw = fs.readFileSync(PID_PATH, 'utf8').trim();
+    const existingPid = parseInt(existingPidRaw, 10);
+    if (existingPid && existingPid !== process.pid) {
+        try {
+            // Signal 0 doesn't actually send a signal — it's the standard
+            // Node/POSIX idiom for "is this PID still alive", and it throws
+            // (ESRCH) if not. Works on Windows too via libuv's emulation.
+            process.kill(existingPid, 0);
+            log(`[WARN] Another agent instance (PID ${existingPid}) is already running — terminating it so this one can take over.`);
+            process.kill(existingPid, 'SIGTERM');
+        } catch (e) {
+            // Not alive — a stale PID file left over from a previous
+            // crash/unclean exit that skipped the cleanup handlers below.
+            // Nothing to do, just proceed to overwrite it with our own PID.
+        }
+    }
+} catch (e) { /* no existing PID file — normal on first run ever */ }
 try { fs.writeFileSync(PID_PATH, String(process.pid)); } catch (e) { /* non-fatal */ }
 function cleanupPidFile() {
     try {
@@ -93,7 +119,12 @@ if (!WEBSITE_URL || !API_KEY) {
 const DEVICE_ID   = 'GREENPOWER_RX_V1';   // must match greenpower_receiver.ino
 const BAUD_RATE   = 115200;
 const SCAN_MS     = 2000;    // how often to check for newly plugged-in ports
-const IDENTIFY_TIMEOUT_MS = 4000;
+// Opening the port can reset the board (see identifyPort()'s own comment on
+// the DTR-triggered reset finding), and this receiver's own boot sequence
+// has a worst-case ~3s wait (`while(!Serial) ... < 3000`) before it's even
+// running loop()/answering ID? — 4000ms left almost no margin for a retry
+// to land and get answered after that. 6000ms gives real headroom.
+const IDENTIFY_TIMEOUT_MS = 6000;
 const NOTIFY_TIMEOUT_S    = 20;   // how long the accept/decline prompt stays up
 
 // Ports we've already looked at (identified as Greenpower / not / still
@@ -203,6 +234,7 @@ function identifyPort(portPath) {
         buffer += chunk.toString('utf8');
         if (buffer.includes(DEVICE_ID)) {
             settled = true;
+            clearInterval(retryTimer);
             clearTimeout(timeout);
             port.removeListener('data', onData);
             knownPorts.set(portPath, 'ours');
@@ -212,13 +244,34 @@ function identifyPort(portPath) {
     port.on('data', onData);
     port.on('error', () => { /* handled by open callback / timeout */ });
 
-    // In case the boot beacon already went by before we opened the port,
-    // ask directly — the firmware answers ID? immediately either way.
-    port.write('ID?\n', (err) => { /* ignore write errors, timeout covers it */ });
+    // Opening a serial port to an Arduino-style board commonly toggles DTR,
+    // which on many boards (including the auto-reset circuit this receiver
+    // uses) triggers a genuine hardware RESET of the board — a real,
+    // confirmed cause of silent identify failures: the ORIGINAL single
+    // ID?\n write (sent once, immediately on open) can race that reset and
+    // land while the board is still rebooting, well before its ~3s boot
+    // wait finishes and loop()/pollIdentityRequest() is even running to
+    // see it. Nothing ever asked again after that one lost write, so a
+    // board that was genuinely fine (and DID show up correctly in Device
+    // Manager) would still silently fail to identify. Retrying every
+    // 500ms for the whole identify window fixes this — whichever write
+    // lands after the board's actually finished booting gets answered;
+    // the ones lost to an in-progress reset are cheap, harmless no-ops.
+    port.write('ID?\n', (err) => { /* ignore write errors, retries/timeout cover it */ });
+    const retryTimer = setInterval(() => {
+        if (settled) return;
+        port.write('ID?\n', (err) => { /* ignore — same reasoning as the first write above */ });
+    }, 500);
 
     const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
+        clearInterval(retryTimer);
+        // Previously silent — a real gap that made this exact failure mode
+        // (port opens fine, never answers ID?) indistinguishable in
+        // agent.log from "nothing ever tried". Logging it here is what
+        // actually surfaced the DTR-reset race above during diagnosis.
+        log(`[INFO] ${portPath} didn't answer the identify handshake within ${IDENTIFY_TIMEOUT_MS}ms — assuming it's not the Greenpower receiver.`);
         knownPorts.set(portPath, 'not-ours');
         port.removeListener('data', onData);
         port.close(() => {});

@@ -23,6 +23,7 @@
 const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const { Pool } = require('pg');
 
 const app = express();
@@ -229,8 +230,56 @@ app.get('/api/sessions/:id/export.csv', async (req, res) => {
     }
 });
 
+// ── App version (for the client's "an update is available" check) ──────
+// A content hash of the actually-served index.html, computed once at
+// boot — deliberately NOT a hand-maintained version string, so there's
+// nothing to remember to bump/keep in sync across two files. It changes
+// if and only if the served page actually did, which happens naturally
+// on every real deploy (a fresh file on disk). Public, no auth — same
+// reasoning as /api/latest, nothing sensitive in a hash.
+let APP_VERSION = 'dev';
+try {
+    const indexHtml = fs.readFileSync(path.join(__dirname, 'public', 'index.html'));
+    APP_VERSION = crypto.createHash('sha1').update(indexHtml).digest('hex').slice(0, 10);
+} catch (e) {
+    console.warn('[WARN] Could not hash public/index.html for /api/version:', e.message);
+}
+
+app.get('/api/version', (req, res) => {
+    res.json({ version: APP_VERSION });
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`[READY] Greenpower telemetry web listening on port ${PORT}`);
 });
+
+// ── Graceful shutdown ──────────────────────────────────────────────────
+// Railway sends SIGTERM to the OLD container whenever a new deploy rolls
+// out (and again on a manual restart) — this is a normal, expected part
+// of every deploy, not a crash. Node has no default handler for SIGTERM
+// though, so without one the process dies mid-signal and npm's wrapper
+// reports that as "npm error / command failed / signal SIGTERM", reading
+// exactly like a real failure in Railway's logs even on a totally healthy
+// deploy. Handling it explicitly and exiting with a real code 0 (closing
+// the DB pool first, if one's configured) makes npm see a clean exit
+// instead — this is what actually stops that message from appearing on
+// every single redeploy, not a config flag.
+function shutdown(signal) {
+    console.log(`[INFO] ${signal} received — shutting down gracefully.`);
+    server.close(() => {
+        if (pool) {
+            pool.end().finally(() => process.exit(0));
+        } else {
+            process.exit(0);
+        }
+    });
+    // Belt-and-suspenders — if something (a stuck connection) keeps
+    // server.close()'s callback from ever firing, don't hang forever and
+    // force Railway to SIGKILL after its own grace period; exit cleanly
+    // on our own timeout first.
+    setTimeout(() => process.exit(0), 5000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
