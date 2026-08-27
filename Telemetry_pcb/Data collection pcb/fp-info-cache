@@ -1,4 +1,4 @@
-26426296252533098
+26444174336950007
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -105609,9 +105609,79 @@ Varistor VF
 2
 2
 greenpower telemetry footprints
-Heltec v4
+1X02 PADS
 
 
 0
+2
+2
+greenpower telemetry footprints
+1X03 PADS
+
+
 0
+3
+3
+greenpower telemetry footprints
+1X04 PADS
+
+
 0
+4
+4
+greenpower telemetry footprints
+1X10 PADS
+
+
+0
+10
+10
+greenpower telemetry footprints
+1X15 PADS
+
+
+0
+15
+15
+greenpower telemetry footprints
+1X23 PADS
+
+
+0
+23
+23
+greenpower telemetry footprints
+ACCELEROMETER
+
+
+0
+8
+8
+greenpower telemetry footprints
+ADC_MODULE
+
+
+0
+10
+10
+greenpower telemetry footprints
+GPS_MODULE
+
+
+0
+9
+9
+greenpower telemetry footprints
+HELTEC V4
+
+
+0
+40
+40
+greenpower telemetry footprints
+VOLTAGE_DIVIDER
+
+
+0
+4
+4
