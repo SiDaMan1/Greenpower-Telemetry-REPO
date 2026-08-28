@@ -100,7 +100,7 @@
         "item_on_disabled_layer": "error",
         "items_not_allowed": "error",
         "length_out_of_range": "error",
-        "lib_footprint_issues": "warning",
+        "lib_footprint_issues": "ignore",
         "lib_footprint_mismatch": "warning",
         "malformed_courtyard": "error",
         "microvia_drill_out_of_range": "error",
@@ -526,7 +526,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "",
-      "plot": "",
+      "plot": "gerbers/",
       "pos_files": "",
       "specctra_dsn": "",
       "step": "",
@@ -673,7 +673,7 @@
         "uuid": "e2b77954-fa8c-41bc-9280-3f6b3e7db595"
       }
     ],
-    "used_designators": "#PWR1-60",
+    "used_designators": "#PWR1-60,H1-4",
     "variants": []
   },
   "sheets": [
