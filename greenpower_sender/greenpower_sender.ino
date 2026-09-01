@@ -19,6 +19,10 @@
 //                          ../esc controller/throttle_controller.ino (ESP32
 //                          WROOM-32, TX=GPIO17/RX=GPIO16 on that end).
 //                          20 Hz CSV: mode,state,setpointPct,livePct,rampPct
+//    • SD card           — local telemetry backup, own SPI bus (separate
+//                          from the LoRa radio's), CS=47 SCK=48 MOSI=7
+//                          MISO=5. Logs every packet to /LOGnnn.CSV
+//                          regardless of whether the LoRa link is up.
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
@@ -58,6 +62,7 @@
 #include <RadioLib.h>
 #include <string.h>
 #include <stdlib.h>
+#include <SD.h>
 #include "config.h"
 
 
@@ -128,6 +133,22 @@
 // INPUT_PULLUP first (idle HIGH, most common for these break-beam modules).
 #define RPM_PIN_MODE      INPUT_PULLUP
 
+// ── SD card (local telemetry log) ────────────────────────────────────
+// A SEPARATE SPI bus from the on-board LoRa radio's — the radio's SPI
+// (SCK=9/MISO=11/MOSI=10, see config.h) is wired chip-to-chip internally
+// to the co-packaged SX1262 and was never broken out to a header pin at
+// all, so there's nothing to physically share. These four pins were
+// specifically cross-checked against every other pin already in use on
+// this board (GPS/I2C/temp/ESC/RPM above, plus the LoRa radio's own
+// internal pins) before being chosen — see greenpower_sender/CLAUDE.md's
+// SD-card rule for the full pin-conflict check. GPIO47/48 have no other
+// function on this board at all; GPIO5/7 are touch/ADC1-capable but that
+// doesn't stop them being used as plain digital SPI pins here.
+#define SD_CS_PIN         47
+#define SD_SCK_PIN        48
+#define SD_MOSI_PIN        7
+#define SD_MISO_PIN        5
+
 // ADS1115 (Lonely Binary board) — I2C address, ADDR pin → GND = 0x48
 #define ADS_I2C_ADDR      0x48
 #define ADS_MOTOR_V_CH       0   // A0
@@ -167,6 +188,15 @@ Adafruit_MPU6050  mpu;
 Adafruit_ADS1115  ads;
 OneWire           oneWire(TEMP_PROBE_PIN);
 DallasTemperature tempSensor(&oneWire);
+
+// A dedicated second SPI bus (FSPI) for the SD card — the default `SPI`
+// object/pins are already claimed by the LoRa radio (SPI.begin() with
+// LORA_SCK/MISO/MOSI in setup() below); a second SPIClass instance on its
+// own pins is the standard way to run two independent SPI peripherals on
+// one ESP32-S3.
+SPIClass sdSPI(FSPI);
+bool sdReady = false;
+File logFile;
 
 // SX1262 radio (NSS, DIO1, RST, BUSY)
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
@@ -426,6 +456,87 @@ static void pollEsc() {
             buf[idx++] = c;
         }
     }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  SD CARD LOGGING  (local backup — independent of LoRa/ESP-NOW)
+//  A separate, persistent record of everything this sender sees, kept
+//  entirely on the vehicle regardless of whether the LoRa link to the
+//  base station ever actually connects. Useful on its own (post-run
+//  analysis straight off the card) and as a fallback if the radio link
+//  drops out mid-run — nothing here depends on LoRa/ESP-NOW being up.
+// ════════════════════════════════════════════════════════════════════
+
+// One new file per power-cycle (LOG001.CSV, LOG002.CSV, ...) rather than
+// one giant always-appended file — keeps each run's data separate for
+// easier post-race analysis, same reasoning telemetry_web's own
+// session-boundary logic uses for a similar problem server-side. Scans
+// for the first filename that doesn't already exist rather than assuming
+// LOG001 is free — the card persists across power cycles, so a fresh
+// boot after previous runs needs to find where the last one left off.
+static bool openNextLogFile() {
+    char name[16];
+    for (int i = 1; i <= 999; i++) {
+        snprintf(name, sizeof(name), "/LOG%03d.CSV", i);
+        if (!SD.exists(name)) {
+            logFile = SD.open(name, FILE_WRITE);
+            if (!logFile) return false;
+            Serial.printf("[OK]   SD log file: %s\n", name);
+            return true;
+        }
+    }
+    return false;   // 999 log files already on the card — extremely unlikely, but don't loop forever
+}
+
+static void initSdCard() {
+    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+    if (!SD.begin(SD_CS_PIN, sdSPI)) {
+        Serial.println("[WARN] SD card not detected — local logging disabled (LoRa/ESP-NOW unaffected)");
+        return;
+    }
+    if (!openNextLogFile()) {
+        Serial.println("[WARN] SD card present but couldn't open a log file — local logging disabled");
+        return;
+    }
+    // Header row — column order matches the fields written in logToSD()
+    // below. millis_ms is this board's own uptime clock, not wall-clock
+    // time — there's no RTC on this board, so this is the only timestamp
+    // available; still useful for computing relative timing/intervals
+    // within one run.
+    logFile.println("millis_ms,flags,speed_mph,latitude,longitude,hdop,satellites,"
+                     "temp_f,batt_volt,motor_volt,current_a,"
+                     "roll_deg,pitch_deg,yaw_deg,accel_g,lateral_g,vertical_g,"
+                     "motor_rpm,wheel_rpm,"
+                     "esc_mode,esc_state,esc_setpoint_pct,esc_live_pct,esc_ramp_pct");
+    logFile.flush();
+    sdReady = true;
+    Serial.println("[OK]   SD card logging active");
+}
+
+// Called once per SENSOR_INTERVAL_MS tick (see loop()), right after
+// updateSensors() — logs the exact same `pkt` LoRa/ESP-NOW would send,
+// so the card's record and the transmitted telemetry never disagree.
+// flush()ed on every single write, not batched — at 5Hz this is a small
+// amount of data, and the whole point of a local backup is surviving a
+// sudden power loss (a real, plausible failure mode for a race vehicle);
+// data sitting in an unflushed buffer when power cuts is data this log
+// was specifically supposed to protect against losing.
+static void logToSD() {
+    if (!sdReady) return;
+    logFile.printf(
+        "%lu,%u,%.2f,%.6f,%.6f,%.1f,%u,"
+        "%.1f,%.2f,%.2f,%.2f,"
+        "%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,"
+        "%.0f,%.0f,"
+        "%s,%s,%.1f,%.1f,%.1f\n",
+        (unsigned long)millis(), pkt.flags, pkt.speed_mph, pkt.latitude, pkt.longitude, pkt.hdop, pkt.satellites,
+        pkt.temp_f, pkt.batt_volt, pkt.motor_volt, pkt.current_a,
+        pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg, pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
+        pkt.motor_rpm, pkt.wheel_rpm,
+        pkt.esc_mode, pkt.esc_state, pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
+    );
+    logFile.flush();
 }
 
 
@@ -699,6 +810,11 @@ void setup() {
         Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm");
     }
 
+    // SD card — separate SPI bus, see SD_*_PIN's own comment for why these
+    // specific pins. Non-fatal if missing/failed: initSdCard() itself
+    // warns and leaves sdReady false, everything else keeps working.
+    initSdCard();
+
     Serial.println("[RDY]  Sensor loop starting\n");
 }
 
@@ -721,6 +837,7 @@ void loop() {
     lastSensorMs = now;
 
     updateSensors();
+    logToSD();   // every SENSOR_INTERVAL_MS tick (5Hz) — independent of the LoRa/ESP-NOW radios below, see the SD CARD LOGGING section's own comment
 
     // ── LoRa TX — every LORA_TX_INTERVAL_MS (~2s, SF10 airtime + headroom) ──
     if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
