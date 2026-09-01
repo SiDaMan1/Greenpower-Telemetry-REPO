@@ -38,6 +38,10 @@ There is no `SYSTEM_INFO.md` in this folder yet.
 | VEXT power rail | GPIO36 (active LOW) | Heltec V4 external sensor rail |
 | ESC RX (from ESC TX) | GPIO44, Serial2 | [`esc controller`](../esc%20controller/CLAUDE.md), 115200 baud |
 | ESC TX (to ESC RX) | GPIO43, Serial2 | wired for symmetry — the ESC's firmware doesn't currently read anything back |
+| SD card CS | GPIO47 | own SPI bus, see the dedicated rule below |
+| SD card SCK | GPIO48 | " |
+| SD card MOSI | GPIO7 | " |
+| SD card MISO | GPIO5 | " |
 
 **LoRa (on-board SX1262):** NSS=8 RST=12 DIO1=14 BUSY=13, SPI SCK=9 MISO=11 MOSI=10. 915 MHz, **SF10** (was SF7, then briefly SF12 — see the dedicated ⚠️ rule below for the SF12 hang and why SF10 was chosen as a more conservative second attempt), BW125, sync word 0xF3, 22 dBm — see `config.h`. **Not yet confirmed working on real hardware** — test on one board with a Serial Monitor attached before flashing others.
 
