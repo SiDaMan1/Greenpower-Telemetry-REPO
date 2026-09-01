@@ -45,6 +45,8 @@
 //    • OneWire                 (Paul Stoffregen)
 //    • DallasTemperature       (Miles Burton)
 //    • RadioLib                (jgromes)
+//    • SD                      (built into the ESP32 Arduino core — no
+//                                separate Library Manager install needed)
 // ════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
