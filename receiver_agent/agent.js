@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.5.1.0';
+const AGENT_VERSION = '1.5.2.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -891,16 +891,35 @@ ${productCodes.length > 0
 ' up to roughly a minute to actually disappear (Test-Path/Explorer both
 ' still report it existing that whole time) before clearing on its own —
 ' looked like leftover NTFS/Windows Installer teardown bookkeeping
-' settling asynchronously, not a real lock: a manual delete of that exact
-' same empty folder always succeeded instantly the moment it was actually
-' tried, confirming nothing is genuinely blocking it. 60 attempts at 1s
-' gives real headroom (~60s) to catch that window automatically instead
-' of leaving an empty, harmless-but-visible folder icon behind for the
-' user to notice and wonder about.
+' settling asynchronously, not a real lock.
+'
+' ⚠️ REAL, CONFIRMED bug found here: the original version of this loop
+' called fso.DeleteFolder(installFolder, True) — a RECURSIVE delete —
+' unconditionally on every retry, for up to 90 SECONDS after Uninstall
+' was clicked, with no check for what might legitimately be at that path
+' BY THEN. A user who reinstalled within that ~90s window (a completely
+' reasonable thing to do — nothing in the UI suggests waiting) got their
+' brand new install's files deleted out from under it by this leftover
+' script, moments after they'd been written — confirmed as the actual
+' cause of a real "install fails right after using Uninstall" report,
+' not a hypothetical. Windows Installer itself was never the problem;
+' this script deleting a live reinstall was.
+' Fix: check the folder is genuinely EMPTY before every single delete
+' attempt, and stop immediately (don't delete, don't keep retrying) the
+' moment it isn't. A leftover from THIS uninstall is always empty by
+' this point (real content is already gone via the CustomAction above) —
+' anything with actual files/subfolders in it by the time a retry runs
+' is, by construction, something else's content now (a reinstall), never
+' this uninstall's own leftover, and must be left alone.
 deleteAttempts = 0
 Do While fso.FolderExists("${installFolder}") And deleteAttempts < 90
-  fso.DeleteFolder "${installFolder}", True
-  If fso.FolderExists("${installFolder}") Then WScript.Sleep 1000
+  Set installFolderObj = fso.GetFolder("${installFolder}")
+  If installFolderObj.Files.Count = 0 And installFolderObj.SubFolders.Count = 0 Then
+    fso.DeleteFolder "${installFolder}", True
+    If fso.FolderExists("${installFolder}") Then WScript.Sleep 1000
+  Else
+    Exit Do
+  End If
   deleteAttempts = deleteAttempts + 1
 Loop
 
