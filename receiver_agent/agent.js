@@ -15,13 +15,37 @@
 //  Railway URL + API key, or set WEBSITE_URL / TELEMETRY_API_KEY env vars
 //  instead (env vars win if both are present — useful for a scheduled
 //  task where editing a JSON file next to the script is inconvenient).
+//
+//  V1.4 additions (see receiver_agent/CLAUDE.md for the full rationale
+//  behind each of these):
+//    • Auto-update — checks a small JSON manifest served alongside the
+//      dashboard, and if a newer version is published, downloads and
+//      silently installs it (msiexec /qn), no user action needed.
+//    • Local GUI — a tiny HTTP server on 127.0.0.1 only, opened from a
+//      new tray menu item ("Show GUI"). Shows live status + a tailing
+//      view of agent.log, and has a real "Uninstall" button.
+//    • Uninstall button does a genuine full removal — runs the same
+//      `msiexec /x` a person would use from Settings > Apps, THEN force-
+//      deletes anything msiexec doesn't track (npm's node_modules, logs,
+//      the PID file), so nothing is left behind.
 // ════════════════════════════════════════════════════════════════════
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const http = require('http');
+const { execFile, spawn } = require('child_process');
 const { SerialPort } = require('serialport');
 const notifier = require('node-notifier');
 const SysTray = require('systray').default;
+
+// Bump this alongside GreenpowerAgent.wxs's <Product Version="..."> AND
+// telemetry_web/public/agent-version.json's "version" field, every single
+// time agent.js's content changes in any way meant to reach existing
+// installs — checkForUpdate() below compares THIS constant against that
+// manifest, so a content change with no version bump here is invisible to
+// auto-update even though the .msi itself got rebuilt.
+const AGENT_VERSION = '1.5.2.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -43,39 +67,138 @@ function log(line) {
     try { fs.appendFileSync(LOG_PATH, stamped + '\n'); } catch (e) { /* non-fatal, don't let logging crash the agent */ }
 }
 
-// ── Single-instance PID file ───────────────────────────────────────
-// setup.bat ALSO reads this file to kill any previous hidden instance
-// before starting a new one, but that only covers the "re-running
-// setup.bat" path specifically. The check right below covers every other
-// way a second instance could end up running at the same time — the
-// Startup-folder auto-launch firing on login while a previous instance
-// from before a restart/sleep is somehow still alive, someone double-
-// clicking the launcher shortcut twice, running `node agent.js` manually
-// while the hidden auto-started one is already up, etc. — by having the
-// agent itself check on every single startup, not just when setup.bat
-// happens to be the one doing the (re)launching. Left running, a second
-// instance would fight the first for the same serial port — the exact
-// "Access denied, looks like a hardware/driver problem but isn't" failure
-// this file already has a rule about below.
-const PID_PATH = path.join(__dirname, 'agent.pid');
-try {
-    const existingPidRaw = fs.readFileSync(PID_PATH, 'utf8').trim();
-    const existingPid = parseInt(existingPidRaw, 10);
-    if (existingPid && existingPid !== process.pid) {
+// Last N lines of agent.log, for the GUI's log view — re-reads the file
+// each call rather than keeping an in-memory ring buffer, since the file
+// is already small (truncated per run) and this is only ever called from
+// an occasional GUI page load/poll, not a hot path.
+function readLogTail(maxLines) {
+    try {
+        const text = fs.readFileSync(LOG_PATH, 'utf8');
+        const lines = text.split('\n').filter(Boolean);
+        return lines.slice(-maxLines);
+    } catch (e) {
+        return [`(couldn't read agent.log: ${e.message})`];
+    }
+}
+
+// ── Single-instance lock ───────────────────────────────────────────
+// The REAL guard is an atomic lock DIRECTORY, not the plain PID file
+// below — `fs.mkdirSync()` either creates the directory or fails with
+// EEXIST, atomically, with no window where two processes can both
+// "succeed". A plain "read agent.pid, decide, then write agent.pid" (the
+// original design here) has a real TOCTOU race: two instances launched
+// close together (which has actually happened in practice this project —
+// e.g. the Startup-folder launcher firing more than once) can both read
+// the file before either has written its own PID, both conclude "I'm
+// first", and both end up running — exactly the "fighting over one
+// serial port" failure this guard exists to prevent in the first place.
+// acquireSingleInstanceLock() closes that window: only one process can
+// ever hold LOCK_DIR at a time.
+//
+// This covers every way a second instance could end up running — the
+// Startup-folder auto-launch firing while a previous instance from before
+// a restart/sleep is somehow still alive, someone double-clicking the
+// launcher shortcut twice, running `node agent.js` manually while the
+// hidden auto-started one is already up, an auto-update's freshly
+// launched instance overlapping briefly with the one it's replacing, etc.
+const LOCK_DIR    = path.join(__dirname, '.agent.lock');
+const LOCK_PID_FILE = path.join(LOCK_DIR, 'pid');
+
+function isPidAlive(pid) {
+    try {
+        // Signal 0 doesn't actually send a signal — it's the standard
+        // Node/POSIX idiom for "is this PID still alive", and it throws
+        // (ESRCH) if not. Works on Windows too via libuv's emulation.
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Node has no synchronous sleep — Atomics.wait on a throwaway
+// SharedArrayBuffer is the standard, dependency-free way to get one
+// anyway, and this runs once at startup before anything else (server,
+// tray, port scanning) is set up, so blocking the event loop briefly here
+// costs nothing real.
+function sleepSyncMs(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function acquireSingleInstanceLock() {
+    const MAX_ATTEMPTS = 15;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
-            // Signal 0 doesn't actually send a signal — it's the standard
-            // Node/POSIX idiom for "is this PID still alive", and it throws
-            // (ESRCH) if not. Works on Windows too via libuv's emulation.
-            process.kill(existingPid, 0);
-            log(`[WARN] Another agent instance (PID ${existingPid}) is already running — terminating it so this one can take over.`);
-            process.kill(existingPid, 'SIGTERM');
+            fs.mkdirSync(LOCK_DIR);
+            fs.writeFileSync(LOCK_PID_FILE, String(process.pid));
+            return;   // got it — we're the one and only instance
         } catch (e) {
-            // Not alive — a stale PID file left over from a previous
-            // crash/unclean exit that skipped the cleanup handlers below.
-            // Nothing to do, just proceed to overwrite it with our own PID.
+            if (e.code !== 'EEXIST') throw e;   // a real filesystem problem — don't loop forever on something this can't fix
+
+            // Real, empirically-found race here (not a hypothetical): the
+            // owning process's mkdirSync and its writeFileSync(pid) below
+            // are two SEPARATE synchronous calls, not one atomic operation
+            // — a second process can observe EEXIST from the directory
+            // existing, but still read the pid file before the owner's
+            // writeFileSync has actually landed, getting an empty file /
+            // NaN. Treating an unreadable pid as "stale, delete it" (the
+            // original version of this code) deleted a lock the other
+            // process had JUST created a few microseconds earlier — both
+            // processes then created a fresh lock and both survived,
+            // confirmed via debug logging on a real run. `couldReadPid`
+            // below distinguishes "genuinely stale" (a parseable pid that
+            // isn't alive — safe to clean up) from "owner is still
+            // mid-write" (an unparseable pid — wait and retry instead;
+            // the owner is a handful of nanoseconds from finishing, MAX_
+            // ATTEMPTS × 300ms gives enormous headroom for that).
+            let ownerPid = null;
+            let couldReadPid = false;
+            try {
+                ownerPid = parseInt(fs.readFileSync(LOCK_PID_FILE, 'utf8').trim(), 10);
+                couldReadPid = Number.isFinite(ownerPid);
+            } catch (e2) { /* pid file missing/unreadable — treated as "owner still mid-write" below, not stale */ }
+
+            if (couldReadPid && ownerPid !== process.pid && isPidAlive(ownerPid)) {
+                if (attempt === 1) log(`[WARN] Another agent instance (PID ${ownerPid}) is already running — terminating it so this one can take over.`);
+                try { process.kill(ownerPid, 'SIGTERM'); } catch (e3) { /* already exiting */ }
+            } else if (couldReadPid && ownerPid !== process.pid) {
+                // Genuinely stale — the owner recorded in it is gone (a
+                // crash or unclean exit that skipped cleanupLock() below).
+                // Clear it so the next attempt can actually succeed
+                // instead of looping forever against a lock nobody's
+                // holding anymore.
+                try { fs.rmSync(LOCK_DIR, { recursive: true, force: true }); } catch (e3) { /* best effort */ }
+            }
+            // else: pid file unreadable/empty — owner likely still
+            // mid-write (see this function's own comment above for why
+            // that must NOT be treated as stale) — just wait and retry.
+            sleepSyncMs(300);   // give the old process a moment to actually exit and release the lock dir (or finish writing its pid)
         }
     }
-} catch (e) { /* no existing PID file — normal on first run ever */ }
+    // Exhausted every attempt — something is genuinely wrong (a lock
+    // holder that won't die, or a permissions problem), not just an
+    // ordinary race. Exiting here (rather than proceeding anyway) is the
+    // whole point of this guard — running alongside another instance is
+    // worse than not running at all.
+    log('[ERROR] Could not acquire the single-instance lock after multiple attempts — exiting rather than risk running alongside another instance.');
+    process.exit(1);
+}
+acquireSingleInstanceLock();
+
+function cleanupLock() {
+    try {
+        if (fs.readFileSync(LOCK_PID_FILE, 'utf8').trim() === String(process.pid)) {
+            fs.rmSync(LOCK_DIR, { recursive: true, force: true });
+        }
+    } catch (e) { /* non-fatal — already gone, or never fully acquired */ }
+}
+
+// agent.pid is kept as a plain, human/tool-readable record of the current
+// PID (setup.bat reads it to kill a previous hidden instance before
+// re-launching) — it is NOT the actual mutual-exclusion mechanism
+// anymore, LOCK_DIR above is. Writing it is best-effort/non-fatal since
+// nothing safety-critical depends on it existing.
+const PID_PATH = path.join(__dirname, 'agent.pid');
 try { fs.writeFileSync(PID_PATH, String(process.pid)); } catch (e) { /* non-fatal */ }
 function cleanupPidFile() {
     try {
@@ -84,16 +207,21 @@ function cleanupPidFile() {
         }
     } catch (e) { /* non-fatal — file may already be gone */ }
 }
-// tray is declared further down (after config load) but not referenced
-// until one of these fires, by which point it's already been assigned —
-// safe despite the temporal-dead-zone-looking forward reference.
+// tray/guiServer are declared further down but not referenced until one
+// of these fires, by which point they're already assigned — safe despite
+// the temporal-dead-zone-looking forward reference.
 function cleanupTray() {
     try { if (tray) tray.kill(false); } catch (e) { /* non-fatal */ }
 }
+function cleanupGuiServer() {
+    try { if (guiServer) guiServer.close(); } catch (e) { /* non-fatal */ }
+}
+process.on('exit', cleanupLock);
 process.on('exit', cleanupPidFile);
 process.on('exit', cleanupTray);
-process.on('SIGINT', () => { cleanupPidFile(); cleanupTray(); process.exit(); });
-process.on('SIGTERM', () => { cleanupPidFile(); cleanupTray(); process.exit(); });
+process.on('exit', cleanupGuiServer);
+process.on('SIGINT', () => { cleanupLock(); cleanupPidFile(); cleanupTray(); cleanupGuiServer(); process.exit(); });
+process.on('SIGTERM', () => { cleanupLock(); cleanupPidFile(); cleanupTray(); cleanupGuiServer(); process.exit(); });
 
 // ── Config ──────────────────────────────────────────────────────────
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -116,6 +244,13 @@ if (!WEBSITE_URL || !API_KEY) {
     process.exit(1);
 }
 
+// Auto-update manifest and the .msi it points at both live on the same
+// dashboard host as WEBSITE_URL (telemetry_web serves both as plain
+// static files under public/) — derive the origin instead of requiring a
+// second config value nobody would remember to keep in sync.
+let DASHBOARD_ORIGIN = null;
+try { DASHBOARD_ORIGIN = new URL(WEBSITE_URL).origin; } catch (e) { /* leaves DASHBOARD_ORIGIN null — checkForUpdate() no-ops without it */ }
+
 const DEVICE_ID   = 'GREENPOWER_RX_V1';   // must match greenpower_receiver.ino
 const BAUD_RATE   = 115200;
 const SCAN_MS     = 2000;    // how often to check for newly plugged-in ports
@@ -126,24 +261,35 @@ const SCAN_MS     = 2000;    // how often to check for newly plugged-in ports
 // to land and get answered after that. 6000ms gives real headroom.
 const IDENTIFY_TIMEOUT_MS = 6000;
 const NOTIFY_TIMEOUT_S    = 20;   // how long the accept/decline prompt stays up
+const UPDATE_CHECK_MS     = 6 * 60 * 60 * 1000;   // check every 6h — frequent enough to reach people quickly, rare enough not to matter for bandwidth/load
+const GUI_PORT             = 47821;   // arbitrary fixed high port, loopback-only — see startGuiServer()
 
 // Ports we've already looked at (identified as Greenpower / not / still
 // being decided) — keyed by port path, so we don't re-prompt every scan
 // tick for the same physical device.
 const knownPorts = new Map();   // path -> 'pending' | 'ours' | 'not-ours'
 
-log('[READY] Greenpower receiver agent running — watching for USB connections...');
+// Live state the GUI reads — kept as a small module-level object rather
+// than reaching into knownPorts/closures, since those are keyed/shaped for
+// the scan logic's own needs, not for "what should a status page show".
+const guiState = {
+    startedAt: new Date().toISOString(),
+    forwarding: { active: false, port: null, confirmed: false },
+    update: { checking: false, lastCheckedAt: null, latestVersion: null, updateAvailable: false, installing: false, lastError: null },
+};
+
+log(`[READY] Greenpower receiver agent v${AGENT_VERSION} running — watching for USB connections...`);
 log(`        Forwarding target: ${WEBSITE_URL}`);
 
 // ── System tray icon ────────────────────────────────────────────────
 // The agent runs with no console window at all (see setup.bat's hidden VBS
 // launcher) — without this, there's no visible sign the background process
-// is even alive short of opening Task Manager. A tray icon plus a one-item
-// "Stop Agent" menu gives a visible "yes, it's running" indicator and an
-// obvious, discoverable way to end it, without needing a console/taskbar
-// window. tray-icon.ico must stay a real .ico (not .png) — Windows tray
-// icons specifically expect that format; see systray's own README for why
-// the format differs per-OS.
+// is even alive short of opening Task Manager. A tray icon plus a menu
+// gives a visible "yes, it's running" indicator and an obvious, discoverable
+// way to see status or end it, without needing a console/taskbar window.
+// tray-icon.ico must stay a real .ico (not .png) — Windows tray icons
+// specifically expect that format; see systray's own README for why the
+// format differs per-OS.
 let tray = null;
 try {
     const iconBase64 = fs.readFileSync(path.join(__dirname, 'tray-icon.ico')).toString('base64');
@@ -156,6 +302,7 @@ try {
                 // Non-clickable status line — there's no separate "label" item
                 // type in this library, so a disabled item does that job.
                 { title: 'Greenpower Agent — Running', tooltip: '', checked: false, enabled: false },
+                { title: 'Show GUI', tooltip: 'Open the status/log window', checked: false, enabled: true },
                 { title: 'Stop Agent', tooltip: 'Stop forwarding and exit', checked: false, enabled: true },
             ],
         },
@@ -163,12 +310,18 @@ try {
         copyDir: true,
     });
 
+    // action.seq_id is the item's index in the items array above — 0 is the
+    // disabled status line (never clickable), 1 is "Show GUI", 2 is "Stop
+    // Agent". Keep these two branches in sync with the array order if the
+    // menu ever grows.
     tray.onClick((action) => {
         if (action.seq_id === 1) {
+            openNativeGuiWindow();
+        } else if (action.seq_id === 2) {
             log('[INFO] Stop requested from tray icon — exiting.');
-            // cleanupPidFile()/cleanupTray() both already run via the
-            // process 'exit' handlers registered above — process.exit()
-            // alone is enough here, no need to duplicate that cleanup.
+            // cleanupPidFile()/cleanupTray()/cleanupGuiServer() all already
+            // run via the process 'exit' handlers registered above —
+            // process.exit() alone is enough here, no need to duplicate.
             process.exit(0);
         }
     });
@@ -180,6 +333,58 @@ try {
     });
 } catch (e) {
     log(`[WARN] Could not start tray icon (continuing without one): ${e.message}`);
+}
+
+// Opens a genuine native Win32 window (WinForms), not a browser tab — a
+// direct ask, not just a style choice. No GUI-toolkit dependency added for
+// this (no Electron/nw.js — a heavy addition this project's existing
+// "keep dependencies minimal" pattern argues against, and a real one given
+// this whole installer's no-admin/small-footprint design goals): .NET's
+// WinForms is already on every Windows machine this targets, reachable
+// via `powershell.exe`, the same "shell out to PowerShell for something
+// Node can't do natively" pattern this file already uses for the
+// ProductCode COM lookup elsewhere. guiWindowPs1() below generates the
+// actual form; this just writes it to %TEMP% (fresh each click — small,
+// disposable, not worth caching) and launches it.
+// The window is just a client of this agent's own existing loopback HTTP
+// API (still on 127.0.0.1:GUI_PORT, unchanged) via Invoke-RestMethod —
+// the API didn't need to change at all, only how it's presented to the
+// user did.
+function openNativeGuiWindow() {
+    const ps1Path = path.join(os.tmpdir(), 'greenpower-agent-gui.ps1');
+    try {
+        fs.writeFileSync(ps1Path, guiWindowPs1());
+    } catch (e) {
+        log(`[WARN] Couldn't write GUI window script: ${e.message}`);
+        return;
+    }
+    // ⚠️ REAL, CONFIRMED bug — took several passes and a controlled A/B
+    // test to actually root-cause, worth recording in full since two
+    // earlier, PLAUSIBLE-SOUNDING theories along the way both turned out
+    // to be wrong when tested:
+    //   1. First theory: "`-WindowStyle Hidden` suppresses the WinForms
+    //      window itself, not just the console — switch to a VBS
+    //      wrapper." Disproven — the VBS-wrapped launch failed too.
+    //   2. Second theory: "powershell.exe defaults to MTA, WinForms needs
+    //      STA." `-STA` IS correct and necessary (WinForms genuinely does
+    //      require it, and it's kept below) — but adding it alone did NOT
+    //      reliably fix the failure in further testing, so it wasn't the
+    //      (whole) story either.
+    // The ACTUAL root cause, found via a controlled test that spawned the
+    // SAME `powershell.exe -Command "exit 42"` four ways and compared
+    // exit codes: **`{ detached: true }` on Windows silently breaks
+    // powershell.exe's own argument handling** — with it, the process
+    // starts, does nothing, and exits 0 (as if no `-Command`/`-File` had
+    // been given at all, not even an error); without it, the exact same
+    // invocation runs correctly and returns the real exit code. This has
+    // nothing to do with `-WindowStyle`, STA/MTA, or anything on the
+    // launched-script side — it reproduced with `-Command "exit 42"`
+    // alone, no WinForms involved. `detached` was never actually needed
+    // here anyway — `child.unref()` alone already accomplishes "don't
+    // let this hold the agent's event loop open," which was the entire
+    // reason `detached` was added in the first place.
+    const child = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1Path], { stdio: 'ignore' });
+    child.unref();
 }
 
 setInterval(scanPorts, SCAN_MS);
@@ -328,6 +533,8 @@ function startForwarding(portPath, port) {
     let confirmed = false;
     let failureNotified = false;
 
+    guiState.forwarding = { active: true, port: portPath, confirmed: false };
+
     port.on('data', (chunk) => {
         buffer += chunk.toString('utf8');
         let idx;
@@ -338,6 +545,7 @@ function startForwarding(portPath, port) {
                 forwardLine(line.slice(5), (ok) => {
                     if (ok && !confirmed) {
                         confirmed = true;
+                        guiState.forwarding.confirmed = true;
                         log(`[FORWARD] Confirmed — first packet from ${portPath} reached the dashboard.`);
                         notifier.notify({
                             title: 'Greenpower Receiver',
@@ -359,6 +567,9 @@ function startForwarding(portPath, port) {
 
     port.on('close', () => {
         log(`[INFO] ${portPath} closed — stopped forwarding.`);
+        if (guiState.forwarding.port === portPath) {
+            guiState.forwarding = { active: false, port: null, confirmed: false };
+        }
     });
 }
 
@@ -391,4 +602,651 @@ async function forwardLine(jsonStr, onResult) {
         log(`[WARN] Forward failed: ${e.message}`);
         if (onResult) onResult(false);
     }
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  AUTO-UPDATE
+//
+//  Checks a small static JSON manifest (telemetry_web/public/agent-
+//  version.json — same host as WEBSITE_URL, zero server code needed since
+//  it's just a static file) for a version newer than AGENT_VERSION. If
+//  found, downloads the linked .msi to a temp file and hands off to a
+//  detached VBS helper that waits for THIS process to fully exit (so
+//  nothing here is holding a file handle Windows Installer needs), then
+//  runs `msiexec /i ... /qn`. The installer's own MajorUpgrade element
+//  (GreenpowerAgent.wxs) does a clean uninstall-then-reinstall of the old
+//  version automatically — nothing extra needed on this side for that
+//  part. LaunchAgentNow (also already in the .wxs) starts the new version
+//  immediately after install, so this is genuinely hands-off.
+// ════════════════════════════════════════════════════════════════════
+
+// Simple dotted-quad numeric compare (MSI Version fields are always
+// exactly this shape, e.g. "1.4.0.0") — returns true if `a` is newer than
+// `b`. Not a general semver comparator on purpose; MSI versions are a
+// fixed 4-part numeric format, and pulling in a semver dependency for this
+// one comparison would be a strange trade against this project's existing
+// "keep dependencies minimal" pattern.
+function isNewerVersion(a, b) {
+    const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const x = pa[i] || 0, y = pb[i] || 0;
+        if (x !== y) return x > y;
+    }
+    return false;
+}
+
+async function checkForUpdate(manual) {
+    if (!DASHBOARD_ORIGIN) {
+        log('[WARN] Auto-update: WEBSITE_URL is not a valid URL, can\'t derive the manifest location — skipping.');
+        return;
+    }
+    if (guiState.update.installing) return;   // already mid-install, don't double-trigger
+
+    guiState.update.checking = true;
+    try {
+        const res = await fetch(`${DASHBOARD_ORIGIN}/agent-version.json`, { cache: 'no-store' });
+        if (!res.ok) {
+            log(`[WARN] Auto-update: manifest fetch failed, HTTP ${res.status}`);
+            guiState.update.lastError = `manifest HTTP ${res.status}`;
+            return;
+        }
+        const manifest = await res.json();
+        guiState.update.lastCheckedAt = new Date().toISOString();
+        guiState.update.latestVersion = manifest.version || null;
+        guiState.update.lastError = null;
+
+        if (manifest.version && manifest.msiUrl && isNewerVersion(manifest.version, AGENT_VERSION)) {
+            guiState.update.updateAvailable = true;
+            log(`[UPDATE] Newer version available: ${manifest.version} (running ${AGENT_VERSION}) — starting silent update.`);
+            await performUpdate(manifest.version, manifest.msiUrl);
+        } else {
+            guiState.update.updateAvailable = false;
+            if (manual) log(`[UPDATE] Already up to date (running ${AGENT_VERSION}, latest is ${manifest.version || 'unknown'}).`);
+        }
+    } catch (e) {
+        log(`[WARN] Auto-update check failed: ${e.message}`);
+        guiState.update.lastError = e.message;
+    } finally {
+        guiState.update.checking = false;
+    }
+}
+
+async function performUpdate(newVersion, msiUrl) {
+    guiState.update.installing = true;
+    try {
+        const res = await fetch(msiUrl);
+        if (!res.ok) {
+            log(`[WARN] Auto-update: couldn't download ${msiUrl} (HTTP ${res.status})`);
+            guiState.update.installing = false;
+            return;
+        }
+        const buf = Buffer.from(await res.arrayBuffer());
+        const tempMsiPath = path.join(os.tmpdir(), `GreenpowerAgentSetup-${newVersion}.msi`);
+        fs.writeFileSync(tempMsiPath, buf);
+        log(`[UPDATE] Downloaded ${tempMsiPath} (${buf.length} bytes). Handing off to installer and exiting.`);
+
+        notifier.notify({
+            title: 'Greenpower Receiver Agent — Updating',
+            message: `Installing version ${newVersion}. The agent will restart automatically.`,
+            timeout: 6,
+        });
+
+        // A detached helper does the actual install AFTER this process has
+        // fully exited — msiexec replacing agent.js while this same file is
+        // still loaded/running is exactly the kind of file-lock race a
+        // background auto-updater must not risk. See the helper's own
+        // comment (buildUpdateHelperVbs) for the full reasoning.
+        const helperPath = writeUpdateHelperVbs(tempMsiPath, process.pid);
+        const child = spawn('wscript.exe', [helperPath], { detached: true, stdio: 'ignore' });
+        child.unref();
+
+        // Give the notification a moment to actually reach the OS before
+        // this process (and its notifier child process, if any) disappears.
+        setTimeout(() => process.exit(0), 1500);
+    } catch (e) {
+        log(`[WARN] Auto-update install failed: ${e.message}`);
+        guiState.update.installing = false;
+        guiState.update.lastError = e.message;
+    }
+}
+
+// Self-locating-style hidden helper (same "no visible console window"
+// requirement as agent-launcher.vbs and the installer's own WixQuietExec
+// custom action — a flashing cmd window during a silent background update
+// would be a startling, unexplained thing for someone to see). Written
+// fresh into %TEMP% on every update (not shipped as a static installed
+// file) since its content embeds the specific PID/msi path for this one
+// update — there's nothing to "install", it's a disposable one-shot script.
+function writeUpdateHelperVbs(msiPath, waitForPid) {
+    const vbs = `
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set WshShell = CreateObject("WScript.Shell")
+
+' Wait for the currently-running agent to fully exit — Windows Installer
+' replacing agent.js (and other installed files) while this same process
+' still has them loaded is exactly the race this wait avoids. Bounded to
+' ~30s so a stuck process can't wedge the update forever.
+pid = "${waitForPid}"
+attempts = 0
+Do While attempts < 100
+  found = False
+  For Each p In GetObject("winmgmts:").ExecQuery("Select ProcessId from Win32_Process Where ProcessId=" & pid)
+    found = True
+  Next
+  If Not found Then Exit Do
+  WScript.Sleep 300
+  attempts = attempts + 1
+Loop
+
+' Silent install — MajorUpgrade in GreenpowerAgent.wxs handles cleanly
+' replacing the old version; LaunchAgentNow (also in the .wxs) starts the
+' new version immediately once install finishes, so nothing else here
+' needs to launch it.
+WshShell.Run "msiexec.exe /i ""${msiPath}"" /qn /norestart", 0, True
+
+On Error Resume Next
+fso.DeleteFile "${msiPath}", True
+fso.DeleteFile WScript.ScriptFullName, True
+`.trim();
+    const vbsPath = path.join(os.tmpdir(), `greenpower-agent-update-${Date.now()}.vbs`);
+    fs.writeFileSync(vbsPath, vbs);
+    return vbsPath;
+}
+
+// First check a short while after startup (not instantly — let the agent
+// settle into its normal boot sequence first), then on a steady interval.
+setTimeout(() => checkForUpdate(false), 15000);
+setInterval(() => checkForUpdate(false), UPDATE_CHECK_MS);
+
+
+// ════════════════════════════════════════════════════════════════════
+//  UNINSTALL  (real, full removal — used by the GUI's Uninstall button)
+//
+//  Goal: after clicking Uninstall, NOTHING of this agent is left on the
+//  system — no files, no registry, no Startup entry, no Add/Remove
+//  Programs listing, no running process. `msiexec /x` alone doesn't
+//  fully achieve this: it correctly removes every WiX-tracked Component
+//  (files installed by the MSI itself, the two shortcuts, the registry
+//  keys used as per-user KeyPaths), but `npm install` (run as a
+//  CustomAction during install, see GreenpowerAgent.wxs) populates
+//  node_modules AFTER install, and files created that way are NOT MSI-
+//  tracked Components — msiexec has no idea they exist, and won't remove
+//  them. Same for agent.log/agent.pid, written at runtime. So the real
+//  flow here is: msiexec /x first (the "correct", registered uninstall),
+//  THEN force-delete whatever's left in the install folder.
+// ════════════════════════════════════════════════════════════════════
+
+// Must match GreenpowerAgent.wxs's <Product UpgradeCode="..."> EXACTLY —
+// that value is fixed across every build (unlike ProductCode, which WiX
+// regenerates fresh each build via Id="*"), which is exactly why this is
+// the right thing to look up BY, not something to hardcode a ProductCode
+// for directly.
+const UPGRADE_CODE = '{1CF7948C-D8F6-410F-A05B-0B14F255A3F6}';
+
+// Finds the ProductCode GUID Windows Installer actually registered THIS
+// install under — needed because `msiexec /x` takes a ProductCode, and
+// there's no fixed constant for that to hardcode (see UPGRADE_CODE above).
+//
+// A first attempt at this scanned HKCU\...\Uninstall for a DisplayName
+// match via `reg query /s` — that turned out to be WRONG for this
+// specific install type, confirmed empirically: a per-user MSI install
+// (InstallScope="perUser") does NOT create an entry there at all. Its
+// real registration lives under
+// HKLM\SOFTWARE\...\Installer\UserData\<user-SID>\Products\<COMPRESSED
+// GUID>\InstallProperties — readable without admin (scoped to the
+// current user's own SID subtree) but keyed by a "compressed"/packed GUID
+// encoding (a byte-order-reversed re-packing of the real ProductCode),
+// not the standard dashed-GUID form `msiexec /x` actually needs. Manually
+// decoding that packing is exactly the kind of fragile, easy-to-get-
+// subtly-wrong text munging this project has hit real bugs from before.
+//
+// The robust fix: ask the Windows Installer COM API directly —
+// `Installer.RelatedProducts(upgradeCode)` returns the real, standard-
+// format ProductCode(s) for a given UpgradeCode, which is exactly what
+// this needs and is the same mechanism `msiexec`/Windows itself uses
+// internally. Confirmed working directly against a real install before
+// shipping this (not just reasoned about). Shelled out via powershell.exe
+// (same `New-Object -ComObject WindowsInstaller.Installer` pattern this
+// project's own build-verification steps already use) since Node has no
+// native COM support and adding one just for this single lookup isn't
+// worth a new dependency.
+// Returns EVERY ProductCode currently registered under this UpgradeCode,
+// not just one. Normally there's exactly one — but a real edge case was
+// found and confirmed while testing this: installing two builds that
+// happen to share the same Version (e.g. rapid local iteration without
+// bumping Version between them, or any other reason two ProductCodes
+// under the same UpgradeCode end up registered at once) means
+// MajorUpgrade's "replace the old ProductCode" behavior doesn't
+// necessarily collapse them down to one — RelatedProducts can genuinely
+// return more than one GUID. Uninstalling only the first one found would
+// leave the other one still registered (still shows in Settings > Apps,
+// still has leftover HKLM UserData registration) — the opposite of the
+// "zero trace" goal this whole feature exists for. So every match found
+// here gets uninstalled, not just one.
+function findInstalledProductCodes(callback) {
+    const psCmd = `$installer = New-Object -ComObject WindowsInstaller.Installer; ` +
+                  `$r = $installer.RelatedProducts('${UPGRADE_CODE}'); ` +
+                  `foreach ($p in $r) { Write-Output $p }`;
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psCmd], { windowsHide: true }, (err, stdout) => {
+        if (err) { callback([]); return; }
+        const matches = String(stdout).match(/\{[0-9A-Fa-f-]{36}\}/g);
+        callback(matches || []);
+    });
+}
+
+function writeUninstallHelperVbs(productCodes, installFolder, waitForPid) {
+    // Startup-folder shortcut path — msiexec /x's own StartupShortcut
+    // component removal should already delete this, but it's cheap
+    // insurance to also delete it explicitly by its known, fixed name
+    // (matches the Name="GreenpowerReceiverAgent" Shortcut in the .wxs).
+    const startupLnk = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'GreenpowerReceiverAgent.lnk');
+
+    const vbs = `
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set WshShell = CreateObject("WScript.Shell")
+
+' Wait for the agent to fully exit before touching its own files/folder.
+pid = "${waitForPid}"
+attempts = 0
+Do While attempts < 100
+  found = False
+  For Each p In GetObject("winmgmts:").ExecQuery("Select ProcessId from Win32_Process Where ProcessId=" & pid)
+    found = True
+  Next
+  If Not found Then Exit Do
+  WScript.Sleep 300
+  attempts = attempts + 1
+Loop
+
+On Error Resume Next
+
+' The REAL, registered uninstall — removes every MSI-tracked File,
+' Shortcut, and RegistryValue, and takes this off the Add/Remove
+' Programs / Settings > Apps list. Loops over EVERY related ProductCode
+' found (see findInstalledProductCodes()'s own comment for why there can
+' genuinely be more than one) rather than assuming there's only one.
+${productCodes.length > 0
+    ? productCodes.map(pc => `WshShell.Run "msiexec.exe /x ${pc} /qn /norestart", 0, True`).join('\n')
+    : "' No ProductCode found — msiexec /x skipped, falling through to manual cleanup only."}
+
+' Belt-and-suspenders folder removal — the REAL fix for node_modules
+' (populated by the post-install npm install CustomAction, not an
+' MSI-tracked Component) and agent.log/agent.pid (written at runtime,
+' also untracked) now lives in GreenpowerAgent.wxs itself: a dedicated
+' un-impersonated CustomAction (RemoveAgentRuntimeFiles, Impersonate="no")
+' removes all three AS PART OF the same msiexec /x transaction above,
+' running with the Windows Installer service's own full rights rather
+' than whatever token launched msiexec /x — see that CustomAction's own
+' comment in the .wxs for why this had to move there. By the time
+' msiexec /x (called above, wait=True) has returned, INSTALLFOLDER should
+' already be gone entirely via WiX's own RemoveFolder, run natively as
+' part of that same transaction.
+' This retry loop is just insurance for a separate, smaller timing quirk
+' also seen during testing: with the actual CONTENT cleanup above already
+' working correctly (confirmed empty via direct inspection immediately
+' after msiexec /x returns — this is not a permissions problem, that part
+' is fixed), the now-empty top-level folder entry itself can still take
+' up to roughly a minute to actually disappear (Test-Path/Explorer both
+' still report it existing that whole time) before clearing on its own —
+' looked like leftover NTFS/Windows Installer teardown bookkeeping
+' settling asynchronously, not a real lock.
+'
+' ⚠️ REAL, CONFIRMED bug found here: the original version of this loop
+' called fso.DeleteFolder(installFolder, True) — a RECURSIVE delete —
+' unconditionally on every retry, for up to 90 SECONDS after Uninstall
+' was clicked, with no check for what might legitimately be at that path
+' BY THEN. A user who reinstalled within that ~90s window (a completely
+' reasonable thing to do — nothing in the UI suggests waiting) got their
+' brand new install's files deleted out from under it by this leftover
+' script, moments after they'd been written — confirmed as the actual
+' cause of a real "install fails right after using Uninstall" report,
+' not a hypothetical. Windows Installer itself was never the problem;
+' this script deleting a live reinstall was.
+' Fix: check the folder is genuinely EMPTY before every single delete
+' attempt, and stop immediately (don't delete, don't keep retrying) the
+' moment it isn't. A leftover from THIS uninstall is always empty by
+' this point (real content is already gone via the CustomAction above) —
+' anything with actual files/subfolders in it by the time a retry runs
+' is, by construction, something else's content now (a reinstall), never
+' this uninstall's own leftover, and must be left alone.
+deleteAttempts = 0
+Do While fso.FolderExists("${installFolder}") And deleteAttempts < 90
+  Set installFolderObj = fso.GetFolder("${installFolder}")
+  If installFolderObj.Files.Count = 0 And installFolderObj.SubFolders.Count = 0 Then
+    fso.DeleteFolder "${installFolder}", True
+    If fso.FolderExists("${installFolder}") Then WScript.Sleep 1000
+  Else
+    Exit Do
+  End If
+  deleteAttempts = deleteAttempts + 1
+Loop
+
+' Belt-and-suspenders in case msiexec /x didn't run (no ProductCode found)
+' or didn't fully clean these up for any reason.
+If fso.FileExists("${startupLnk}") Then fso.DeleteFile "${startupLnk}", True
+WshShell.RegDelete "HKCU\\Software\\Greenpower\\ReceiverAgent\\"
+
+' Self-delete — this script is disposable, written fresh to %TEMP% for
+' this one uninstall, not something meant to persist.
+fso.DeleteFile WScript.ScriptFullName, True
+`.trim();
+    const vbsPath = path.join(os.tmpdir(), `greenpower-agent-uninstall-${Date.now()}.vbs`);
+    fs.writeFileSync(vbsPath, vbs);
+    return vbsPath;
+}
+
+function triggerUninstall(onHandedOff) {
+    log('[UNINSTALL] Uninstall requested from GUI — locating installed product(s)...');
+    findInstalledProductCodes((productCodes) => {
+        if (productCodes.length === 0) {
+            log('[WARN] Uninstall: could not find a registered ProductCode for "Greenpower Receiver Agent" — proceeding with manual file/registry cleanup only (msiexec /x will be skipped, so it will NOT be removed from Settings > Apps).');
+        } else {
+            log(`[UNINSTALL] Found ${productCodes.length} ProductCode(s): ${productCodes.join(', ')}. Handing off to uninstall helper and exiting.`);
+        }
+        const helperPath = writeUninstallHelperVbs(productCodes, __dirname, process.pid);
+        const child = spawn('wscript.exe', [helperPath], { detached: true, stdio: 'ignore' });
+        child.unref();
+        if (onHandedOff) onHandedOff();
+        setTimeout(() => process.exit(0), 800);
+    });
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  LOCAL GUI  (loopback-only HTTP server — status, log, uninstall)
+//
+//  No framework, no new dependency — a background agent that already
+//  keeps its dependency list deliberately small (see CLAUDE.md) doesn't
+//  need Express for three routes. Bound to 127.0.0.1 specifically, never
+//  0.0.0.0 — this must never be reachable from the network, only from
+//  processes on the same machine.
+//
+//  This HTTP API is presented to the user as a native WinForms window
+//  (openNativeGuiWindow()/guiWindowPs1() above), NOT a browser tab — this
+//  server's routes are its data layer either way, unchanged by that
+//  choice. guiPageHtml() (below) is kept as a working fallback reachable
+//  by navigating to http://127.0.0.1:GUI_PORT/ directly (e.g. if
+//  PowerShell/WinForms were ever unavailable for some reason) — nothing
+//  currently links to it, "Show GUI" no longer opens a browser.
+// ════════════════════════════════════════════════════════════════════
+
+// Generates the native GUI window's actual PowerShell/WinForms source —
+// see openNativeGuiWindow()'s own comment for why this exists instead of
+// a GUI-toolkit dependency. Pure client of this file's own HTTP API
+// (Invoke-RestMethod against 127.0.0.1:GUI_PORT) — every value the window
+// shows comes from the same /api/status and /api/log routes the old
+// browser page used, so the two stay in sync automatically; nothing here
+// duplicates agent state directly.
+function guiWindowPs1() {
+    return `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$apiBase = "http://127.0.0.1:${GUI_PORT}"
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Greenpower Receiver Agent"
+$form.Size = New-Object System.Drawing.Size(560, 600)
+$form.StartPosition = "CenterScreen"
+$form.FormBorderStyle = "FixedDialog"
+$form.MaximizeBox = $false
+$form.Icon = [System.Drawing.SystemIcons]::Application
+
+$y = 15
+$lblVersion = New-Object System.Windows.Forms.Label
+$lblVersion.Location = New-Object System.Drawing.Point(15, $y)
+$lblVersion.Size = New-Object System.Drawing.Size(520, 20)
+$lblVersion.Text = "Version: (loading...)"
+$form.Controls.Add($lblVersion)
+
+$y += 24
+$lblForwarding = New-Object System.Windows.Forms.Label
+$lblForwarding.Location = New-Object System.Drawing.Point(15, $y)
+$lblForwarding.Size = New-Object System.Drawing.Size(520, 20)
+$lblForwarding.Text = "Forwarding: (loading...)"
+$form.Controls.Add($lblForwarding)
+
+$y += 24
+$lblTarget = New-Object System.Windows.Forms.Label
+$lblTarget.Location = New-Object System.Drawing.Point(15, $y)
+$lblTarget.Size = New-Object System.Drawing.Size(520, 20)
+$lblTarget.Text = "Dashboard target: (loading...)"
+$form.Controls.Add($lblTarget)
+
+$y += 24
+$lblUpdate = New-Object System.Windows.Forms.Label
+$lblUpdate.Location = New-Object System.Drawing.Point(15, $y)
+$lblUpdate.Size = New-Object System.Drawing.Size(520, 20)
+$lblUpdate.Text = "Update status: (loading...)"
+$form.Controls.Add($lblUpdate)
+
+$y += 30
+$lblLog = New-Object System.Windows.Forms.Label
+$lblLog.Location = New-Object System.Drawing.Point(15, $y)
+$lblLog.Size = New-Object System.Drawing.Size(520, 18)
+$lblLog.Text = "Log (latest 150 lines):"
+$form.Controls.Add($lblLog)
+
+$y += 20
+$txtLog = New-Object System.Windows.Forms.TextBox
+$txtLog.Multiline = $true
+$txtLog.ScrollBars = "Vertical"
+$txtLog.ReadOnly = $true
+$txtLog.WordWrap = $false
+$txtLog.Location = New-Object System.Drawing.Point(15, $y)
+$txtLog.Size = New-Object System.Drawing.Size(520, 340)
+$txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtLog.BackColor = [System.Drawing.Color]::White
+$form.Controls.Add($txtLog)
+
+$y += 350
+$btnUpdate = New-Object System.Windows.Forms.Button
+$btnUpdate.Text = "Check for Updates Now"
+$btnUpdate.Location = New-Object System.Drawing.Point(15, $y)
+$btnUpdate.Size = New-Object System.Drawing.Size(190, 30)
+$btnUpdate.Add_Click({
+    $lblUpdate.Text = "Update status: checking..."
+    try { Invoke-RestMethod -Uri "$apiBase/api/check-update" -Method Post -TimeoutSec 5 | Out-Null } catch {}
+})
+$form.Controls.Add($btnUpdate)
+
+$btnUninstall = New-Object System.Windows.Forms.Button
+$btnUninstall.Text = "Uninstall"
+$btnUninstall.Location = New-Object System.Drawing.Point(360, $y)
+$btnUninstall.Size = New-Object System.Drawing.Size(175, 30)
+$btnUninstall.ForeColor = [System.Drawing.Color]::DarkRed
+$btnUninstall.Add_Click({
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        "This will completely remove the Greenpower Receiver Agent from this computer, including all files and settings. Continue?",
+        "Uninstall Greenpower Receiver Agent",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning)
+    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+        try { Invoke-RestMethod -Uri "$apiBase/api/uninstall" -Method Post -TimeoutSec 5 | Out-Null } catch {}
+        [System.Windows.Forms.MessageBox]::Show(
+            "Uninstalling in the background. This window and the agent will now close.",
+            "Greenpower Receiver Agent") | Out-Null
+        $form.Close()
+    }
+})
+$form.Controls.Add($btnUninstall)
+
+function Refresh-Status {
+    try {
+        $status = Invoke-RestMethod -Uri "$apiBase/api/status" -TimeoutSec 3
+        $lblVersion.Text = "Version: " + $status.version
+        if ($status.forwarding.active) {
+            if ($status.forwarding.confirmed) {
+                $lblForwarding.Text = "Forwarding: Yes - " + $status.forwarding.port
+            } else {
+                $lblForwarding.Text = "Forwarding: Connecting... - " + $status.forwarding.port
+            }
+        } else {
+            $lblForwarding.Text = "Forwarding: No"
+        }
+        $lblTarget.Text = "Dashboard target: " + $status.websiteUrl
+        $u = $status.update
+        if ($u.installing) {
+            $lblUpdate.Text = "Update status: installing update..."
+        } elseif ($u.checking) {
+            $lblUpdate.Text = "Update status: checking..."
+        } elseif ($u.updateAvailable) {
+            $lblUpdate.Text = "Update status: update available (" + $u.latestVersion + ")"
+        } elseif ($u.lastCheckedAt) {
+            $lblUpdate.Text = "Update status: up to date (checked " + ([DateTime]$u.lastCheckedAt).ToLocalTime().ToString("t") + ")"
+        } else {
+            $lblUpdate.Text = "Update status: not checked yet"
+        }
+    } catch {
+        $lblVersion.Text = "Version: (agent not responding)"
+    }
+    try {
+        $logResp = Invoke-RestMethod -Uri "$apiBase/api/log" -TimeoutSec 3
+        $newText = [string]::Join("\`r\`n", $logResp.lines)
+        if ($txtLog.Text -ne $newText) {
+            $wasAtBottom = ($txtLog.SelectionStart -ge $txtLog.Text.Length - 1)
+            $txtLog.Text = $newText
+            $txtLog.SelectionStart = $txtLog.Text.Length
+            $txtLog.ScrollToCaret()
+        }
+    } catch {}
+}
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 3000
+$timer.Add_Tick({ Refresh-Status })
+$timer.Start()
+
+Refresh-Status
+[System.Windows.Forms.Application]::Run($form)
+`.trim();
+}
+
+function guiPageHtml() {
+    return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Greenpower Receiver Agent</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; background:#0b0c11; color:#e6e6e6; margin:0; padding:24px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .ver { color:#8a8f98; font-size:12px; margin-bottom:20px; }
+  .card { background:#171719; border:1px solid #2a2b30; border-radius:8px; padding:16px; margin-bottom:16px; }
+  .row { display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
+  .row .k { color:#8a8f98; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .dot.on { background:#3ecf5e; } .dot.off { background:#6b6f76; }
+  pre#log { background:#0b0c11; border:1px solid #2a2b30; border-radius:6px; padding:12px; height:320px; overflow-y:auto; font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-all; }
+  button { background:#2a2b30; color:#e6e6e6; border:1px solid #3a3b42; border-radius:6px; padding:8px 14px; font-size:13px; cursor:pointer; margin-right:8px; }
+  button:hover { background:#34353c; }
+  button.danger { background:#3a1c1c; border-color:#5c2626; color:#ff9a9a; }
+  button.danger:hover { background:#4a2222; }
+  #msg { font-size:13px; margin-top:10px; }
+</style></head>
+<body>
+  <h1>Greenpower Receiver Agent</h1>
+  <div class="ver">v${AGENT_VERSION}</div>
+
+  <div class="card">
+    <div class="row"><span class="k">Status</span><span><span class="dot on"></span>Running</span></div>
+    <div class="row"><span class="k">Forwarding</span><span id="fwd">—</span></div>
+    <div class="row"><span class="k">Dashboard target</span><span>${WEBSITE_URL}</span></div>
+    <div class="row"><span class="k">Started</span><span>${guiState.startedAt}</span></div>
+    <div class="row"><span class="k">Update status</span><span id="upd">—</span></div>
+  </div>
+
+  <div class="card">
+    <button onclick="checkUpdate()">Check for Updates Now</button>
+    <button class="danger" onclick="doUninstall()">Uninstall</button>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><span class="k">Log (latest 150 lines)</span><span></span></div>
+    <pre id="log">loading…</pre>
+  </div>
+
+<script>
+async function refresh() {
+  try {
+    const r = await fetch('/api/status'); const s = await r.json();
+    document.getElementById('fwd').textContent = s.forwarding.active
+      ? (s.forwarding.confirmed ? ('Yes — ' + s.forwarding.port) : ('Connecting… — ' + s.forwarding.port))
+      : 'No';
+    const u = s.update;
+    document.getElementById('upd').textContent = u.installing ? 'Installing update…'
+      : u.checking ? 'Checking…'
+      : u.updateAvailable ? ('Update available: ' + u.latestVersion)
+      : (u.lastCheckedAt ? ('Up to date (checked ' + new Date(u.lastCheckedAt).toLocaleTimeString() + ')') : 'Not checked yet');
+  } catch (e) {}
+  try {
+    const r2 = await fetch('/api/log'); const j = await r2.json();
+    const pre = document.getElementById('log');
+    const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 10;
+    pre.textContent = j.lines.join('\\n');
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  } catch (e) {}
+}
+async function checkUpdate() {
+  document.getElementById('msg').textContent = 'Checking for updates…';
+  await fetch('/api/check-update', { method: 'POST' });
+  setTimeout(refresh, 1000);
+}
+async function doUninstall() {
+  if (!confirm('This will completely remove the Greenpower Receiver Agent from this computer, including all files and settings. Continue?')) return;
+  document.getElementById('msg').textContent = 'Uninstalling — this window will stop updating shortly. The agent is being removed in the background.';
+  await fetch('/api/uninstall', { method: 'POST' });
+}
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body></html>`;
+}
+
+function startGuiServer() {
+    const server = http.createServer((req, res) => {
+        if (req.method === 'GET' && req.url === '/') {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(guiPageHtml());
+        } else if (req.method === 'GET' && req.url === '/api/status') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ version: AGENT_VERSION, websiteUrl: WEBSITE_URL, ...guiState }));
+        } else if (req.method === 'GET' && req.url === '/api/log') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ lines: readLogTail(150) }));
+        } else if (req.method === 'POST' && req.url === '/api/check-update') {
+            checkForUpdate(true);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+        } else if (req.method === 'POST' && req.url === '/api/uninstall') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+            triggerUninstall();
+        } else {
+            res.writeHead(404);
+            res.end('Not found');
+        }
+    });
+
+    // Loopback-only — the second argument to listen() is the bind address;
+    // omitting it would default to all interfaces, which this must never do.
+    server.listen(GUI_PORT, '127.0.0.1', () => {
+        log(`[OK]   GUI available at http://127.0.0.1:${GUI_PORT}/ (open via the tray icon's "Show GUI")`);
+    });
+    server.on('error', (e) => {
+        // Non-fatal — same reasoning as the tray icon's own error handling.
+        // A likely cause: another agent instance's GUI server still holds
+        // the port (e.g. a previous instance the single-instance guard
+        // above hasn't fully torn down yet) — the GUI is a convenience,
+        // not load-bearing for actual telemetry forwarding.
+        log(`[WARN] GUI server failed to start on port ${GUI_PORT}: ${e.message}`);
+    });
+    return server;
+}
+
+let guiServer = null;
+try {
+    guiServer = startGuiServer();
+} catch (e) {
+    log(`[WARN] Could not start GUI server (continuing without one): ${e.message}`);
 }

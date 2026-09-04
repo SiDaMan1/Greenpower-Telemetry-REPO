@@ -46,7 +46,7 @@
   <Product Id="*"
            Name="Greenpower Receiver Agent"
            Language="1033"
-           Version="1.3.2.0"
+           Version="1.5.2.0"
            Manufacturer="Greenpower"
            UpgradeCode="1cf7948c-d8f6-410f-a05b-0b14f255a3f6">
 
@@ -224,10 +224,50 @@
                   ExeCommand="wscript.exe &quot;[#FILE_agent_launcher_vbs]&quot;"
                   Execute="deferred" Impersonate="yes" Return="asyncNoWait" />
 
+    <!-- Removes node_modules/agent.log/agent.pid on real removal (uninstall,
+         or the old-product-removal half of a MajorUpgrade) — see
+         receiver_agent/CLAUDE.md's Uninstall-button ⚠️ rule for the full
+         story behind why this exists. None of these three are MSI-tracked
+         Components — node_modules is populated by RunNpmInstall above,
+         AFTER install completes; agent.log/agent.pid are written at
+         runtime — so the standard RemoveFiles/RemoveFolder sequence below
+         has no idea they exist and won't remove them on its own. Left
+         alone, that's exactly what produced a real orphaned folder with
+         leftover files during testing, even after a fully successful
+         `msiexec /x`.
+         Impersonate="no" — DELIBERATELY different from RunNpmInstall/
+         LaunchAgentNow above, and load-bearing, not a style choice: this
+         runs as the Windows Installer service's own account rather than
+         impersonating whatever token invoked `msiexec /x`, which turned
+         out to matter. An uninstall can be triggered from an agent
+         process that this SAME installer's own impersonated
+         (Impersonate="yes") LaunchAgentNow CustomAction started — that
+         happens on every fresh install AND every auto-update (agent.js's
+         performUpdate()), not just a one-off edge case — and that
+         impersonated token lineage does NOT reliably carry delete rights
+         on its own just-installed files, confirmed via real testing
+         (Err.Number 70 "Permission denied", persisting even after an
+         explicit takeown+icacls reset run as a child of that same token).
+         Running this specific cleanup step un-impersonated, as part of
+         THIS SAME msiexec transaction, sidesteps that token problem
+         entirely instead of depending on some separate, less certain
+         mechanism after the fact.
+         Return="ignore", NOT "check" like RunNpmInstall above — some of
+         these paths legitimately won't exist every time (agent.pid is
+         already deleted on a clean agent exit; a fresh install that never
+         got far enough to write agent.log), and a missing-file error here
+         must never fail the whole uninstall/upgrade. -->
+    <CustomAction Id="RemoveAgentRuntimeFiles_SetProperty" Property="RemoveAgentRuntimeFiles"
+                  Value="&quot;[SystemFolder]cmd.exe&quot; /c rmdir /s /q &quot;[INSTALLFOLDER]node_modules&quot; &amp; del /f /q &quot;[INSTALLFOLDER]agent.log&quot; &amp; del /f /q &quot;[INSTALLFOLDER]agent.pid&quot;" />
+    <CustomAction Id="RemoveAgentRuntimeFiles" BinaryKey="WixCA" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
     <InstallExecuteSequence>
       <Custom Action="RunNpmInstall_SetProperty" Before="RunNpmInstall">NOT Installed</Custom>
       <Custom Action="RunNpmInstall" After="InstallFiles">NOT Installed</Custom>
       <Custom Action="LaunchAgentNow" After="RunNpmInstall">NOT Installed</Custom>
+      <Custom Action="RemoveAgentRuntimeFiles_SetProperty" Before="RemoveAgentRuntimeFiles">REMOVE="ALL"</Custom>
+      <Custom Action="RemoveAgentRuntimeFiles" Before="RemoveFiles">REMOVE="ALL"</Custom>
     </InstallExecuteSequence>
 
     <Feature Id="MainFeature" Title="Greenpower Receiver Agent" Level="1">
