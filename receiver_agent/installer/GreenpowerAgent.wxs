@@ -46,7 +46,7 @@
   <Product Id="*"
            Name="Greenpower Receiver Agent"
            Language="1033"
-           Version="1.4.0.0"
+           Version="1.5.0.0"
            Manufacturer="Greenpower"
            UpgradeCode="1cf7948c-d8f6-410f-a05b-0b14f255a3f6">
 

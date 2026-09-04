@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.4.0.0';
+const AGENT_VERSION = '1.5.0.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -81,39 +81,124 @@ function readLogTail(maxLines) {
     }
 }
 
-// ── Single-instance PID file ───────────────────────────────────────
-// setup.bat ALSO reads this file to kill any previous hidden instance
-// before starting a new one, but that only covers the "re-running
-// setup.bat" path specifically. The check right below covers every other
-// way a second instance could end up running at the same time — the
-// Startup-folder auto-launch firing on login while a previous instance
-// from before a restart/sleep is somehow still alive, someone double-
-// clicking the launcher shortcut twice, running `node agent.js` manually
-// while the hidden auto-started one is already up, etc. — by having the
-// agent itself check on every single startup, not just when setup.bat
-// happens to be the one doing the (re)launching. Left running, a second
-// instance would fight the first for the same serial port — the exact
-// "Access denied, looks like a hardware/driver problem but isn't" failure
-// this file already has a rule about below.
-const PID_PATH = path.join(__dirname, 'agent.pid');
-try {
-    const existingPidRaw = fs.readFileSync(PID_PATH, 'utf8').trim();
-    const existingPid = parseInt(existingPidRaw, 10);
-    if (existingPid && existingPid !== process.pid) {
+// ── Single-instance lock ───────────────────────────────────────────
+// The REAL guard is an atomic lock DIRECTORY, not the plain PID file
+// below — `fs.mkdirSync()` either creates the directory or fails with
+// EEXIST, atomically, with no window where two processes can both
+// "succeed". A plain "read agent.pid, decide, then write agent.pid" (the
+// original design here) has a real TOCTOU race: two instances launched
+// close together (which has actually happened in practice this project —
+// e.g. the Startup-folder launcher firing more than once) can both read
+// the file before either has written its own PID, both conclude "I'm
+// first", and both end up running — exactly the "fighting over one
+// serial port" failure this guard exists to prevent in the first place.
+// acquireSingleInstanceLock() closes that window: only one process can
+// ever hold LOCK_DIR at a time.
+//
+// This covers every way a second instance could end up running — the
+// Startup-folder auto-launch firing while a previous instance from before
+// a restart/sleep is somehow still alive, someone double-clicking the
+// launcher shortcut twice, running `node agent.js` manually while the
+// hidden auto-started one is already up, an auto-update's freshly
+// launched instance overlapping briefly with the one it's replacing, etc.
+const LOCK_DIR    = path.join(__dirname, '.agent.lock');
+const LOCK_PID_FILE = path.join(LOCK_DIR, 'pid');
+
+function isPidAlive(pid) {
+    try {
+        // Signal 0 doesn't actually send a signal — it's the standard
+        // Node/POSIX idiom for "is this PID still alive", and it throws
+        // (ESRCH) if not. Works on Windows too via libuv's emulation.
+        process.kill(pid, 0);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Node has no synchronous sleep — Atomics.wait on a throwaway
+// SharedArrayBuffer is the standard, dependency-free way to get one
+// anyway, and this runs once at startup before anything else (server,
+// tray, port scanning) is set up, so blocking the event loop briefly here
+// costs nothing real.
+function sleepSyncMs(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function acquireSingleInstanceLock() {
+    const MAX_ATTEMPTS = 15;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         try {
-            // Signal 0 doesn't actually send a signal — it's the standard
-            // Node/POSIX idiom for "is this PID still alive", and it throws
-            // (ESRCH) if not. Works on Windows too via libuv's emulation.
-            process.kill(existingPid, 0);
-            log(`[WARN] Another agent instance (PID ${existingPid}) is already running — terminating it so this one can take over.`);
-            process.kill(existingPid, 'SIGTERM');
+            fs.mkdirSync(LOCK_DIR);
+            fs.writeFileSync(LOCK_PID_FILE, String(process.pid));
+            return;   // got it — we're the one and only instance
         } catch (e) {
-            // Not alive — a stale PID file left over from a previous
-            // crash/unclean exit that skipped the cleanup handlers below.
-            // Nothing to do, just proceed to overwrite it with our own PID.
+            if (e.code !== 'EEXIST') throw e;   // a real filesystem problem — don't loop forever on something this can't fix
+
+            // Real, empirically-found race here (not a hypothetical): the
+            // owning process's mkdirSync and its writeFileSync(pid) below
+            // are two SEPARATE synchronous calls, not one atomic operation
+            // — a second process can observe EEXIST from the directory
+            // existing, but still read the pid file before the owner's
+            // writeFileSync has actually landed, getting an empty file /
+            // NaN. Treating an unreadable pid as "stale, delete it" (the
+            // original version of this code) deleted a lock the other
+            // process had JUST created a few microseconds earlier — both
+            // processes then created a fresh lock and both survived,
+            // confirmed via debug logging on a real run. `couldReadPid`
+            // below distinguishes "genuinely stale" (a parseable pid that
+            // isn't alive — safe to clean up) from "owner is still
+            // mid-write" (an unparseable pid — wait and retry instead;
+            // the owner is a handful of nanoseconds from finishing, MAX_
+            // ATTEMPTS × 300ms gives enormous headroom for that).
+            let ownerPid = null;
+            let couldReadPid = false;
+            try {
+                ownerPid = parseInt(fs.readFileSync(LOCK_PID_FILE, 'utf8').trim(), 10);
+                couldReadPid = Number.isFinite(ownerPid);
+            } catch (e2) { /* pid file missing/unreadable — treated as "owner still mid-write" below, not stale */ }
+
+            if (couldReadPid && ownerPid !== process.pid && isPidAlive(ownerPid)) {
+                if (attempt === 1) log(`[WARN] Another agent instance (PID ${ownerPid}) is already running — terminating it so this one can take over.`);
+                try { process.kill(ownerPid, 'SIGTERM'); } catch (e3) { /* already exiting */ }
+            } else if (couldReadPid && ownerPid !== process.pid) {
+                // Genuinely stale — the owner recorded in it is gone (a
+                // crash or unclean exit that skipped cleanupLock() below).
+                // Clear it so the next attempt can actually succeed
+                // instead of looping forever against a lock nobody's
+                // holding anymore.
+                try { fs.rmSync(LOCK_DIR, { recursive: true, force: true }); } catch (e3) { /* best effort */ }
+            }
+            // else: pid file unreadable/empty — owner likely still
+            // mid-write (see this function's own comment above for why
+            // that must NOT be treated as stale) — just wait and retry.
+            sleepSyncMs(300);   // give the old process a moment to actually exit and release the lock dir (or finish writing its pid)
         }
     }
-} catch (e) { /* no existing PID file — normal on first run ever */ }
+    // Exhausted every attempt — something is genuinely wrong (a lock
+    // holder that won't die, or a permissions problem), not just an
+    // ordinary race. Exiting here (rather than proceeding anyway) is the
+    // whole point of this guard — running alongside another instance is
+    // worse than not running at all.
+    log('[ERROR] Could not acquire the single-instance lock after multiple attempts — exiting rather than risk running alongside another instance.');
+    process.exit(1);
+}
+acquireSingleInstanceLock();
+
+function cleanupLock() {
+    try {
+        if (fs.readFileSync(LOCK_PID_FILE, 'utf8').trim() === String(process.pid)) {
+            fs.rmSync(LOCK_DIR, { recursive: true, force: true });
+        }
+    } catch (e) { /* non-fatal — already gone, or never fully acquired */ }
+}
+
+// agent.pid is kept as a plain, human/tool-readable record of the current
+// PID (setup.bat reads it to kill a previous hidden instance before
+// re-launching) — it is NOT the actual mutual-exclusion mechanism
+// anymore, LOCK_DIR above is. Writing it is best-effort/non-fatal since
+// nothing safety-critical depends on it existing.
+const PID_PATH = path.join(__dirname, 'agent.pid');
 try { fs.writeFileSync(PID_PATH, String(process.pid)); } catch (e) { /* non-fatal */ }
 function cleanupPidFile() {
     try {
@@ -131,11 +216,12 @@ function cleanupTray() {
 function cleanupGuiServer() {
     try { if (guiServer) guiServer.close(); } catch (e) { /* non-fatal */ }
 }
+process.on('exit', cleanupLock);
 process.on('exit', cleanupPidFile);
 process.on('exit', cleanupTray);
 process.on('exit', cleanupGuiServer);
-process.on('SIGINT', () => { cleanupPidFile(); cleanupTray(); cleanupGuiServer(); process.exit(); });
-process.on('SIGTERM', () => { cleanupPidFile(); cleanupTray(); cleanupGuiServer(); process.exit(); });
+process.on('SIGINT', () => { cleanupLock(); cleanupPidFile(); cleanupTray(); cleanupGuiServer(); process.exit(); });
+process.on('SIGTERM', () => { cleanupLock(); cleanupPidFile(); cleanupTray(); cleanupGuiServer(); process.exit(); });
 
 // ── Config ──────────────────────────────────────────────────────────
 const CONFIG_PATH = path.join(__dirname, 'config.json');
@@ -216,7 +302,7 @@ try {
                 // Non-clickable status line — there's no separate "label" item
                 // type in this library, so a disabled item does that job.
                 { title: 'Greenpower Agent — Running', tooltip: '', checked: false, enabled: false },
-                { title: 'Show GUI', tooltip: 'Open the status/log page in your browser', checked: false, enabled: true },
+                { title: 'Show GUI', tooltip: 'Open the status/log window', checked: false, enabled: true },
                 { title: 'Stop Agent', tooltip: 'Stop forwarding and exit', checked: false, enabled: true },
             ],
         },
@@ -230,7 +316,7 @@ try {
     // menu ever grows.
     tray.onClick((action) => {
         if (action.seq_id === 1) {
-            openGuiInBrowser();
+            openNativeGuiWindow();
         } else if (action.seq_id === 2) {
             log('[INFO] Stop requested from tray icon — exiting.');
             // cleanupPidFile()/cleanupTray()/cleanupGuiServer() all already
@@ -249,15 +335,36 @@ try {
     log(`[WARN] Could not start tray icon (continuing without one): ${e.message}`);
 }
 
-function openGuiInBrowser() {
-    // "start" is a cmd.exe builtin, not an executable — has to go through
-    // the shell. The empty "" first argument is the classic `start` quirk
-    // where the first quoted argument is taken as the window TITLE, not
-    // the thing to open, if the URL itself is quoted; passing an explicit
-    // empty title avoids that misparse.
-    execFile('cmd.exe', ['/c', 'start', '""', `http://127.0.0.1:${GUI_PORT}/`], (err) => {
-        if (err) log(`[WARN] Couldn't open GUI in browser: ${err.message}`);
-    });
+// Opens a genuine native Win32 window (WinForms), not a browser tab — a
+// direct ask, not just a style choice. No GUI-toolkit dependency added for
+// this (no Electron/nw.js — a heavy addition this project's existing
+// "keep dependencies minimal" pattern argues against, and a real one given
+// this whole installer's no-admin/small-footprint design goals): .NET's
+// WinForms is already on every Windows machine this targets, reachable
+// via `powershell.exe`, the same "shell out to PowerShell for something
+// Node can't do natively" pattern this file already uses for the
+// ProductCode COM lookup elsewhere. guiWindowPs1() below generates the
+// actual form; this just writes it to %TEMP% (fresh each click — small,
+// disposable, not worth caching) and launches it detached so clicking
+// "Show GUI" doesn't block the agent itself.
+// The window is just a client of this agent's own existing loopback HTTP
+// API (still on 127.0.0.1:GUI_PORT, unchanged) via Invoke-RestMethod —
+// the API didn't need to change at all, only how it's presented to the
+// user did.
+function openNativeGuiWindow() {
+    const ps1Path = path.join(os.tmpdir(), 'greenpower-agent-gui.ps1');
+    try {
+        fs.writeFileSync(ps1Path, guiWindowPs1());
+    } catch (e) {
+        log(`[WARN] Couldn't write GUI window script: ${e.message}`);
+        return;
+    }
+    // -WindowStyle Hidden hides the PowerShell CONSOLE host only — a
+    // WinForms window raised from inside that process is a normal, fully
+    // visible Win32 window regardless; this just avoids an extra console
+    // window flashing up alongside the actual GUI.
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1Path], { detached: true, stdio: 'ignore' });
+    child.unref();
 }
 
 setInterval(scanPorts, SCAN_MS);
@@ -814,9 +921,169 @@ function triggerUninstall(onHandedOff) {
 //  No framework, no new dependency — a background agent that already
 //  keeps its dependency list deliberately small (see CLAUDE.md) doesn't
 //  need Express for three routes. Bound to 127.0.0.1 specifically, never
-//  0.0.0.0 — this must never be reachable from the network, only from a
-//  browser on the same machine, opened via the tray's "Show GUI" item.
+//  0.0.0.0 — this must never be reachable from the network, only from
+//  processes on the same machine.
+//
+//  This HTTP API is presented to the user as a native WinForms window
+//  (openNativeGuiWindow()/guiWindowPs1() above), NOT a browser tab — this
+//  server's routes are its data layer either way, unchanged by that
+//  choice. guiPageHtml() (below) is kept as a working fallback reachable
+//  by navigating to http://127.0.0.1:GUI_PORT/ directly (e.g. if
+//  PowerShell/WinForms were ever unavailable for some reason) — nothing
+//  currently links to it, "Show GUI" no longer opens a browser.
 // ════════════════════════════════════════════════════════════════════
+
+// Generates the native GUI window's actual PowerShell/WinForms source —
+// see openNativeGuiWindow()'s own comment for why this exists instead of
+// a GUI-toolkit dependency. Pure client of this file's own HTTP API
+// (Invoke-RestMethod against 127.0.0.1:GUI_PORT) — every value the window
+// shows comes from the same /api/status and /api/log routes the old
+// browser page used, so the two stay in sync automatically; nothing here
+// duplicates agent state directly.
+function guiWindowPs1() {
+    return `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$apiBase = "http://127.0.0.1:${GUI_PORT}"
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "Greenpower Receiver Agent"
+$form.Size = New-Object System.Drawing.Size(560, 600)
+$form.StartPosition = "CenterScreen"
+$form.FormBorderStyle = "FixedDialog"
+$form.MaximizeBox = $false
+$form.Icon = [System.Drawing.SystemIcons]::Application
+
+$y = 15
+$lblVersion = New-Object System.Windows.Forms.Label
+$lblVersion.Location = New-Object System.Drawing.Point(15, $y)
+$lblVersion.Size = New-Object System.Drawing.Size(520, 20)
+$lblVersion.Text = "Version: (loading...)"
+$form.Controls.Add($lblVersion)
+
+$y += 24
+$lblForwarding = New-Object System.Windows.Forms.Label
+$lblForwarding.Location = New-Object System.Drawing.Point(15, $y)
+$lblForwarding.Size = New-Object System.Drawing.Size(520, 20)
+$lblForwarding.Text = "Forwarding: (loading...)"
+$form.Controls.Add($lblForwarding)
+
+$y += 24
+$lblTarget = New-Object System.Windows.Forms.Label
+$lblTarget.Location = New-Object System.Drawing.Point(15, $y)
+$lblTarget.Size = New-Object System.Drawing.Size(520, 20)
+$lblTarget.Text = "Dashboard target: (loading...)"
+$form.Controls.Add($lblTarget)
+
+$y += 24
+$lblUpdate = New-Object System.Windows.Forms.Label
+$lblUpdate.Location = New-Object System.Drawing.Point(15, $y)
+$lblUpdate.Size = New-Object System.Drawing.Size(520, 20)
+$lblUpdate.Text = "Update status: (loading...)"
+$form.Controls.Add($lblUpdate)
+
+$y += 30
+$lblLog = New-Object System.Windows.Forms.Label
+$lblLog.Location = New-Object System.Drawing.Point(15, $y)
+$lblLog.Size = New-Object System.Drawing.Size(520, 18)
+$lblLog.Text = "Log (latest 150 lines):"
+$form.Controls.Add($lblLog)
+
+$y += 20
+$txtLog = New-Object System.Windows.Forms.TextBox
+$txtLog.Multiline = $true
+$txtLog.ScrollBars = "Vertical"
+$txtLog.ReadOnly = $true
+$txtLog.WordWrap = $false
+$txtLog.Location = New-Object System.Drawing.Point(15, $y)
+$txtLog.Size = New-Object System.Drawing.Size(520, 340)
+$txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+$txtLog.BackColor = [System.Drawing.Color]::White
+$form.Controls.Add($txtLog)
+
+$y += 350
+$btnUpdate = New-Object System.Windows.Forms.Button
+$btnUpdate.Text = "Check for Updates Now"
+$btnUpdate.Location = New-Object System.Drawing.Point(15, $y)
+$btnUpdate.Size = New-Object System.Drawing.Size(190, 30)
+$btnUpdate.Add_Click({
+    $lblUpdate.Text = "Update status: checking..."
+    try { Invoke-RestMethod -Uri "$apiBase/api/check-update" -Method Post -TimeoutSec 5 | Out-Null } catch {}
+})
+$form.Controls.Add($btnUpdate)
+
+$btnUninstall = New-Object System.Windows.Forms.Button
+$btnUninstall.Text = "Uninstall"
+$btnUninstall.Location = New-Object System.Drawing.Point(360, $y)
+$btnUninstall.Size = New-Object System.Drawing.Size(175, 30)
+$btnUninstall.ForeColor = [System.Drawing.Color]::DarkRed
+$btnUninstall.Add_Click({
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        "This will completely remove the Greenpower Receiver Agent from this computer, including all files and settings. Continue?",
+        "Uninstall Greenpower Receiver Agent",
+        [System.Windows.Forms.MessageBoxButtons]::YesNo,
+        [System.Windows.Forms.MessageBoxIcon]::Warning)
+    if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+        try { Invoke-RestMethod -Uri "$apiBase/api/uninstall" -Method Post -TimeoutSec 5 | Out-Null } catch {}
+        [System.Windows.Forms.MessageBox]::Show(
+            "Uninstalling in the background. This window and the agent will now close.",
+            "Greenpower Receiver Agent") | Out-Null
+        $form.Close()
+    }
+})
+$form.Controls.Add($btnUninstall)
+
+function Refresh-Status {
+    try {
+        $status = Invoke-RestMethod -Uri "$apiBase/api/status" -TimeoutSec 3
+        $lblVersion.Text = "Version: " + $status.version
+        if ($status.forwarding.active) {
+            if ($status.forwarding.confirmed) {
+                $lblForwarding.Text = "Forwarding: Yes - " + $status.forwarding.port
+            } else {
+                $lblForwarding.Text = "Forwarding: Connecting... - " + $status.forwarding.port
+            }
+        } else {
+            $lblForwarding.Text = "Forwarding: No"
+        }
+        $lblTarget.Text = "Dashboard target: " + $status.websiteUrl
+        $u = $status.update
+        if ($u.installing) {
+            $lblUpdate.Text = "Update status: installing update..."
+        } elseif ($u.checking) {
+            $lblUpdate.Text = "Update status: checking..."
+        } elseif ($u.updateAvailable) {
+            $lblUpdate.Text = "Update status: update available (" + $u.latestVersion + ")"
+        } elseif ($u.lastCheckedAt) {
+            $lblUpdate.Text = "Update status: up to date (checked " + ([DateTime]$u.lastCheckedAt).ToLocalTime().ToString("t") + ")"
+        } else {
+            $lblUpdate.Text = "Update status: not checked yet"
+        }
+    } catch {
+        $lblVersion.Text = "Version: (agent not responding)"
+    }
+    try {
+        $logResp = Invoke-RestMethod -Uri "$apiBase/api/log" -TimeoutSec 3
+        $newText = [string]::Join("\`r\`n", $logResp.lines)
+        if ($txtLog.Text -ne $newText) {
+            $wasAtBottom = ($txtLog.SelectionStart -ge $txtLog.Text.Length - 1)
+            $txtLog.Text = $newText
+            $txtLog.SelectionStart = $txtLog.Text.Length
+            $txtLog.ScrollToCaret()
+        }
+    } catch {}
+}
+
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 3000
+$timer.Add_Tick({ Refresh-Status })
+$timer.Start()
+
+Refresh-Status
+[System.Windows.Forms.Application]::Run($form)
+`.trim();
+}
 
 function guiPageHtml() {
     return `<!doctype html>
