@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0.0",
+  "version": "1.5.1.0",
   "msiUrl": "https://ascteracingmonitor.com/GreenpowerAgentSetup.msi",
   "notes": "Auto-update manifest for the Greenpower Receiver Agent. Served as a static file (no server code involved) — bump 'version' here to exactly match GreenpowerAgent.wxs's Product Version every time a new .msi is built and copied into this folder, or already-installed agents will never detect the update. See receiver_agent/CLAUDE.md's auto-update rule for the full mechanism."
 }

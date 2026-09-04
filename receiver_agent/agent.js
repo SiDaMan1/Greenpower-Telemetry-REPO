@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.5.0.0';
+const AGENT_VERSION = '1.5.1.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -345,8 +345,7 @@ try {
 // Node can't do natively" pattern this file already uses for the
 // ProductCode COM lookup elsewhere. guiWindowPs1() below generates the
 // actual form; this just writes it to %TEMP% (fresh each click — small,
-// disposable, not worth caching) and launches it detached so clicking
-// "Show GUI" doesn't block the agent itself.
+// disposable, not worth caching) and launches it.
 // The window is just a client of this agent's own existing loopback HTTP
 // API (still on 127.0.0.1:GUI_PORT, unchanged) via Invoke-RestMethod —
 // the API didn't need to change at all, only how it's presented to the
@@ -359,11 +358,32 @@ function openNativeGuiWindow() {
         log(`[WARN] Couldn't write GUI window script: ${e.message}`);
         return;
     }
-    // -WindowStyle Hidden hides the PowerShell CONSOLE host only — a
-    // WinForms window raised from inside that process is a normal, fully
-    // visible Win32 window regardless; this just avoids an extra console
-    // window flashing up alongside the actual GUI.
-    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1Path], { detached: true, stdio: 'ignore' });
+    // ⚠️ REAL, CONFIRMED bug — took several passes and a controlled A/B
+    // test to actually root-cause, worth recording in full since two
+    // earlier, PLAUSIBLE-SOUNDING theories along the way both turned out
+    // to be wrong when tested:
+    //   1. First theory: "`-WindowStyle Hidden` suppresses the WinForms
+    //      window itself, not just the console — switch to a VBS
+    //      wrapper." Disproven — the VBS-wrapped launch failed too.
+    //   2. Second theory: "powershell.exe defaults to MTA, WinForms needs
+    //      STA." `-STA` IS correct and necessary (WinForms genuinely does
+    //      require it, and it's kept below) — but adding it alone did NOT
+    //      reliably fix the failure in further testing, so it wasn't the
+    //      (whole) story either.
+    // The ACTUAL root cause, found via a controlled test that spawned the
+    // SAME `powershell.exe -Command "exit 42"` four ways and compared
+    // exit codes: **`{ detached: true }` on Windows silently breaks
+    // powershell.exe's own argument handling** — with it, the process
+    // starts, does nothing, and exits 0 (as if no `-Command`/`-File` had
+    // been given at all, not even an error); without it, the exact same
+    // invocation runs correctly and returns the real exit code. This has
+    // nothing to do with `-WindowStyle`, STA/MTA, or anything on the
+    // launched-script side — it reproduced with `-Command "exit 42"`
+    // alone, no WinForms involved. `detached` was never actually needed
+    // here anyway — `child.unref()` alone already accomplishes "don't
+    // let this hold the agent's event loop open," which was the entire
+    // reason `detached` was added in the first place.
+    const child = spawn('powershell.exe', ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1Path], { stdio: 'ignore' });
     child.unref();
 }
 
