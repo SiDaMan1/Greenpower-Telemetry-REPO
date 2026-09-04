@@ -62,14 +62,26 @@ Added in the V1.1 pass to support the local forwarder agent (`../receiver_agent`
 
 ---
 
-## Current State (V1.2 — SF10, a more conservative second range attempt after SF12 hung the board)
+### Packet shrink — `hdop_x10`/`esc_mode_code`/`esc_state_code` decoded back to real values here
+`telemetry_packet_t` shrank from 98 → 81 bytes on the sender side (see `greenpower_sender/CLAUDE.md`'s matching rule) to cut LoRa airtime further, on top of `epoch_time`'s own addition:
+- **`hdop_x10`** (`uint8_t`, was `hdop` as `float`) — divide by 10.0 to get real HDOP; `PKT_HDOP_NO_FIX` (255) means "no fix" (replaces the old `99.9f` placeholder, which no longer fits in a byte).
+- **`esc_mode_code`/`esc_state_code`** (`uint8_t` each, were `esc_mode[8]`/`esc_state[8]` as ASCII strings) — `escModeToStr()`/`escStateToStr()` (this file) convert the codes back to the same strings (`"ECO"/"NORMAL"/"SPORT"`, `"IDLE"/"REENG"/"RAMP"/"HOLD"`) for the pretty dump and the `JSON:` line's `esc_mode`/`esc_state` fields — from `receiver_agent`'s point of view the JSON shape is unchanged, still real strings, just decoded here instead of carried as strings over the air. `PKT_ESC_MODE_*`/`PKT_ESC_STATE_*` (`config.h`) must match `../esc%20controller/throttle_controller.ino`'s `modeName()`/`stateName()` exactly.
 
+This is purely a wire-format change — the `JSON:` line's own shape didn't change (still real `esc_mode`/`esc_state`/`hdop` strings/numbers), so this did **not** need a `DEVICE_ID` bump per the "Serial protocol is a contract" rule below.
+
+### `epoch_time` — decoded and formatted receiver-side, not on the wire
+`telemetry_packet_t.epoch_time` (added in the same pass that added the sender's DS1307 RTC — see `greenpower_sender/CLAUDE.md`) is a raw `uint32_t` Unix-seconds value, `0` meaning "sender has no RTC." This device decodes it into a human `"YYYY-MM-DD HH:MM:SS"` string with `gmtime_r()`/`strftime()` (both standard C, no extra library) purely for the pretty serial dump and the `JSON:` line's `timestamp` field — that formatting happens entirely after the packet has already arrived over LoRa, so it has zero effect on airtime/latency. The `JSON:` line carries both `epoch_time` (raw int) and `timestamp` (formatted string) — raw for anything downstream that wants to do its own date math (e.g. `new Date(epoch_time * 1000)` in JS), formatted for anything that just wants to display it. `0`/`"NO_RTC"` means the sender's RTC wasn't detected at boot — not a real 1970-01-01 timestamp.
+
+## Current State (V1.4 — packet shrunk 98→81 bytes, epoch_time added, both decoded receiver-side)
+
+- **Packet shrunk: `hdop_x10`/`esc_mode_code`/`esc_state_code` replace `hdop`(float)/`esc_mode[8]`/`esc_state[8]`** — 98 → **81 bytes**, ~862ms time-on-air at SF10 (~12% less than before). Decoded back to real values/strings here via `escModeToStr()`/`escStateToStr()` and a `/10.0` divide, purely receiver-side. See the dedicated rule above.
+- **`telemetry_packet_t.epoch_time` added** (`uint32_t` Unix seconds, `0` = sender has no RTC). Decoded into a human date string here via `gmtime_r()`/`strftime()`, purely receiver-side (no added airtime); both the pretty dump and the `JSON:` line (`epoch_time` + `timestamp`) include it. See the dedicated rule above.
 - **A move to SF12 was tried, confirmed to hang this device (no serial output at all, on multiple boards), and fully reverted** — see the ⚠️ rule above for the full incident.
 - **SF10 is the second attempt** — `radio.begin()`'s spreading-factor argument is now `10`, matching the sender. Chosen specifically because it avoids the low-data-rate-optimization mechanism suspected (not confirmed) to have caused the SF12 hang. **Not yet confirmed working on real hardware** — test on one board with a Serial Monitor attached before flashing others. No other change needed on this side — still plain blocking interrupt-driven RX, no async-TX rework (that's sender-only, see its CLAUDE.md).
 - LoRa RX only — no ESP-NOW, no display, no packet forwarding beyond USB serial
 - Interrupt-driven receive via RadioLib (`setPacketReceivedAction` + `startReceive()`), not blocking/polled
 - Prints full packet contents plus RSSI/SNR/packet count on every successful receive; CRC mismatches and other read errors are counted and logged, not silently dropped
-- `telemetry_packet_t` is now 94 bytes (was 66) — ESC fields (`esc_mode`, `esc_state`, `esc_setpoint_pct`, `esc_live_pct`, `esc_ramp_pct`, `PKT_FLAG_ESC_VALID`) added to match `greenpower_sender`'s restored ESC UART link; both the pretty dump and the `JSON:` line include them
+- `telemetry_packet_t` is now 81 bytes (was 66, then 94, then 98) — ESC fields (`esc_mode`, `esc_state`, `esc_setpoint_pct`, `esc_live_pct`, `esc_ramp_pct`, `PKT_FLAG_ESC_VALID`) added to match `greenpower_sender`'s restored ESC UART link; both the pretty dump and the `JSON:` line include them
 - Assumes a second Heltec ESP32-S3 LoRa WiFi V4 as the host board — **unconfirmed**, see Hardware section
 - Speaks a small serial protocol to `../receiver_agent`: `DEVICE_ID` beacon/handshake (`GREENPOWER_RX_V1`) + a `JSON:` line per packet
 

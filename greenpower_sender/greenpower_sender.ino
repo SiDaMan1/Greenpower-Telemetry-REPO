@@ -23,6 +23,12 @@
 //                          from the LoRa radio's), CS=47 SCK=48 MOSI=7
 //                          MISO=5. Logs every packet to /LOGnnn.CSV
 //                          regardless of whether the LoRa link is up.
+//    • RTC               — Elegoo DS1307-V03, own I2C bus (Wire1) on
+//                          GPIO1(SDA)/GPIO2(SCL) — NOT the shared IMU/ADS1115
+//                          bus (GPIO17/18), because the DS1307 is fixed at
+//                          I2C address 0x68, same as the MPU6050-compatible
+//                          IMU already on that bus. Stamps each SD log row
+//                          with real wall-clock time instead of just millis().
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
@@ -47,6 +53,7 @@
 //    • RadioLib                (jgromes)
 //    • SD                      (built into the ESP32 Arduino core — no
 //                                separate Library Manager install needed)
+//    • RTClib                  (Adafruit) — DS1307 driver
 // ════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -65,6 +72,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <SD.h>
+#include <RTClib.h>
 #include "config.h"
 
 
@@ -151,6 +159,22 @@
 #define SD_MOSI_PIN        7
 #define SD_MISO_PIN        5
 
+// ── RTC (Elegoo DS1307-V03) ──────────────────────────────────────────
+// A SECOND, independent I2C bus — NOT the existing GPIO17/18 bus. The
+// DS1307 has a fixed, non-configurable I2C address (0x68), which is the
+// exact same address the MPU6050-compatible IMU already answers to on
+// that bus — putting both on one bus means one of them silently doesn't
+// respond. The ESP32-S3's I2C peripheral goes through the chip's internal
+// GPIO matrix (unlike, say, the LoRa radio's SPI pins, which are hardwired
+// chip-to-chip) so a second bus can live on any free GPIO pair — GPIO1/2
+// were cross-checked against every other pin already in use on this board
+// (see SD_*_PIN's own comment above and greenpower_sender/CLAUDE.md) and
+// are clean. Uses the ESP32's second hardware I2C controller (TwoWire
+// instance #1) via rtcWire below — this is a genuinely separate bus, not
+// a software/bit-banged one.
+#define RTC_SDA_PIN        1
+#define RTC_SCL_PIN        2
+
 // ADS1115 (Lonely Binary board) — I2C address, ADDR pin → GND = 0x48
 #define ADS_I2C_ADDR      0x48
 #define ADS_MOTOR_V_CH       0   // A0
@@ -199,6 +223,14 @@ DallasTemperature tempSensor(&oneWire);
 SPIClass sdSPI(FSPI);
 bool sdReady = false;
 File logFile;
+
+// Second hardware I2C bus (the ESP32-S3 has two independent I2C
+// controllers) for the RTC — kept separate from the default `Wire` object
+// used by the IMU/ADS1115 above, since the DS1307's fixed 0x68 address
+// would collide with the IMU on that bus. See RTC_SDA_PIN's own comment.
+TwoWire   rtcWire(1);
+RTC_DS1307 rtc;
+bool       rtcReady = false;
 
 // SX1262 radio (NSS, DIO1, RST, BUSY)
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
@@ -418,6 +450,26 @@ struct EscData {
 
 static EscData esc = {};
 
+// String → packet-code lookups — only needed at the point esc.mode/esc.state
+// (parsed off the UART line, still real strings — see EscData above) get
+// copied into the packed telemetry_packet_t for LoRa TX. Everywhere else in
+// this sketch (SD log, ESP-NOW, serial dump) keeps using esc.mode/esc.state
+// directly as strings — only the LoRa packet itself needed shrinking. See
+// PKT_ESC_MODE_*/PKT_ESC_STATE_* in config.h for the values these map to.
+static uint8_t escModeToCode(const char* mode) {
+    if (strcmp(mode, "ECO")    == 0) return PKT_ESC_MODE_ECO;
+    if (strcmp(mode, "SPORT")  == 0) return PKT_ESC_MODE_SPORT;
+    if (strcmp(mode, "NORMAL") == 0) return PKT_ESC_MODE_NORMAL;
+    return PKT_ESC_MODE_UNKNOWN;   // unrecognized string — shouldn't happen, but don't guess
+}
+static uint8_t escStateToCode(const char* state) {
+    if (strcmp(state, "IDLE")  == 0) return PKT_ESC_STATE_IDLE;
+    if (strcmp(state, "REENG") == 0) return PKT_ESC_STATE_REENG;
+    if (strcmp(state, "RAMP")  == 0) return PKT_ESC_STATE_RAMP;
+    if (strcmp(state, "HOLD")  == 0) return PKT_ESC_STATE_HOLD;
+    return PKT_ESC_STATE_UNKNOWN;
+}
+
 static void parseEscLine(char* line) {
     char* tok = strtok(line, ",");
     if (!tok) return;
@@ -462,6 +514,51 @@ static void pollEsc() {
 
 
 // ════════════════════════════════════════════════════════════════════
+//  RTC  (Elegoo DS1307-V03, own I2C bus — see RTC_SDA_PIN's own comment)
+//  Only used to stamp the SD log with real wall-clock time — nothing in
+//  the LoRa/ESP-NOW packet depends on it, so a missing/dead RTC doesn't
+//  affect telemetry, only the SD log's timestamp column.
+// ════════════════════════════════════════════════════════════════════
+
+static void initRtc() {
+    rtcWire.begin(RTC_SDA_PIN, RTC_SCL_PIN);
+    if (!rtc.begin(&rtcWire)) {
+        Serial.println("[WARN] RTC (DS1307) not detected on I2C (0x68, second bus) — SD log will fall back to millis() only");
+        return;
+    }
+    if (!rtc.isrunning()) {
+        // First-ever power-up (or a dead backup battery) — the DS1307
+        // starts at an arbitrary/zeroed time until told otherwise. Set it
+        // once from the PC's clock at compile time; after that its own
+        // backup battery keeps it running across power-cycles, so this
+        // branch shouldn't normally fire again unless that battery is
+        // removed or dies.
+        Serial.println("[WARN] RTC not running — setting from compile time (check backup battery if this happens again)");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+    rtcReady = true;
+    DateTime now = rtc.now();
+    Serial.printf("[OK]   RTC (DS1307)  %04d-%02d-%02d %02d:%02d:%02d\n",
+                  now.year(), now.month(), now.day(),
+                  now.hour(), now.minute(), now.second());
+}
+
+// Formats the RTC's current time as "YYYY-MM-DD HH:MM:SS" into buf, or
+// "NO_RTC" if the RTC was never detected — keeps the SD log's column count
+// consistent either way rather than shifting columns when the RTC is absent.
+static void getRtcTimestamp(char* buf, size_t len) {
+    if (!rtcReady) {
+        snprintf(buf, len, "NO_RTC");
+        return;
+    }
+    DateTime now = rtc.now();
+    snprintf(buf, len, "%04d-%02d-%02d %02d:%02d:%02d",
+             now.year(), now.month(), now.day(),
+             now.hour(), now.minute(), now.second());
+}
+
+
+// ════════════════════════════════════════════════════════════════════
 //  SD CARD LOGGING  (local backup — independent of LoRa/ESP-NOW)
 //  A separate, persistent record of everything this sender sees, kept
 //  entirely on the vehicle regardless of whether the LoRa link to the
@@ -502,11 +599,12 @@ static void initSdCard() {
         return;
     }
     // Header row — column order matches the fields written in logToSD()
-    // below. millis_ms is this board's own uptime clock, not wall-clock
-    // time — there's no RTC on this board, so this is the only timestamp
-    // available; still useful for computing relative timing/intervals
-    // within one run.
-    logFile.println("millis_ms,flags,speed_mph,latitude,longitude,hdop,satellites,"
+    // below. timestamp is real wall-clock time from the DS1307 RTC (or
+    // "NO_RTC" for every row if it was never detected); millis_ms is this
+    // board's own uptime clock, kept alongside it since it's still useful
+    // for computing relative timing/intervals within one run regardless of
+    // whether the RTC is present or correctly set.
+    logFile.println("timestamp,millis_ms,flags,speed_mph,latitude,longitude,hdop,satellites,"
                      "temp_f,batt_volt,motor_volt,current_a,"
                      "roll_deg,pitch_deg,yaw_deg,accel_g,lateral_g,vertical_g,"
                      "motor_rpm,wheel_rpm,"
@@ -526,17 +624,27 @@ static void initSdCard() {
 // was specifically supposed to protect against losing.
 static void logToSD() {
     if (!sdReady) return;
+    char ts[24];
+    getRtcTimestamp(ts, sizeof(ts));
+    // esc.mode/esc.state (not pkt.esc_mode_code/pkt.esc_state_code) — the SD
+    // log is local-only, never transmitted, so it can just use the real
+    // strings straight from the last parsed ESC line instead of the LoRa
+    // packet's compact numeric codes. "---" matches espNowSend()'s own
+    // fallback for "no ESC line ever parsed" (mirrors PKT_FLAG_ESC_VALID).
+    bool escValid = pkt.flags & PKT_FLAG_ESC_VALID;
+    float hdopOut = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
     logFile.printf(
-        "%lu,%u,%.2f,%.6f,%.6f,%.1f,%u,"
+        "%s,%lu,%u,%.2f,%.6f,%.6f,%.1f,%u,"
         "%.1f,%.2f,%.2f,%.2f,"
         "%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,"
         "%.0f,%.0f,"
         "%s,%s,%.1f,%.1f,%.1f\n",
-        (unsigned long)millis(), pkt.flags, pkt.speed_mph, pkt.latitude, pkt.longitude, pkt.hdop, pkt.satellites,
+        ts, (unsigned long)millis(), pkt.flags, pkt.speed_mph, pkt.latitude, pkt.longitude, hdopOut, pkt.satellites,
         pkt.temp_f, pkt.batt_volt, pkt.motor_volt, pkt.current_a,
         pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg, pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
         pkt.motor_rpm, pkt.wheel_rpm,
-        pkt.esc_mode, pkt.esc_state, pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
+        escValid ? esc.mode : "---", escValid ? esc.state : "---",
+        pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
     );
     logFile.flush();
 }
@@ -546,12 +654,23 @@ static void logToSD() {
 //  SENSOR UPDATE  (called at SENSOR_INTERVAL_MS)
 // ════════════════════════════════════════════════════════════════════
 
+// Packs a float HDOP into the packet's single-byte HDOP×10 field — see
+// PKT_HDOP_NO_FIX's own comment in config.h for why this isn't a float
+// anymore. Clamped to 254 (25.4 HDOP) rather than wrapping/overflowing on
+// an unexpectedly large value; 255 is reserved for "no fix".
+static uint8_t packHdop(float hdop) {
+    long v = lroundf(hdop * 10.0f);
+    if (v < 0)   v = 0;
+    if (v > 254) v = 254;
+    return (uint8_t)v;
+}
+
 static void updateGps() {
     if (gps.location.isValid() && gps.location.age() < 2000) {
         pkt.latitude   = (float)gps.location.lat();
         pkt.longitude  = (float)gps.location.lng();
         pkt.speed_mph  = (float)gps.speed.mph();
-        pkt.hdop       = gps.hdop.isValid() ? (float)gps.hdop.hdop() : 99.9f;
+        pkt.hdop_x10   = gps.hdop.isValid() ? packHdop((float)gps.hdop.hdop()) : PKT_HDOP_NO_FIX;
         pkt.satellites = (uint8_t)gps.satellites.value();
         pkt.flags     |=  PKT_FLAG_GPS_VALID;
     } else {
@@ -593,6 +712,10 @@ static void updateSensors() {
     updateImu();
     updateRpm();
 
+    // Raw Unix seconds, not a formatted string — see epoch_time's own
+    // comment in config.h for why (smallest possible over-the-air date/time
+    // representation; formatting happens receiver-side, off the radio link).
+    pkt.epoch_time  = rtcReady ? rtc.now().unixtime() : 0;
     pkt.temp_f      = readTempF();
     pkt.motor_volt  = readDividerVoltage(ADS_MOTOR_V_CH, VDIV_RATIO_MOTOR);
     pkt.batt_volt   = readDividerVoltage(ADS_BATT_V_CH, VDIV_RATIO_BATT);
@@ -605,13 +728,15 @@ static void updateSensors() {
     // (pollEsc() runs every loop() iteration, independent of this 200ms tick,
     // so this is just picking up whatever's most recent, not triggering a read).
     if (esc.valid) {
-        memcpy(pkt.esc_mode,  esc.mode,  sizeof(pkt.esc_mode));
-        memcpy(pkt.esc_state, esc.state, sizeof(pkt.esc_state));
+        pkt.esc_mode_code    = escModeToCode(esc.mode);
+        pkt.esc_state_code   = escStateToCode(esc.state);
         pkt.esc_setpoint_pct = esc.setpointPct;
         pkt.esc_live_pct     = esc.livePct;
         pkt.esc_ramp_pct     = esc.rampPct;
         pkt.flags           |= PKT_FLAG_ESC_VALID;
     } else {
+        pkt.esc_mode_code  = PKT_ESC_MODE_UNKNOWN;
+        pkt.esc_state_code = PKT_ESC_STATE_UNKNOWN;
         pkt.flags &= ~PKT_FLAG_ESC_VALID;
     }
 }
@@ -690,8 +815,8 @@ static void espNowSend() {
         pkt.batt_volt,
         pkt.motor_rpm,
         pkt.current_a,
-        escValid ? pkt.esc_mode  : "---",
-        escValid ? pkt.esc_state : "---",
+        escValid ? esc.mode  : "---",
+        escValid ? esc.state : "---",
         escValid ? pkt.esc_setpoint_pct : 0.0f,
         escValid ? pkt.esc_live_pct     : 0.0f,
         escValid ? pkt.esc_ramp_pct     : 0.0f
@@ -812,6 +937,12 @@ void setup() {
         Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm");
     }
 
+    // RTC — separate I2C bus, see RTC_SDA_PIN's own comment for why. Runs
+    // before initSdCard() so the very first SD log rows already have a
+    // real timestamp instead of "NO_RTC". Non-fatal if missing: initRtc()
+    // itself warns and leaves rtcReady false, everything else keeps working.
+    initRtc();
+
     // SD card — separate SPI bus, see SD_*_PIN's own comment for why these
     // specific pins. Non-fatal if missing/failed: initSdCard() itself
     // warns and leaves sdReady false, everything else keeps working.
@@ -856,6 +987,11 @@ void loop() {
     // ── Debug dump to USB serial ─────────────────────────────────────
     Serial.println("──────────────────────────────────────────");
 
+    // Timestamp — from the RTC, "NO_RTC" if it was never detected
+    char dbgTs[24];
+    getRtcTimestamp(dbgTs, sizeof(dbgTs));
+    Serial.printf("  Timestamp : %s UTC  (epoch=%lu)\n", dbgTs, (unsigned long)pkt.epoch_time);
+
     // Power
     Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt);
     Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt);
@@ -884,7 +1020,7 @@ void loop() {
     Serial.printf("  Speed     : %.2f mph\n", pkt.speed_mph);
     Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
     Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
-    Serial.printf("  HDOP      : %.1f\n",     pkt.hdop);
+    Serial.printf("  HDOP      : %.1f\n",     (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f));
 
     // IMU
     Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
@@ -897,8 +1033,8 @@ void loop() {
 
     // ESC
     if (pkt.flags & PKT_FLAG_ESC_VALID) {
-        Serial.printf("  ESC Mode  : %s\n",      pkt.esc_mode);
-        Serial.printf("  ESC State : %s\n",      pkt.esc_state);
+        Serial.printf("  ESC Mode  : %s  (code=%u)\n",  esc.mode,  pkt.esc_mode_code);
+        Serial.printf("  ESC State : %s  (code=%u)\n",  esc.state, pkt.esc_state_code);
         Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
         Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
         Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);

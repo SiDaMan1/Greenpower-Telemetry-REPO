@@ -32,6 +32,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <string.h>
+#include <time.h>
 #include "config.h"
 
 
@@ -68,6 +69,29 @@ static uint32_t otherErrCount = 0;
 // Identity string for downstream host tooling — bump the version suffix if
 // the JSON schema below ever changes in a way a host script needs to know.
 #define DEVICE_ID  "GREENPOWER_RX_V1"
+
+// esc_mode_code/esc_state_code → string — the LoRa packet carries 1-byte
+// codes now instead of 8-byte ASCII strings (see config.h's own comment on
+// PKT_ESC_MODE_*/PKT_ESC_STATE_*); decoded back to real strings here,
+// receiver-side, for the pretty dump and the JSON line. Must match
+// ../esc%20controller/throttle_controller.ino's modeName()/stateName().
+static const char* escModeToStr(uint8_t code) {
+    switch (code) {
+        case PKT_ESC_MODE_ECO:    return "ECO";
+        case PKT_ESC_MODE_SPORT:  return "SPORT";
+        case PKT_ESC_MODE_NORMAL: return "NORMAL";
+        default:                  return "---";
+    }
+}
+static const char* escStateToStr(uint8_t code) {
+    switch (code) {
+        case PKT_ESC_STATE_IDLE:  return "IDLE";
+        case PKT_ESC_STATE_REENG: return "REENG";
+        case PKT_ESC_STATE_RAMP:  return "RAMP";
+        case PKT_ESC_STATE_HOLD:  return "HOLD";
+        default:                  return "---";
+    }
+}
 
 // Answers "ID?" from the USB host without needing a full packet round-trip.
 // Only ever called from loop(), not from the radio ISR.
@@ -152,6 +176,21 @@ void loop() {
         Serial.printf("  Packet #%lu  RSSI:%.0f dBm  SNR:%.1f dB\n",
                       (unsigned long)rxCount, radio.getRSSI(), radio.getSNR());
 
+        // Timestamp — pkt.epoch_time is a raw Unix-seconds int on the wire
+        // (smallest possible over-the-air date/time representation, see
+        // config.h); the human-readable string is built here, receiver-side,
+        // entirely off the radio link, so it costs nothing in airtime.
+        char tsBuf[24];
+        if (pkt.epoch_time == 0) {
+            snprintf(tsBuf, sizeof(tsBuf), "NO_RTC");
+        } else {
+            time_t rawTime = (time_t)pkt.epoch_time;
+            struct tm tmInfo;
+            gmtime_r(&rawTime, &tmInfo);
+            strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%d %H:%M:%S", &tmInfo);
+        }
+        Serial.printf("  Timestamp : %s UTC\n", tsBuf);
+
         // Power
         Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt);
         Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt);
@@ -170,7 +209,8 @@ void loop() {
         Serial.printf("  Speed     : %.2f mph\n", pkt.speed_mph);
         Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
         Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
-        Serial.printf("  HDOP      : %.1f\n",     pkt.hdop);
+        float hdop = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
+        Serial.printf("  HDOP      : %.1f\n",     hdop);
 
         // IMU
         Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
@@ -183,8 +223,8 @@ void loop() {
 
         // ESC
         if (pkt.flags & PKT_FLAG_ESC_VALID) {
-            Serial.printf("  ESC Mode  : %s\n",      pkt.esc_mode);
-            Serial.printf("  ESC State : %s\n",      pkt.esc_state);
+            Serial.printf("  ESC Mode  : %s\n",      escModeToStr(pkt.esc_mode_code));
+            Serial.printf("  ESC State : %s\n",      escStateToStr(pkt.esc_state_code));
             Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
             Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
             Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);
@@ -197,10 +237,11 @@ void loop() {
         // ── Machine-readable line for host tooling (receiver_agent) ───
         // Kept as a single line, prefixed so it's trivial to filter out of
         // the human dump above with a simple startsWith("JSON:") check.
-        char json[480];
+        char json[540];
         snprintf(json, sizeof(json),
             "JSON:{"
             "\"seq\":%lu,\"rssi\":%.0f,\"snr\":%.1f,\"flags\":%u,"
+            "\"epoch_time\":%lu,\"timestamp\":\"%s\","
             "\"speed_mph\":%.2f,\"latitude\":%.6f,\"longitude\":%.6f,"
             "\"hdop\":%.1f,\"satellites\":%u,\"temp_f\":%.1f,"
             "\"batt_volt\":%.2f,\"motor_volt\":%.2f,\"current_a\":%.2f,"
@@ -211,14 +252,15 @@ void loop() {
             "\"esc_setpoint_pct\":%.1f,\"esc_live_pct\":%.1f,\"esc_ramp_pct\":%.1f"
             "}",
             (unsigned long)rxCount, radio.getRSSI(), radio.getSNR(), pkt.flags,
+            (unsigned long)pkt.epoch_time, tsBuf,
             pkt.speed_mph, pkt.latitude, pkt.longitude,
-            pkt.hdop, pkt.satellites, pkt.temp_f,
+            hdop, pkt.satellites, pkt.temp_f,
             pkt.batt_volt, pkt.motor_volt, pkt.current_a,
             pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg,
             pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
             pkt.motor_rpm, pkt.wheel_rpm,
             (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",
-            pkt.esc_mode, pkt.esc_state,
+            escModeToStr(pkt.esc_mode_code), escStateToStr(pkt.esc_state_code),
             pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
         );
         Serial.println(json);

@@ -32,7 +32,7 @@
 
 // ════════════════════════════════════════════════════════════════════
 //  SHARED TELEMETRY PACKET  (binary, sender → receiver over LoRa)
-//  Must be identical to greenpower_sender/config.h — 94 bytes, no padding.
+//  Must be identical to greenpower_sender/config.h — 81 bytes, no padding.
 // ════════════════════════════════════════════════════════════════════
 
 
@@ -41,13 +41,43 @@
 #define PKT_FLAG_CUR_VALID  0x04
 #define PKT_FLAG_ESC_VALID  0x08   // set once a UART line has actually been parsed from the ESC
 
+// esc_mode_code / esc_state_code — 1-byte enum codes standing in for what
+// used to be 8-byte ASCII strings (esc_mode[8]/esc_state[8]), specifically
+// to shrink LoRa airtime: at SF10 every payload byte adds real transmission
+// time, and a fixed 1-of-N code costs 1 byte on the wire instead of 8 for
+// data that's really just one of a handful of known values. Values must
+// match ../esc%20controller/throttle_controller.ino's modeName()/stateName()
+// exactly — see that file if these ever need to change. 255 = never
+// received a valid ESC line (mirrors PKT_FLAG_ESC_VALID being unset).
+#define PKT_ESC_MODE_ECO       0   // matches throttle_controller.ino's Mode::ECO
+#define PKT_ESC_MODE_NORMAL    1   // matches Mode::NORMAL
+#define PKT_ESC_MODE_SPORT     2   // matches Mode::SPORT
+#define PKT_ESC_MODE_UNKNOWN 255
+
+#define PKT_ESC_STATE_IDLE     0   // matches throttle_controller.ino's State::IDLE
+#define PKT_ESC_STATE_REENG    1   // matches State::REENGAGING ("REENG" truncated)
+#define PKT_ESC_STATE_RAMP     2   // matches State::RAMPING ("RAMP" truncated)
+#define PKT_ESC_STATE_HOLD     3   // matches State::HOLDING ("HOLD" truncated)
+#define PKT_ESC_STATE_UNKNOWN 255
+
+// hdop is sent as HDOP×10 in a single byte (0-254 → HDOP 0.0-25.4, plenty
+// of range — GPS fixes are rarely usable in any way much past HDOP ~10) —
+// 255 is a sentinel meaning "no fix" (replaces the old 99.9f placeholder,
+// which no longer fits once hdop stopped being a float).
+#define PKT_HDOP_NO_FIX      255
+
 
 typedef struct __attribute__((packed)) {
     uint8_t  flags;         // bit0=GPS valid, bit1=IMU valid, bit2=current valid, bit3=ESC valid
+    uint32_t epoch_time;    // Unix timestamp (UTC) from sender's DS1307 RTC, 0 if RTC unavailable.
+                             // Sent as a raw 4-byte int, not a formatted string — deliberately the
+                             // smallest possible over-the-air representation of date+time+seconds;
+                             // a receiver/dashboard converts it to a human date locally (e.g. JS
+                             // `new Date(epoch_time * 1000)`), off the radio link entirely.
     float    speed_mph;
     float    latitude;
     float    longitude;
-    float    hdop;
+    uint8_t  hdop_x10;       // HDOP × 10, see PKT_HDOP_NO_FIX above — was a float
     uint8_t  satellites;
     float    temp_f;
     float    batt_volt;     // battery voltage   — ADS1115 A1, 5:1 divider
@@ -61,12 +91,12 @@ typedef struct __attribute__((packed)) {
     float    vertical_g;
     float    motor_rpm;
     float    wheel_rpm;
-    char     esc_mode[8];        // "ECO"/"NORMAL"/"SPORT" — ESC truncates to 7 chars + null
-    char     esc_state[8];       // "IDLE"/"REENG"/"RAMP"/"HOLD" — same truncation
+    uint8_t  esc_mode_code;      // PKT_ESC_MODE_* — was char esc_mode[8]
+    uint8_t  esc_state_code;     // PKT_ESC_STATE_* — was char esc_state[8]
     float    esc_setpoint_pct;   // pot target, from ESC controller
     float    esc_live_pct;       // live output %, from ESC controller
     float    esc_ramp_pct;       // ramp/re-engage tracker %, from ESC controller
-} telemetry_packet_t;       // 2×uint8 + 16×float + 2×char[8] + 3×float = 2+64+16+12 = 94 bytes
+} telemetry_packet_t;       // 5×uint8 + 1×uint32 + 18×float = 5+4+72 = 81 bytes (was 98 with float hdop + string esc fields)
 
 
 #endif // CONFIG_H
