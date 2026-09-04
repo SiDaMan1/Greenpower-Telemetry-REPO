@@ -224,6 +224,18 @@ function identifyPort(portPath) {
             }
         });
     } catch (e) {
+        // Previously completely silent — the exact same class of gap the
+        // identify-timeout branch below already had fixed once (see that
+        // rule in CLAUDE.md), just missed here. `new SerialPort(...)` can
+        // throw SYNCHRONOUSLY (not just via the async open-error callback
+        // above) — e.g. the port handle not fully released yet by a just-
+        // killed previous agent instance (see the single-instance PID
+        // guard above) is a real, plausible trigger. Without this log line,
+        // a port hitting this path produces ZERO output ever, for as long
+        // as it stays plugged in — indistinguishable from "the agent never
+        // even tried," which is exactly what made this so hard to diagnose
+        // from agent.log alone.
+        log(`[INFO] Couldn't open ${portPath} (${e.message}) — likely in use by something else, skipping.`);
         knownPorts.set(portPath, 'not-ours');
         return;
     }

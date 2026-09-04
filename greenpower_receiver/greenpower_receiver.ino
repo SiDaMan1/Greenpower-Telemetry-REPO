@@ -9,11 +9,12 @@
 //  directly, or have another program parse it off the serial port.
 //
 //  LoRa RX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Same RF settings as the sender (915 MHz, SF10, BW125, sync
-//           0xF3 — SF10 for real range, up from SF7; deliberately NOT
-//           SF12, which hung the board completely on an earlier attempt.
-//           Packets now arrive roughly once every ~2s, not 5x/sec) — see
-//           config.h, which must stay in sync with the sender's copy.
+//           Same RF settings as the sender (915 MHz, SF7, BW125, sync
+//           0xF3) — see config.h, which must stay in sync with the
+//           sender's copy. **SF10 was tried for range, confirmed to hang
+//           this board on real hardware (zero serial output at all,
+//           including the boot beacon that prints before radio.begin()),
+//           and reverted back to SF7 — see the ⚠️ rule in CLAUDE.md.**
 //
 //  Serial protocol for downstream tooling (e.g. receiver_agent):
 //    • Boot prints one line containing DEVICE_ID once — lets a host script
@@ -130,7 +131,7 @@ void setup() {
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
         125.0,                // bandwidth kHz
-        10,                   // spreading factor — SF10, real range gain (was SF7); MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
+        7,                    // spreading factor — SF7 (reverted from SF10, which hung this board on real hardware); MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // unused for RX, kept for signature symmetry with sender
@@ -147,7 +148,7 @@ void setup() {
             Serial.printf("[WARN] startReceive() failed  code=%d\n", rxState);
         } else {
             loraReady = true;
-            Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm  listening...");
+            Serial.println("[OK]   SX1262  915 MHz  SF7  BW125  22dBm  listening...");
         }
     }
 
