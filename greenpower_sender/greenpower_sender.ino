@@ -32,7 +32,8 @@
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
-//           ~2s (SF10, real range gain over the original SF7/200ms)
+//           ~200ms (SF7 — SF10 was tried for range and confirmed to hang
+//           the receiver's radio.begin() on real hardware, reverted)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
 //              mock_sender — see espNowSend() below. Mode/state/percent
@@ -87,29 +88,32 @@
 #define LORA_SCK           9
 #define LORA_MISO         11
 #define LORA_MOSI         10
-// LoRa moved to SF10 (up from SF7) for real range, per explicit request
-// after the sender/receiver were found to disconnect at ordinary walking
-// distance. NOT SF12 — an earlier SF12 attempt hung the board completely
-// during radio.begin() on real hardware (confirmed: zero serial output,
-// on multiple physical boards), and the exact cause was never confirmed,
-// only reverted. SF10 is a deliberately more conservative step: it sits
-// BELOW the symbol-duration threshold (>16ms) that requires RadioLib to
-// enable low-data-rate-optimization for SX126x, which is the leading (but
-// still unconfirmed) suspect for what actually hung at SF11/SF12 — SF10's
-// time-on-air is short enough (~944ms for this packet, computed via
-// Semtech's LoRa time-on-air formula: ~100ms preamble + ~844ms payload at
-// BW125/CR4:5/explicit header/CRC on/DE=0) that it doesn't need LDRO at
-// all. Real range improvement over SF7, without re-gambling on the exact
-// mechanism that broke real boards last time. **Test on ONE board with a
-// Serial Monitor attached before flashing others** — this has NOT been
-// confirmed safe on real hardware, it's a smaller, better-reasoned bet,
-// not a proven one.
-// LORA_TX_INTERVAL_MS (~2s, real headroom above the ~944ms airtime) is
-// separate from ESP-NOW's own interval now — ESP-NOW is a different radio
-// (2.4GHz WiFi-based) with no LoRa-style airtime constraint, and the
-// steering wheel display it feeds has no reason to slow down just because
-// the LoRa base-station link did.
-#define LORA_TX_INTERVAL_MS   2000   // ~SF10 time-on-air (~944ms) + headroom
+// LoRa spreading factor is back to SF7 — SF10 was tried for range (a
+// deliberately more conservative second attempt after SF12 hung the board
+// once already), reasoned to sit below the low-data-rate-optimization
+// threshold that was the leading suspect for the SF12 hang. **That
+// reasoning turned out to be insufficient — SF10 ALSO hung the receiver's
+// radio.begin() on real hardware (confirmed: zero serial output at all,
+// including the boot beacon that prints before radio.begin() runs), a
+// second independent data point that the LDRO threshold isn't a reliable
+// predictor of what hangs this board.** Reverted back to SF7 on both ends
+// — see greenpower_receiver/CLAUDE.md's SF10 ⚠️ rule for the full
+// diagnosis. The underlying range problem (sender/receiver disconnecting
+// at ordinary walking distance) is unsolved again; don't re-attempt SF8+
+// without new information about why radio.begin() hangs at some
+// spreading factors on this specific board and not others.
+// LORA_TX_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS stay as separate constants
+// (not re-merged into one) even though SF7's airtime (~144ms for this
+// packet, well under 200ms) no longer strictly requires it — keeping them
+// independent costs nothing and avoids re-coupling LoRa's cadence to
+// ESP-NOW's again if a future range attempt reintroduces a longer airtime.
+// The async-TX machinery (startTransmit()/finishTransmit(), see
+// loraTxDoneFlag's own comment) is also kept rather than reverted to a
+// blocking transmit() — it's strictly safer regardless of spreading
+// factor and mirrors the receiver's own proven interrupt-driven RX
+// pattern, so there's no reason to remove it just because SF7's airtime
+// is short enough that it isn't strictly required at SF7 specifically.
+#define LORA_TX_INTERVAL_MS    200   // SF7 airtime (~144ms for this packet) fits well inside 200ms
 #define ESPNOW_TX_INTERVAL_MS  200   // unchanged — 5 Hz, matches SENSOR_INTERVAL_MS
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
@@ -237,13 +241,13 @@ SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 bool   loraReady   = false;
 
 // ── Async LoRa TX ───────────────────────────────────────────────────
-// At SF10 a single transmit's airtime is ~944ms — long enough that a
-// blocking radio.transmit() would stall this loop() (GPS parsing, ESC
-// UART polling, RPM period calc, and ESP-NOW TX to the steering wheel)
-// for nearly a full second every ~2s cycle. Non-blocking async TX avoids
-// that regardless of exactly how long a transmit takes — same
-// interrupt-driven pattern greenpower_receiver already uses proven on its
-// RX side (setPacketReceivedAction), mirrored here for TX instead of RX.
+// Kept even after reverting from SF10 back to SF7 (where a single
+// transmit's airtime is only ~144ms, well under one 200ms cycle) —
+// non-blocking TX is strictly safer regardless of spreading factor and
+// costs nothing to keep, so there's no reason to rip it back out just
+// because SF7 doesn't strictly require it. Same interrupt-driven pattern
+// greenpower_receiver already uses proven on its RX side
+// (setPacketReceivedAction), mirrored here for TX instead of RX.
 volatile bool loraTxDoneFlag = false;
 void IRAM_ATTR setLoraTxFlag() { loraTxDoneFlag = true; }
 // Only ever read/written from loop() (unlike loraTxDoneFlag, which the ISR
@@ -747,16 +751,16 @@ static void updateSensors() {
 // ════════════════════════════════════════════════════════════════════
 
 // Kicks off a transmission and returns immediately — does NOT block for the
-// ~944ms SF10 airtime. See loraTxDoneFlag's own comment (near the radio's
-// declaration) for why. Completion is picked up later by
-// checkLoraTxComplete(), called every loop() iteration independent of
-// LORA_TX_INTERVAL_MS's own timing.
+// transmit's airtime (~144ms at SF7). See loraTxDoneFlag's own comment
+// (near the radio's declaration) for why this is kept even at SF7.
+// Completion is picked up later by checkLoraTxComplete(), called every
+// loop() iteration independent of LORA_TX_INTERVAL_MS's own timing.
 static void loRaTx() {
     if (!loraReady) return;
     if (loraTxInFlight) {
         // The previous transmission hasn't finished yet — LORA_TX_INTERVAL_MS
-        // has real headroom above SF10's actual airtime specifically so this
-        // should be rare, not a normal steady-state occurrence. Skip this
+        // has real headroom above SF7's actual airtime so this should be
+        // rare, not a normal steady-state occurrence. Skip this
         // cycle rather than call startTransmit() on top of an in-progress
         // one (undefined radio state) or block waiting for it.
         Serial.println("  [LoRa] TX skipped — previous transmit still in flight");
@@ -922,7 +926,7 @@ void setup() {
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
         125.0,                // bandwidth kHz
-        10,                   // spreading factor — SF10, real range gain (was SF7), deliberately NOT SF12 (hung on real hardware last attempt) — see LORA_TX_INTERVAL_MS's own comment
+        7,                    // spreading factor — SF7 (reverted from SF10, which hung the receiver's radio.begin() on real hardware — see LORA_SCK's own comment); MUST match the receiver's copy exactly or packets won't decode
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // 22 dBm
@@ -932,9 +936,9 @@ void setup() {
         Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
     } else {
         radio.setDio2AsRfSwitch(true);   // required on Heltec V4
-        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — see loraTxDoneFlag's own comment for why this can't be a blocking transmit() at SF10's airtime
+        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — kept even at SF7, see loraTxDoneFlag's own comment
         loraReady = true;
-        Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm");
+        Serial.println("[OK]   SX1262  915 MHz  SF7  BW125  22dBm");
     }
 
     // RTC — separate I2C bus, see RTC_SDA_PIN's own comment for why. Runs
@@ -959,7 +963,7 @@ void setup() {
 void loop() {
     // These run every loop iteration — pollGps()/pollEsc() to keep their
     // UART buffers drained, checkLoraTxComplete() so an async LoRa TX
-    // finishing mid-cycle (anywhere in its ~944ms SF10 airtime) is noticed
+    // finishing mid-cycle (anywhere in its ~144ms SF7 airtime) is noticed
     // promptly rather than only at the next SENSOR_INTERVAL_MS tick.
     pollGps();
     pollEsc();
@@ -972,7 +976,7 @@ void loop() {
     updateSensors();
     logToSD();   // every SENSOR_INTERVAL_MS tick (5Hz) — independent of the LoRa/ESP-NOW radios below, see the SD CARD LOGGING section's own comment
 
-    // ── LoRa TX — every LORA_TX_INTERVAL_MS (~2s, SF10 airtime + headroom) ──
+    // ── LoRa TX — every LORA_TX_INTERVAL_MS (200ms, SF7 airtime + headroom) ──
     if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
         lastLoraTxMs = now;
         loRaTx();
