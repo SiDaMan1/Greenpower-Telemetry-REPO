@@ -32,8 +32,10 @@
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
-//           ~36ms (SF7/BW500 — latency prioritized over range per direct
-//           request; see LORA_SCK's own comment for the full history)
+//           ~20ms (SF7/BW500, implicit header, 6-symbol preamble, 42-byte
+//           fixed-point-compressed packet — latency prioritized over range
+//           per direct request; see LORA_SCK's own comment for the full
+//           history)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
 //              mock_sender — see espNowSend() below. Mode/state/percent
@@ -108,19 +110,33 @@
 //      symbol duration = far less airtime, at the direct cost of
 //      receiver sensitivity/range (roughly -12dB of link budget vs
 //      125kHz — a real, substantial range reduction, not a minor one).
-// Time-on-air at SF7/BW500 for this 81-byte packet, same Semtech formula
-// used throughout this project's LoRa history: symbol duration =
-// 2^7/500000 = 0.256ms (far under the 16ms LDRO threshold — no LDRO
-// needed). Preamble ≈ (8+4.25)×0.256ms ≈ 3.1ms. Payload ≈ 128 symbols ×
-// 0.256ms ≈ 32.8ms. Total ≈ 36ms per transmission — roughly 190x faster
-// than the SF12/BW62.5 attempt's ~6.9s, and even faster than the
-// original SF7/BW125 baseline's ~144ms (BW500's much shorter symbol time
-// wins out over BW125 despite otherwise-identical settings).
+// Time-on-air at SF7/BW500 for this packet, same Semtech formula used
+// throughout this project's LoRa history: symbol duration = 2^7/500000 =
+// 0.256ms (far under the 16ms LDRO threshold — no LDRO needed). Preamble
+// ≈ (8+4.25)×0.256ms ≈ 3.1ms.
+// Packet size was 81 bytes at this point → ~36ms total airtime (128
+// payload symbols). Two further passes since then, both purely on top of
+// SF7/BW500 (no additional range cost either time):
+//   1. Packet compressed 81 → 42 bytes (most floats replaced with scaled
+//      int16/uint8 fixed-point — see config.h's "Fixed-point compression"
+//      block) → ~21.8ms.
+//   2. Implicit header mode (no per-packet length/CR header needed, since
+//      the receiver already knows both from the shared config.h struct)
+//      + preamble trimmed from 8 to 6 symbols (Semtech's documented
+//      minimum for reliable SX126x sync) → ~20.0ms.
+// Total ≈ 20ms per transmission now, down from ~36ms right after the
+// SF7/BW500 switch and ~6.9s at the SF12/BW62.5 range attempt — roughly
+// 345x faster than that attempt. This is close to the practical floor at
+// SF7/BW500 for a packet this shape; the only levers left (dropping
+// epoch_time to shrink the payload further, or going below SF7) trade
+// away either the sender's RTC timestamp or venture into spreading-factor
+// territory this project has explicitly avoided as untested — see
+// this folder's CLAUDE.md for that discussion, not just done silently.
 // LORA_TX_INTERVAL_MS dropped back to 200ms (real headroom above the
-// ~36ms airtime) — matching SENSOR_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS
+// ~20ms airtime) — matching SENSOR_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS
 // again, so LoRa updates as fast as the sensors themselves sample,
 // instead of the 9-second interval the range attempt required.
-#define LORA_TX_INTERVAL_MS    200   // ~36ms SF7/BW500 airtime + real headroom — matches sensor/ESP-NOW cadence again
+#define LORA_TX_INTERVAL_MS    200   // ~20ms SF7/BW500 airtime (42-byte packet, implicit hdr, 6-symbol preamble) + real headroom — matches sensor/ESP-NOW cadence again
 #define ESPNOW_TX_INTERVAL_MS  200   // unchanged — 5 Hz, matches SENSOR_INTERVAL_MS
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
@@ -663,18 +679,22 @@ static void logToSD() {
     // fallback for "no ESC line ever parsed" (mirrors PKT_FLAG_ESC_VALID).
     bool escValid = pkt.flags & PKT_FLAG_ESC_VALID;
     float hdopOut = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
+    // Decoded back to human units from pkt's compressed fields — see config.h's
+    // "Fixed-point compression" block. This is the same ~0.1-unit-resolution
+    // data that was transmitted, not a separate higher-precision copy.
+    float tempFOut = (pkt.temp_f_x10 == PKT_TEMP_NO_READING) ? NAN : (pkt.temp_f_x10 / PKT_SCALE_TEMP);
     logFile.printf(
         "%s,%lu,%u,%.2f,%.6f,%.6f,%.1f,%u,"
         "%.1f,%.2f,%.2f,%.2f,"
         "%.2f,%.3f,%.3f,%.3f,"
         "%.0f,%.0f,"
         "%s,%s,%.1f,%.1f,%.1f\n",
-        ts, (unsigned long)millis(), pkt.flags, pkt.speed_mph, pkt.latitude, pkt.longitude, hdopOut, pkt.satellites,
-        pkt.temp_f, pkt.batt_volt, pkt.motor_volt, pkt.current_a,
-        pkt.pitch_deg, pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
-        pkt.motor_rpm, pkt.wheel_rpm,
+        ts, (unsigned long)millis(), pkt.flags, pkt.speed_mph_x10 / PKT_SCALE_SPEED, pkt.latitude, pkt.longitude, hdopOut, pkt.satellites,
+        tempFOut, pkt.batt_volt_x100 / PKT_SCALE_VOLT, pkt.motor_volt_x100 / PKT_SCALE_VOLT, pkt.current_a_x100 / PKT_SCALE_CURRENT,
+        pkt.pitch_deg_x100 / PKT_SCALE_ANGLE, pkt.accel_g_x1000 / PKT_SCALE_G, pkt.lateral_g_x1000 / PKT_SCALE_G, pkt.vertical_g_x1000 / PKT_SCALE_G,
+        (float)pkt.motor_rpm, pkt.wheel_rpm_x10 / PKT_SCALE_WHEEL_RPM,
         escValid ? esc.mode : "---", escValid ? esc.state : "---",
-        pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
+        (float)pkt.esc_setpoint_pct, (float)pkt.esc_live_pct, (float)pkt.esc_ramp_pct
     );
     logFile.flush();
 }
@@ -699,7 +719,7 @@ static void updateGps() {
     if (gps.location.isValid() && gps.location.age() < 2000) {
         pkt.latitude   = (float)gps.location.lat();
         pkt.longitude  = (float)gps.location.lng();
-        pkt.speed_mph  = (float)gps.speed.mph();
+        pkt.speed_mph_x10 = pktEncU16((float)gps.speed.mph(), PKT_SCALE_SPEED);
         pkt.hdop_x10   = gps.hdop.isValid() ? packHdop((float)gps.hdop.hdop()) : PKT_HDOP_NO_FIX;
         pkt.satellites = (uint8_t)gps.satellites.value();
         pkt.flags     |=  PKT_FLAG_GPS_VALID;
@@ -716,16 +736,16 @@ static void updateImu() {
     float ay = accelEvt.acceleration.y;
     float az = accelEvt.acceleration.z;
 
-    pkt.accel_g    =  ax / 9.80665f;   // forward / braking
-    pkt.lateral_g  =  ay / 9.80665f;   // cornering
-    pkt.vertical_g =  az / 9.80665f;   // vertical
+    pkt.accel_g_x1000    = pktEncI16(ax / 9.80665f, PKT_SCALE_G);   // forward / braking
+    pkt.lateral_g_x1000  = pktEncI16(ay / 9.80665f, PKT_SCALE_G);   // cornering
+    pkt.vertical_g_x1000 = pktEncI16(az / 9.80665f, PKT_SCALE_G);   // vertical
 
     // Static tilt angle from accelerometer (accurate at rest, noisy while
     // moving) — roll and yaw were removed per explicit request (not needed);
     // pitch is the only orientation angle still tracked. Yaw's own gyro-
     // integration state (lastGyroMs) was removed along with it — nothing
     // else in this file used that variable.
-    pkt.pitch_deg = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.29578f;
+    pkt.pitch_deg_x100 = pktEncI16(atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.29578f, PKT_SCALE_ANGLE);
 
     pkt.flags |= PKT_FLAG_IMU_VALID;
 }
@@ -739,12 +759,13 @@ static void updateSensors() {
     // comment in config.h for why (smallest possible over-the-air date/time
     // representation; formatting happens receiver-side, off the radio link).
     pkt.epoch_time  = rtcReady ? rtc.now().unixtime() : 0;
-    pkt.temp_f      = readTempF();
-    pkt.motor_volt  = readDividerVoltage(ADS_MOTOR_V_CH, VDIV_RATIO_MOTOR);
-    pkt.batt_volt   = readDividerVoltage(ADS_BATT_V_CH, VDIV_RATIO_BATT);
-    pkt.current_a   = readCurrentAmps();
-    pkt.motor_rpm   = motorRpm;
-    pkt.wheel_rpm   = wheelRpm;
+    float tempF     = readTempF();
+    pkt.temp_f_x10  = isnan(tempF) ? PKT_TEMP_NO_READING : pktEncI16(tempF, PKT_SCALE_TEMP);
+    pkt.motor_volt_x100 = pktEncU16(readDividerVoltage(ADS_MOTOR_V_CH, VDIV_RATIO_MOTOR), PKT_SCALE_VOLT);
+    pkt.batt_volt_x100  = pktEncU16(readDividerVoltage(ADS_BATT_V_CH, VDIV_RATIO_BATT), PKT_SCALE_VOLT);
+    pkt.current_a_x100  = pktEncI16(readCurrentAmps(), PKT_SCALE_CURRENT);
+    pkt.motor_rpm       = pktEncU16(motorRpm, 1.0f);
+    pkt.wheel_rpm_x10   = pktEncU16(wheelRpm, PKT_SCALE_WHEEL_RPM);
     pkt.flags      |= PKT_FLAG_CUR_VALID;
 
     // ESC fields — copied in from the last successfully parsed UART line
@@ -753,9 +774,9 @@ static void updateSensors() {
     if (esc.valid) {
         pkt.esc_mode_code    = escModeToCode(esc.mode);
         pkt.esc_state_code   = escStateToCode(esc.state);
-        pkt.esc_setpoint_pct = esc.setpointPct;
-        pkt.esc_live_pct     = esc.livePct;
-        pkt.esc_ramp_pct     = esc.rampPct;
+        pkt.esc_setpoint_pct = pktEncPct(esc.setpointPct);
+        pkt.esc_live_pct     = pktEncPct(esc.livePct);
+        pkt.esc_ramp_pct     = pktEncPct(esc.rampPct);
         pkt.flags           |= PKT_FLAG_ESC_VALID;
     } else {
         pkt.esc_mode_code  = PKT_ESC_MODE_UNKNOWN;
@@ -831,18 +852,23 @@ static void espNowSend() {
 
     bool escValid = pkt.flags & PKT_FLAG_ESC_VALID;
 
+    // This CSV's own on-the-wire format is unchanged (still speed_mph,batV,
+    // rpm,amps,... as plain human-readable text over ESP-NOW) — only pkt's
+    // internal storage got compressed, so every value read out of it here
+    // is decoded back to its real unit first, same as the LoRa-side debug
+    // dump/JSON above.
     char payload[128];
     snprintf(payload, sizeof(payload),
-        "%.1f,%.2f,%.0f,%.1f,%s,%s,%.1f,%.1f,%.1f",
-        pkt.speed_mph,
-        pkt.batt_volt,
+        "%.1f,%.2f,%u,%.1f,%s,%s,%.1f,%.1f,%.1f",
+        pkt.speed_mph_x10 / PKT_SCALE_SPEED,
+        pkt.batt_volt_x100 / PKT_SCALE_VOLT,
         pkt.motor_rpm,
-        pkt.current_a,
+        pkt.current_a_x100 / PKT_SCALE_CURRENT,
         escValid ? esc.mode  : "---",
         escValid ? esc.state : "---",
-        escValid ? pkt.esc_setpoint_pct : 0.0f,
-        escValid ? pkt.esc_live_pct     : 0.0f,
-        escValid ? pkt.esc_ramp_pct     : 0.0f
+        escValid ? (float)pkt.esc_setpoint_pct : 0.0f,
+        escValid ? (float)pkt.esc_live_pct     : 0.0f,
+        escValid ? (float)pkt.esc_ramp_pct     : 0.0f
     );
 
     esp_err_t result = esp_now_send(PEER_MAC, (uint8_t*)payload, strlen(payload));
@@ -949,15 +975,30 @@ void setup() {
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // 22 dBm
-        8                     // preamble length
+        LORA_PREAMBLE_SYMBOLS // preamble length — see its own comment in config.h
     );
     if (loraState != RADIOLIB_ERR_NONE) {
         Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
     } else {
         radio.setDio2AsRfSwitch(true);   // required on Heltec V4
         radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — kept even at this short airtime, see loraTxDoneFlag's own comment
+
+        // Implicit header mode — every packet is a fixed sizeof(telemetry_packet_t)
+        // bytes, so there's nothing for an explicit LoRa header to usefully
+        // describe (it normally carries the payload length + coding rate for
+        // a receiver that doesn't already know them). Skipping it removes a
+        // real chunk of per-packet payload-symbol overhead for free — no
+        // range or reliability cost, since the receiver already knows the
+        // exact length via the same shared config.h struct. MUST match the
+        // receiver's own implicitHeader() call exactly (same length) or
+        // packets won't decode — see receiver's radio.begin() block.
+        int hdrState = radio.implicitHeader(sizeof(telemetry_packet_t));
+        if (hdrState != RADIOLIB_ERR_NONE) {
+            Serial.printf("[WARN] implicitHeader() failed  code=%d — falling back to explicit header (still works, just ~1.3ms/packet slower)\n", hdrState);
+        }
+
         loraReady = true;
-        Serial.println("[OK]   SX1262  915 MHz  SF7  BW500  22dBm");
+        Serial.printf("[OK]   SX1262  915 MHz  SF7  BW500  22dBm  implicit-hdr  preamble=%u\n", LORA_PREAMBLE_SYMBOLS);
     }
 
     // RTC — separate I2C bus, see RTC_SDA_PIN's own comment for why. Runs
@@ -1016,49 +1057,49 @@ void loop() {
     Serial.printf("  Timestamp : %s UTC  (epoch=%lu)\n", dbgTs, (unsigned long)pkt.epoch_time);
 
     // Power
-    Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt);
-    Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt);
-    Serial.printf("  Current   : %.2f A\n",  pkt.current_a);
+    Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt_x100 / PKT_SCALE_VOLT);
+    Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt_x100 / PKT_SCALE_VOLT);
+    Serial.printf("  Current   : %.2f A\n",  pkt.current_a_x100 / PKT_SCALE_CURRENT);
 
     // RPM — raw edge counts + live pin state included for wiring diagnosis.
     // Edges always 0 with the pin state never changing = wiring/power issue,
     // not a code issue.
-    Serial.printf("  Motor RPM : %.0f  (raw edges=%lu/%.1fs, pin=%d)\n",
+    Serial.printf("  Motor RPM : %u  (raw edges=%lu/%.1fs, pin=%d)\n",
                   pkt.motor_rpm, (unsigned long)lastMotorEdges,
                   RPM_CALC_INTERVAL_MS / 1000.0f, digitalRead(MOTOR_RPM_PIN));
-    Serial.printf("  Wheel RPM : %.0f  (raw edges=%lu/%.1fs, pin=%d)\n",
-                  pkt.wheel_rpm, (unsigned long)lastWheelEdges,
+    Serial.printf("  Wheel RPM : %.1f  (raw edges=%lu/%.1fs, pin=%d)\n",
+                  pkt.wheel_rpm_x10 / PKT_SCALE_WHEEL_RPM, (unsigned long)lastWheelEdges,
                   RPM_CALC_INTERVAL_MS / 1000.0f, digitalRead(WHEEL_RPM_PIN));
 
     // Temperature
-    if (isnan(pkt.temp_f)) {
+    if (pkt.temp_f_x10 == PKT_TEMP_NO_READING) {
         Serial.println("  Temp      : DISCONNECTED (check pull-up + data line wiring)");
     } else {
-        Serial.printf("  Temp      : %.1f °F  (%.2f °C raw)\n", pkt.temp_f, lastTempRawC);
+        Serial.printf("  Temp      : %.1f °F  (%.2f °C raw)\n", pkt.temp_f_x10 / PKT_SCALE_TEMP, lastTempRawC);
     }
 
     // GPS
     Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
     Serial.printf("  Satellites: %u\n",       pkt.satellites);
-    Serial.printf("  Speed     : %.2f mph\n", pkt.speed_mph);
+    Serial.printf("  Speed     : %.1f mph\n", pkt.speed_mph_x10 / PKT_SCALE_SPEED);
     Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
     Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
     Serial.printf("  HDOP      : %.1f\n",     (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f));
 
     // IMU
     Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
-    Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg);
-    Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
-    Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
-    Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
+    Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg_x100 / PKT_SCALE_ANGLE);
+    Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g_x1000 / PKT_SCALE_G);
+    Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g_x1000 / PKT_SCALE_G);
+    Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g_x1000 / PKT_SCALE_G);
 
     // ESC
     if (pkt.flags & PKT_FLAG_ESC_VALID) {
         Serial.printf("  ESC Mode  : %s  (code=%u)\n",  esc.mode,  pkt.esc_mode_code);
         Serial.printf("  ESC State : %s  (code=%u)\n",  esc.state, pkt.esc_state_code);
-        Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
-        Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
-        Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);
+        Serial.printf("  Setpoint  : %u %%\n", pkt.esc_setpoint_pct);
+        Serial.printf("  Live      : %u %%\n", pkt.esc_live_pct);
+        Serial.printf("  Ramp      : %u %%\n", pkt.esc_ramp_pct);
     } else {
         Serial.println("  ESC       : waiting for data...");
     }
