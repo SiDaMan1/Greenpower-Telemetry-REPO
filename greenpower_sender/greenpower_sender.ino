@@ -219,12 +219,34 @@ Adafruit_ADS1115  ads;
 OneWire           oneWire(TEMP_PROBE_PIN);
 DallasTemperature tempSensor(&oneWire);
 
-// A dedicated second SPI bus (FSPI) for the SD card — the default `SPI`
+// A dedicated second SPI bus (HSPI) for the SD card — the default `SPI`
 // object/pins are already claimed by the LoRa radio (SPI.begin() with
-// LORA_SCK/MISO/MOSI in setup() below); a second SPIClass instance on its
-// own pins is the standard way to run two independent SPI peripherals on
-// one ESP32-S3.
-SPIClass sdSPI(FSPI);
+// LORA_SCK/MISO/MOSI in setup() below).
+//
+// ⚠️ REAL, CONFIRMED bug this replaced: this was originally `SPIClass
+// sdSPI(FSPI)`, on the (wrong) assumption that requesting a SEPARATE
+// SPIClass object on different pins automatically means separate
+// hardware. It does NOT: on the ESP32-S3, arduino-esp32's own default
+// global `SPI` object (the one LoRa's `SPI.begin(LORA_SCK, ...)` call
+// uses) is ITSELF instantiated as `SPIClass SPI(FSPI)` internally — so a
+// second `SPIClass sdSPI(FSPI)` here wraps the EXACT SAME underlying
+// SPI2_HOST peripheral, not an independent one, regardless of which GPIO
+// pins either .begin() call names. The ESP32's SPI peripherals route
+// their pins through an internal GPIO matrix, so `sdSPI.begin(SD_SCK_PIN,
+// ...)` — called in setup() AFTER the LoRa radio's own SPI.begin()/
+// radio.begin() — silently REPROGRAMS that shared peripheral's pin
+// routing to the SD card's pins, out from under the LoRa radio that had
+// just configured it. Confirmed via real hardware symptoms that only
+// make sense with this explanation: radio.begin() (which runs first)
+// kept reporting success, but EVERY subsequent radio.startTransmit()
+// call in loop() (which runs long after initSdCard() has already
+// hijacked the shared peripheral) failed with a generic RadioLib error
+// — the SPI traffic intended for the SX1262 was actually going out on
+// the SD card's pins by then. Fixed by moving the SD card onto `HSPI`
+// (SPI3_HOST) instead — the ESP32-S3's OTHER general-purpose SPI
+// peripheral, genuinely independent hardware from FSPI/SPI2_HOST, not
+// just a different pin assignment on the same one.
+SPIClass sdSPI(HSPI);
 bool sdReady = false;
 File logFile;
 
