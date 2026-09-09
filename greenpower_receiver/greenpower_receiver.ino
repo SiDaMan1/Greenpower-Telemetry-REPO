@@ -219,9 +219,7 @@ void loop() {
 
         // IMU
         Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
-        Serial.printf("  Roll      : %.2f °\n",   pkt.roll_deg);
         Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg);
-        Serial.printf("  Yaw       : %.2f °\n",   pkt.yaw_deg);
         Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
         Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
         Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
@@ -250,7 +248,7 @@ void loop() {
             "\"speed_mph\":%.2f,\"latitude\":%.6f,\"longitude\":%.6f,"
             "\"hdop\":%.1f,\"satellites\":%u,\"temp_f\":%.1f,"
             "\"batt_volt\":%.2f,\"motor_volt\":%.2f,\"current_a\":%.2f,"
-            "\"roll_deg\":%.2f,\"pitch_deg\":%.2f,\"yaw_deg\":%.2f,"
+            "\"pitch_deg\":%.2f,"
             "\"accel_g\":%.3f,\"lateral_g\":%.3f,\"vertical_g\":%.3f,"
             "\"motor_rpm\":%.0f,\"wheel_rpm\":%.0f,"
             "\"esc_valid\":%s,\"esc_mode\":\"%s\",\"esc_state\":\"%s\","
@@ -261,7 +259,7 @@ void loop() {
             pkt.speed_mph, pkt.latitude, pkt.longitude,
             hdop, pkt.satellites, pkt.temp_f,
             pkt.batt_volt, pkt.motor_volt, pkt.current_a,
-            pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg,
+            pkt.pitch_deg,
             pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
             pkt.motor_rpm, pkt.wheel_rpm,
             (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",

@@ -91,6 +91,12 @@ This is purely a wire-format change — the `JSON:` line's own shape didn't chan
 ### `epoch_time` — decoded and formatted receiver-side, not on the wire
 `telemetry_packet_t.epoch_time` (added in the same pass that added the sender's DS1307 RTC — see `greenpower_sender/CLAUDE.md`) is a raw `uint32_t` Unix-seconds value, `0` meaning "sender has no RTC." This device decodes it into a human `"YYYY-MM-DD HH:MM:SS"` string with `gmtime_r()`/`strftime()` (both standard C, no extra library) purely for the pretty serial dump and the `JSON:` line's `timestamp` field — that formatting happens entirely after the packet has already arrived over LoRa, so it has zero effect on airtime/latency. The `JSON:` line carries both `epoch_time` (raw int) and `timestamp` (formatted string) — raw for anything downstream that wants to do its own date math (e.g. `new Date(epoch_time * 1000)` in JS), formatted for anything that just wants to display it. `0`/`"NO_RTC"` means the sender's RTC wasn't detected at boot — not a real 1970-01-01 timestamp.
 
+## Current State (V1.8 — roll_deg/yaw_deg removed, per explicit request — not needed)
+
+- **`roll_deg`/`yaw_deg` removed from `telemetry_packet_t`, this file's pretty dump, and its `JSON:` line** — matching removal on `greenpower_sender.ino`'s side (its own IMU code, SD log, debug dump — see `greenpower_sender/CLAUDE.md`'s matching entry). `pitch_deg` is the only orientation angle left. Packet shrunk 81 → **73 bytes**. Both `config.h` copies were updated in the same pass, kept in sync as always.
+- **`telemetry_web` updated to match** — `METRICS`, the IMU dedicated page, the Multi-tab list, and `CSV_COLUMNS` in `server.js` all had `roll_deg`/`yaw_deg` removed too. See `telemetry_web/CLAUDE.md`'s own Current State.
+- **Not yet reflashed/verified on real hardware** — lands on top of the still-unverified SF7/BW500 change below.
+
 ## Current State (V1.7 — latency now prioritized over range: SF7+BW500, ~36ms airtime)
 
 - **SF7 + BW500 now flashed, deliberately, prioritizing latency over range** — `radio.begin()` is `7`/`500.0` (was `12`/`62.5`). The SF12+BW62.5 attempt below worked (no hang) but had ~6.9s airtime, too slow to be usable — this trades range for speed: SF7 (proven safe) + BW500 (the real range cost). Computed time-on-air ≈ 36ms per packet. See the dedicated rule above. **Not yet confirmed on real hardware.**

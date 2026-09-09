@@ -38,7 +38,7 @@
 
 // ════════════════════════════════════════════════════════════════════
 //  SHARED TELEMETRY PACKET  (binary, sender → receiver over LoRa)
-//  Both sides must include this header — 81 bytes, no padding.
+//  Both sides must include this header — 73 bytes, no padding.
 // ════════════════════════════════════════════════════════════════════
 
 
@@ -89,9 +89,7 @@ typedef struct __attribute__((packed)) {
     float    batt_volt;     // battery voltage   — ADS1115 A1, 5:1 divider
     float    motor_volt;    // motor/ESC voltage — ADS1115 A0, 5:1 divider
     float    current_a;     // motor current     — YHDC HSTS016L, ADS1115 A2(Vout)-A3(Vref)
-    float    roll_deg;
-    float    pitch_deg;
-    float    yaw_deg;
+    float    pitch_deg;      // roll_deg/yaw_deg removed — not needed, per explicit request
     float    accel_g;
     float    lateral_g;
     float    vertical_g;
@@ -102,7 +100,7 @@ typedef struct __attribute__((packed)) {
     float    esc_setpoint_pct;   // pot target, from ESC controller
     float    esc_live_pct;       // live output %, from ESC controller
     float    esc_ramp_pct;       // ramp/re-engage tracker %, from ESC controller
-} telemetry_packet_t;       // 5×uint8 + 1×uint32 + 18×float = 5+4+72 = 81 bytes (was 98 with float hdop + string esc fields)
+} telemetry_packet_t;       // 5×uint8 + 1×uint32 + 16×float = 5+4+64 = 73 bytes (was 81 before roll_deg/yaw_deg were removed)
 
 
 #endif // CONFIG_H

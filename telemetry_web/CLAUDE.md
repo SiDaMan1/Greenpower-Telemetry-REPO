@@ -354,6 +354,11 @@ Per explicit request ("make the efficiency graph on mobile larger"). The generic
 
 ---
 
+## Current State (V3.6 — roll_deg/yaw_deg removed, per explicit request — not needed)
+
+- **`roll_deg`/`yaw_deg` removed entirely** — `METRICS.roll_deg`/`METRICS.yaw_deg` deleted from `index.html`, the IMU dedicated page's "Orientation" section collapsed from a 3-card row (Roll/Pitch/Yaw) down to a single `pitch_deg` card matching the Speed/Temperature single-card pattern, the two Overview stat cards removed, `OV_MOBILE_ITEMS`'s matching entries removed, and the now-unused `--roll`/`--yaw` CSS color tokens removed. `CSV_COLUMNS` in `server.js` also had both columns removed. Matches a corresponding field removal from `telemetry_packet_t` on the firmware side — see `greenpower_sender/CLAUDE.md` and `greenpower_receiver/CLAUDE.md`'s matching entries. `pitch_deg` is unaffected and still fully wired (Overview, IMU page, Multi tab, CSV).
+- **Not yet re-deployed/verified against real hardware** — lands on top of the firmware side's own not-yet-reflashed changes.
+
 ## Current State (V3.5 — Lap Timing, Efficiency tab, per-lap session view)
 
 - **New "Lap Timing" section on the Raceline tab** — geofence-based lap recording (current-lap running timer, best-lap card, a table of completed laps with delta-to-best/distance/top speed/efficiency), plus a "Reset Laps" button. Geofence itself (lat/lon/radius-meters) can be set three ways now: typing lat/lon into the Settings card directly, "Use Current GPS Position" (also in Settings), or a floating "Set Start/Finish" button ON the Raceline map itself — tap it, then tap the map (the car's current position or any other point) to place it there. See the dedicated rule above for the crossing-detection/debounce/distance-cap details and how the three set-geofence paths share one save function.

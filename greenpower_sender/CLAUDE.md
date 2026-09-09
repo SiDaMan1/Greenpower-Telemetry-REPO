@@ -65,7 +65,7 @@ The voltage-divider channels (A0/A1) can swing up to ~5V (25V max input ÷ 5:1 d
 ## Rules and Constraints
 
 ### `config.h` is shared — coordinate before changing it
-`telemetry_packet_t` (98 bytes, packed), the LoRa RF settings, and `ESPNOW_PEER_MAC` are meant to be identical on both ends of each link. There **is** a LoRa receiver in this repo now ([`greenpower_receiver`](../greenpower_receiver/CLAUDE.md)) and its `config.h` must be updated in the same commit as this one — they're two independently-maintained copies, not a shared include, so nothing enforces this automatically. Update the size comment whenever a packet field is added, removed, or reordered.
+`telemetry_packet_t` (73 bytes, packed), the LoRa RF settings, and `ESPNOW_PEER_MAC` are meant to be identical on both ends of each link. There **is** a LoRa receiver in this repo now ([`greenpower_receiver`](../greenpower_receiver/CLAUDE.md)) and its `config.h` must be updated in the same commit as this one — they're two independently-maintained copies, not a shared include, so nothing enforces this automatically. Update the size comment whenever a packet field is added, removed, or reordered.
 
 ### ESC UART link — real data as of V3.1, not placeholders
 `pollEsc()` runs every `loop()` iteration (same pattern as `pollGps()`) reading CSV lines off Serial2 from [`esc controller`](../esc%20controller/CLAUDE.md)'s `throttle_controller.ino`: `mode,state,setpointPct,livePct,rampPct`. Parsed values land in the module-level `esc` struct; `updateSensors()` copies them into `pkt.esc_*` and sets `PKT_FLAG_ESC_VALID` only once a line has actually been parsed (`esc.valid`) — don't assume the ESC fields are populated from boot, a disconnected/not-yet-booted ESC controller means the flag stays clear and `pkt.esc_*` stays zeroed.
@@ -196,6 +196,12 @@ Follow-up to the `epoch_time` addition above: once the packet had grown to 98 by
 **Not yet verified on real hardware** — same caveat as everything else added this pass.
 
 ---
+
+## Current State (V4.1 — roll_deg/yaw_deg removed, per explicit request — not needed)
+
+- **`roll_deg` and `yaw_deg` removed from `telemetry_packet_t`, the sender's own IMU code, the SD log, and the serial debug dump** — explicit request ("we dont need it"). `pitch_deg` is the only orientation angle left; `accel_g`/`lateral_g`/`vertical_g` (raw accelerometer axes, not derived tilt angles) are untouched. Yaw's own gyro-integration state (`lastGyroMs`, only ever used for the now-removed yaw calculation) was removed too, not left as dead code. Packet shrunk 81 → **73 bytes** — a small extra latency win on top of the SF7/BW500 change below, though not the primary motivation this time. **`greenpower_receiver.ino`'s copy of `config.h` and its own dump/JSON output were updated to match in the same pass** — this is exactly the kind of cross-folder field-list change the repo root `CLAUDE.md` warns about, so both sides moved together, not just the sender.
+- **`telemetry_web` updated to match**: `METRICS.roll_deg`/`METRICS.yaw_deg` removed from `index.html` (Overview stat cards, the IMU dedicated page — now a single-card "Orientation" section instead of a 3-card row, matching the Speed/Temperature single-card pattern — the Multi-tab toggle list, and the now-unused `--roll`/`--yaw` CSS color tokens), and `roll_deg`/`yaw_deg` removed from `CSV_COLUMNS` in `server.js`. See `telemetry_web/CLAUDE.md`'s own Current State for the matching entry.
+- **Not yet reflashed/verified on real hardware** — this lands on top of the still-unverified SF7/BW500 latency change below; both need testing together on the next reflash.
 
 ## Current State (V4.0 — latency now prioritized over range: SF7+BW500, ~36ms airtime)
 

@@ -296,7 +296,6 @@ static telemetry_packet_t pkt = {};
 static const uint32_t SENSOR_INTERVAL_MS   = 200;   // 5 Hz
 static const uint32_t RPM_CALC_INTERVAL_MS = 200;   // 5 Hz — matches SENSOR_INTERVAL_MS so RPM isn't stale between packets
 static uint32_t lastSensorMs = 0;
-static uint32_t lastGyroMs   = 0;
 static uint32_t lastRpmMs    = 0;
 static uint32_t lastLoraTxMs = 0;
 static uint32_t lastEspNowMs = 0;
@@ -637,7 +636,7 @@ static void initSdCard() {
     // whether the RTC is present or correctly set.
     logFile.println("timestamp,millis_ms,flags,speed_mph,latitude,longitude,hdop,satellites,"
                      "temp_f,batt_volt,motor_volt,current_a,"
-                     "roll_deg,pitch_deg,yaw_deg,accel_g,lateral_g,vertical_g,"
+                     "pitch_deg,accel_g,lateral_g,vertical_g,"
                      "motor_rpm,wheel_rpm,"
                      "esc_mode,esc_state,esc_setpoint_pct,esc_live_pct,esc_ramp_pct");
     logFile.flush();
@@ -667,12 +666,12 @@ static void logToSD() {
     logFile.printf(
         "%s,%lu,%u,%.2f,%.6f,%.6f,%.1f,%u,"
         "%.1f,%.2f,%.2f,%.2f,"
-        "%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,"
+        "%.2f,%.3f,%.3f,%.3f,"
         "%.0f,%.0f,"
         "%s,%s,%.1f,%.1f,%.1f\n",
         ts, (unsigned long)millis(), pkt.flags, pkt.speed_mph, pkt.latitude, pkt.longitude, hdopOut, pkt.satellites,
         pkt.temp_f, pkt.batt_volt, pkt.motor_volt, pkt.current_a,
-        pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg, pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
+        pkt.pitch_deg, pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
         pkt.motor_rpm, pkt.wheel_rpm,
         escValid ? esc.mode : "---", escValid ? esc.state : "---",
         pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
@@ -721,19 +720,12 @@ static void updateImu() {
     pkt.lateral_g  =  ay / 9.80665f;   // cornering
     pkt.vertical_g =  az / 9.80665f;   // vertical
 
-    // Static tilt angles from accelerometer (accurate at rest, noisy while moving)
-    pkt.roll_deg  = atan2f(ay, az) * 57.29578f;
+    // Static tilt angle from accelerometer (accurate at rest, noisy while
+    // moving) — roll and yaw were removed per explicit request (not needed);
+    // pitch is the only orientation angle still tracked. Yaw's own gyro-
+    // integration state (lastGyroMs) was removed along with it — nothing
+    // else in this file used that variable.
     pkt.pitch_deg = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.29578f;
-
-    // Yaw from gyro integration — drifts without a magnetometer; reset on power-cycle
-    uint32_t now = millis();
-    if (lastGyroMs > 0) {
-        float dt = (now - lastGyroMs) * 0.001f;
-        if (dt < 1.0f) {
-            pkt.yaw_deg += gyroEvt.gyro.z * 57.29578f * dt;
-        }
-    }
-    lastGyroMs = now;
 
     pkt.flags |= PKT_FLAG_IMU_VALID;
 }
@@ -1055,9 +1047,7 @@ void loop() {
 
     // IMU
     Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
-    Serial.printf("  Roll      : %.2f °\n",   pkt.roll_deg);
     Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg);
-    Serial.printf("  Yaw       : %.2f °\n",   pkt.yaw_deg);
     Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
     Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
     Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
