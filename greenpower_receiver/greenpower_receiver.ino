@@ -9,18 +9,16 @@
 //  directly, or have another program parse it off the serial port.
 //
 //  LoRa RX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Same RF settings as the sender (915 MHz, SF12, BW62.5, sync
+//           Same RF settings as the sender (915 MHz, SF7, BW500, sync
 //           0xF3) — see config.h, which must stay in sync with the
-//           sender's copy. **⚠️ THIRD range attempt. Both SF10 and SF12
-//           (at BW125) have ALREADY hung THIS board's radio.begin() on
-//           real hardware, confirmed both times via zero serial output —
-//           not even the boot beacon that prints before radio.begin()
-//           runs. This combination (SF12 + a halved bandwidth) has no new
-//           information that avoids either prior failure; it was chosen
-//           deliberately, that history already laid out, not discovered
-//           after the fact. See the ⚠️ rules in CLAUDE.md for the full
-//           history — if this board goes silent again, that is the same
-//           still-unexplained hang recurring, not a new bug.**
+//           sender's copy. Latency now prioritized over range, per a
+//           direct request: SF7 (lowest value proven safe on this exact
+//           hardware — SF10/SF12 both hung this board's radio.begin()
+//           at BW125, see CLAUDE.md's ⚠️ rules for that history) + BW500
+//           (raised from 125 for shorter symbol duration/less airtime, at
+//           direct cost of range/sensitivity — the explicitly authorized
+//           tradeoff). ~36ms time-on-air per packet, down from the prior
+//           SF12/BW62.5 range attempt's ~6.9s.
 //
 //  Serial protocol for downstream tooling (e.g. receiver_agent):
 //    • Boot prints one line containing DEVICE_ID once — lets a host script
@@ -136,8 +134,8 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        62.5,                 // bandwidth kHz — halved from 125 for range; see this file's own header comment for the full SF10/SF12 hang history
-        12,                   // spreading factor — SF12 (max) — ALREADY confirmed to hang THIS board once at BW125; see this file's own header comment. MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
+        500.0,                // bandwidth kHz — raised from 125 for latency (shorter symbol duration = less airtime), at direct cost of range/sensitivity; see this file's own header comment for the full history
+        7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // unused for RX, kept for signature symmetry with sender
@@ -154,7 +152,7 @@ void setup() {
             Serial.printf("[WARN] startReceive() failed  code=%d\n", rxState);
         } else {
             loraReady = true;
-            Serial.println("[OK]   SX1262  915 MHz  SF12  BW62.5  22dBm  listening...");
+            Serial.println("[OK]   SX1262  915 MHz  SF7  BW500  22dBm  listening...");
         }
     }
 

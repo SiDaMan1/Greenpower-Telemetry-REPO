@@ -32,9 +32,8 @@
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
-//           ~9s (SF12/BW62.5 — a deliberate third range attempt after
-//           BOTH SF10 and SF12/BW125 hung the receiver's radio.begin() on
-//           real hardware; see LORA_SCK's own comment for the full history)
+//           ~36ms (SF7/BW500 — latency prioritized over range per direct
+//           request; see LORA_SCK's own comment for the full history)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
 //              mock_sender — see espNowSend() below. Mode/state/percent
@@ -89,38 +88,39 @@
 #define LORA_SCK           9
 #define LORA_MISO         11
 #define LORA_MOSI         10
-// ⚠️ THIRD range attempt: SF12 + BW62.5 — maximum spreading factor AND a
-// halved bandwidth, stacked together. Both SF10 and SF12 (at BW125) have
-// ALREADY hung the receiver's radio.begin() on this exact real hardware,
-// confirmed both times via zero serial output (not even the pre-
-// radio.begin() boot beacon). This attempt does not have new information
-// that explains or avoids either of those two failures — it was
-// requested explicitly, with that history laid out first, as a deliberate
-// decision to retry the worst-case combination anyway (max SF, on top of
-// a lower bandwidth that makes the same class of extreme
-// timing/LDRO conditions even more extreme, not less). **If the receiver
-// goes silent again after flashing this, that is the same still-
-// unexplained hang recurring, not a new bug** — see
-// greenpower_receiver/CLAUDE.md's SF10/SF12 ⚠️ rules for the full history.
-// Test on ONE board with a Serial Monitor attached before trusting this
-// on the actual vehicle.
-//
-// Time-on-air at SF12/BW62.5 for this 81-byte packet, via the same
-// Semtech formula used throughout this project's LoRa history: symbol
-// duration = 2^12/62500 = 65.536ms (well over the 16ms LDRO threshold —
-// RadioLib enables LDRO automatically). Preamble ≈ (8+4.25)×65.536ms ≈
-// 803ms. Payload ≈ 93 symbols × 65.536ms ≈ 6095ms. Total ≈ 6.9 SECONDS
-// per transmission — roughly 7x SF10's airtime and ~48x SF7's. This is a
-// real, substantial change to how "live" the dashboard actually is, not
-// just a code-level detail: telemetry updates roughly once every 9s
-// instead of multiple times per second.
-// LORA_TX_INTERVAL_MS is set well above that ~6.9s figure for real
-// headroom, same reasoning as every prior spreading-factor change in
-// this file. ESPNOW_TX_INTERVAL_MS stays independent and fast (200ms) —
-// ESP-NOW is a different radio with no LoRa-style airtime constraint, and
-// the steering wheel display has no reason to slow down just because the
-// LoRa base-station link did.
-#define LORA_TX_INTERVAL_MS   9000   // ~6.9s SF12/BW62.5 airtime + real headroom
+// ⚠️ FOURTH pass: latency now prioritized over range, explicitly, per a
+// direct request to get latency "as close to zero as possible even if
+// that means shorter range." The SF12+BW62.5 range attempt above is
+// reverted — that config's ~6.9s airtime was itself the dominant source
+// of the "takes way too long to reach the receiver" complaint. Levers
+// pulled, safest first:
+//   1. Coding rate was already 4/5 (the fastest available) — no change.
+//   2. Spreading factor back to SF7 — the lowest value already PROVEN
+//      safe on this exact hardware (SF8 and above were never tested;
+//      SF10/SF12 both hung the receiver's radio.begin(); going lower
+//      than SF7, e.g. SF6/SF5, is untested territory this project has
+//      never tried, not worth gambling on with nobody available to debug
+//      a hang). This is the "safe" latency lever, not the range-costing
+//      one below.
+//   3. Bandwidth raised from 125 to 500 kHz — the actual range-for-
+//      latency trade that was explicitly authorized ("even if that means
+//      shorter range... do this last"). Higher bandwidth = shorter
+//      symbol duration = far less airtime, at the direct cost of
+//      receiver sensitivity/range (roughly -12dB of link budget vs
+//      125kHz — a real, substantial range reduction, not a minor one).
+// Time-on-air at SF7/BW500 for this 81-byte packet, same Semtech formula
+// used throughout this project's LoRa history: symbol duration =
+// 2^7/500000 = 0.256ms (far under the 16ms LDRO threshold — no LDRO
+// needed). Preamble ≈ (8+4.25)×0.256ms ≈ 3.1ms. Payload ≈ 128 symbols ×
+// 0.256ms ≈ 32.8ms. Total ≈ 36ms per transmission — roughly 190x faster
+// than the SF12/BW62.5 attempt's ~6.9s, and even faster than the
+// original SF7/BW125 baseline's ~144ms (BW500's much shorter symbol time
+// wins out over BW125 despite otherwise-identical settings).
+// LORA_TX_INTERVAL_MS dropped back to 200ms (real headroom above the
+// ~36ms airtime) — matching SENSOR_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS
+// again, so LoRa updates as fast as the sensors themselves sample,
+// instead of the 9-second interval the range attempt required.
+#define LORA_TX_INTERVAL_MS    200   // ~36ms SF7/BW500 airtime + real headroom — matches sensor/ESP-NOW cadence again
 #define ESPNOW_TX_INTERVAL_MS  200   // unchanged — 5 Hz, matches SENSOR_INTERVAL_MS
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
@@ -270,12 +270,11 @@ SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 bool   loraReady   = false;
 
 // ── Async LoRa TX ───────────────────────────────────────────────────
-// Essential at SF12/BW62.5, where a single transmit's airtime is ~6.9s —
-// a blocking radio.transmit() would stall this loop() (GPS parsing, ESC
-// UART polling, RPM period calc, SD logging, ESP-NOW TX to the steering
-// wheel) for nearly 7 seconds every single cycle. Same interrupt-driven
-// pattern greenpower_receiver already uses proven on its RX side
-// (setPacketReceivedAction), mirrored here for TX instead of RX.
+// Kept even at SF7/BW500's short ~36ms airtime — non-blocking TX is
+// strictly safer regardless of spreading factor/bandwidth and costs
+// nothing to keep. Same interrupt-driven pattern greenpower_receiver
+// already uses proven on its RX side (setPacketReceivedAction), mirrored
+// here for TX instead of RX.
 volatile bool loraTxDoneFlag = false;
 void IRAM_ATTR setLoraTxFlag() { loraTxDoneFlag = true; }
 // Only ever read/written from loop() (unlike loraTxDoneFlag, which the ISR
@@ -779,15 +778,15 @@ static void updateSensors() {
 // ════════════════════════════════════════════════════════════════════
 
 // Kicks off a transmission and returns immediately — does NOT block for the
-// transmit's airtime (~6.9s at SF12/BW62.5). See loraTxDoneFlag's own
-// comment (near the radio's declaration) for why this is essential now.
+// transmit's airtime (~36ms at SF7/BW500). See loraTxDoneFlag's own
+// comment (near the radio's declaration) for why this is kept anyway.
 // Completion is picked up later by checkLoraTxComplete(), called every
 // loop() iteration independent of LORA_TX_INTERVAL_MS's own timing.
 static void loRaTx() {
     if (!loraReady) return;
     if (loraTxInFlight) {
         // The previous transmission hasn't finished yet — LORA_TX_INTERVAL_MS
-        // has real headroom above SF12/BW62.5's actual airtime so this
+        // has real headroom above SF7/BW500's actual airtime so this
         // should be rare, not a normal steady-state occurrence. Skip this
         // cycle rather than call startTransmit() on top of an in-progress
         // one (undefined radio state) or block waiting for it.
@@ -953,8 +952,8 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        62.5,                 // bandwidth kHz — halved from 125 for range; see LORA_SCK's own comment for the full SF10/SF12 hang history and why this third attempt (SF12+BW62.5) may reproduce it
-        12,                   // spreading factor — SF12 (max) — ALREADY confirmed to hang the receiver's radio.begin() once at BW125; see LORA_SCK's own comment. MUST match the receiver's copy exactly or packets won't decode
+        500.0,                // bandwidth kHz — raised from 125 for LATENCY (shorter symbol duration = far less airtime), at direct cost of range/sensitivity; see LORA_SCK's own comment for the full history and tradeoff reasoning
+        7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the receiver's copy exactly or packets won't decode
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // 22 dBm
@@ -964,9 +963,9 @@ void setup() {
         Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
     } else {
         radio.setDio2AsRfSwitch(true);   // required on Heltec V4
-        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — essential now, see loraTxDoneFlag's own comment
+        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — kept even at this short airtime, see loraTxDoneFlag's own comment
         loraReady = true;
-        Serial.println("[OK]   SX1262  915 MHz  SF12  BW62.5  22dBm");
+        Serial.println("[OK]   SX1262  915 MHz  SF7  BW500  22dBm");
     }
 
     // RTC — separate I2C bus, see RTC_SDA_PIN's own comment for why. Runs
@@ -991,7 +990,7 @@ void setup() {
 void loop() {
     // These run every loop iteration — pollGps()/pollEsc() to keep their
     // UART buffers drained, checkLoraTxComplete() so an async LoRa TX
-    // finishing mid-cycle (anywhere in its ~6.9s SF12/BW62.5 airtime) is noticed
+    // finishing mid-cycle (anywhere in its ~36ms SF7/BW500 airtime) is noticed
     // promptly rather than only at the next SENSOR_INTERVAL_MS tick.
     pollGps();
     pollEsc();
@@ -1004,7 +1003,7 @@ void loop() {
     updateSensors();
     logToSD();   // every SENSOR_INTERVAL_MS tick (5Hz) — independent of the LoRa/ESP-NOW radios below, see the SD CARD LOGGING section's own comment
 
-    // ── LoRa TX — every LORA_TX_INTERVAL_MS (9s, SF12/BW62.5 airtime + headroom) ──
+    // ── LoRa TX — every LORA_TX_INTERVAL_MS (200ms, SF7/BW500 airtime + headroom) ──
     if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
         lastLoraTxMs = now;
         loRaTx();
