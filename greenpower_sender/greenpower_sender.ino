@@ -19,10 +19,23 @@
 //                          ../esc controller/throttle_controller.ino (ESP32
 //                          WROOM-32, TX=GPIO17/RX=GPIO16 on that end).
 //                          20 Hz CSV: mode,state,setpointPct,livePct,rampPct
+//    • SD card           — local telemetry backup, own SPI bus (separate
+//                          from the LoRa radio's), CS=47 SCK=48 MOSI=7
+//                          MISO=5. Logs every packet to /LOGnnn.CSV
+//                          regardless of whether the LoRa link is up.
+//    • RTC               — Elegoo DS1307-V03, own I2C bus (Wire1) on
+//                          GPIO1(SDA)/GPIO2(SCL) — NOT the shared IMU/ADS1115
+//                          bus (GPIO17/18), because the DS1307 is fixed at
+//                          I2C address 0x68, same as the MPU6050-compatible
+//                          IMU already on that bus. Stamps each SD log row
+//                          with real wall-clock time instead of just millis().
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
-//           ~2s (SF10, real range gain over the original SF7/200ms)
+//           ~20ms (SF7/BW500, implicit header, 6-symbol preamble, 42-byte
+//           fixed-point-compressed packet — latency prioritized over range
+//           per direct request; see LORA_SCK's own comment for the full
+//           history)
 //
 //  ESP-NOW TX: to the steering wheel display_receiver, same CSV format as
 //              mock_sender — see espNowSend() below. Mode/state/percent
@@ -41,6 +54,9 @@
 //    • OneWire                 (Paul Stoffregen)
 //    • DallasTemperature       (Miles Burton)
 //    • RadioLib                (jgromes)
+//    • SD                      (built into the ESP32 Arduino core — no
+//                                separate Library Manager install needed)
+//    • RTClib                  (Adafruit) — DS1307 driver
 // ════════════════════════════════════════════════════════════════════
 
 #include <Arduino.h>
@@ -58,6 +74,8 @@
 #include <RadioLib.h>
 #include <string.h>
 #include <stdlib.h>
+#include <SD.h>
+#include <RTClib.h>
 #include "config.h"
 
 
@@ -72,29 +90,53 @@
 #define LORA_SCK           9
 #define LORA_MISO         11
 #define LORA_MOSI         10
-// LoRa moved to SF10 (up from SF7) for real range, per explicit request
-// after the sender/receiver were found to disconnect at ordinary walking
-// distance. NOT SF12 — an earlier SF12 attempt hung the board completely
-// during radio.begin() on real hardware (confirmed: zero serial output,
-// on multiple physical boards), and the exact cause was never confirmed,
-// only reverted. SF10 is a deliberately more conservative step: it sits
-// BELOW the symbol-duration threshold (>16ms) that requires RadioLib to
-// enable low-data-rate-optimization for SX126x, which is the leading (but
-// still unconfirmed) suspect for what actually hung at SF11/SF12 — SF10's
-// time-on-air is short enough (~944ms for this packet, computed via
-// Semtech's LoRa time-on-air formula: ~100ms preamble + ~844ms payload at
-// BW125/CR4:5/explicit header/CRC on/DE=0) that it doesn't need LDRO at
-// all. Real range improvement over SF7, without re-gambling on the exact
-// mechanism that broke real boards last time. **Test on ONE board with a
-// Serial Monitor attached before flashing others** — this has NOT been
-// confirmed safe on real hardware, it's a smaller, better-reasoned bet,
-// not a proven one.
-// LORA_TX_INTERVAL_MS (~2s, real headroom above the ~944ms airtime) is
-// separate from ESP-NOW's own interval now — ESP-NOW is a different radio
-// (2.4GHz WiFi-based) with no LoRa-style airtime constraint, and the
-// steering wheel display it feeds has no reason to slow down just because
-// the LoRa base-station link did.
-#define LORA_TX_INTERVAL_MS   2000   // ~SF10 time-on-air (~944ms) + headroom
+// ⚠️ FOURTH pass: latency now prioritized over range, explicitly, per a
+// direct request to get latency "as close to zero as possible even if
+// that means shorter range." The SF12+BW62.5 range attempt above is
+// reverted — that config's ~6.9s airtime was itself the dominant source
+// of the "takes way too long to reach the receiver" complaint. Levers
+// pulled, safest first:
+//   1. Coding rate was already 4/5 (the fastest available) — no change.
+//   2. Spreading factor back to SF7 — the lowest value already PROVEN
+//      safe on this exact hardware (SF8 and above were never tested;
+//      SF10/SF12 both hung the receiver's radio.begin(); going lower
+//      than SF7, e.g. SF6/SF5, is untested territory this project has
+//      never tried, not worth gambling on with nobody available to debug
+//      a hang). This is the "safe" latency lever, not the range-costing
+//      one below.
+//   3. Bandwidth raised from 125 to 500 kHz — the actual range-for-
+//      latency trade that was explicitly authorized ("even if that means
+//      shorter range... do this last"). Higher bandwidth = shorter
+//      symbol duration = far less airtime, at the direct cost of
+//      receiver sensitivity/range (roughly -12dB of link budget vs
+//      125kHz — a real, substantial range reduction, not a minor one).
+// Time-on-air at SF7/BW500 for this packet, same Semtech formula used
+// throughout this project's LoRa history: symbol duration = 2^7/500000 =
+// 0.256ms (far under the 16ms LDRO threshold — no LDRO needed). Preamble
+// ≈ (8+4.25)×0.256ms ≈ 3.1ms.
+// Packet size was 81 bytes at this point → ~36ms total airtime (128
+// payload symbols). Two further passes since then, both purely on top of
+// SF7/BW500 (no additional range cost either time):
+//   1. Packet compressed 81 → 42 bytes (most floats replaced with scaled
+//      int16/uint8 fixed-point — see config.h's "Fixed-point compression"
+//      block) → ~21.8ms.
+//   2. Implicit header mode (no per-packet length/CR header needed, since
+//      the receiver already knows both from the shared config.h struct)
+//      + preamble trimmed from 8 to 6 symbols (Semtech's documented
+//      minimum for reliable SX126x sync) → ~20.0ms.
+// Total ≈ 20ms per transmission now, down from ~36ms right after the
+// SF7/BW500 switch and ~6.9s at the SF12/BW62.5 range attempt — roughly
+// 345x faster than that attempt. This is close to the practical floor at
+// SF7/BW500 for a packet this shape; the only levers left (dropping
+// epoch_time to shrink the payload further, or going below SF7) trade
+// away either the sender's RTC timestamp or venture into spreading-factor
+// territory this project has explicitly avoided as untested — see
+// this folder's CLAUDE.md for that discussion, not just done silently.
+// LORA_TX_INTERVAL_MS dropped back to 200ms (real headroom above the
+// ~20ms airtime) — matching SENSOR_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS
+// again, so LoRa updates as fast as the sensors themselves sample,
+// instead of the 9-second interval the range attempt required.
+#define LORA_TX_INTERVAL_MS    200   // ~20ms SF7/BW500 airtime (42-byte packet, implicit hdr, 6-symbol preamble) + real headroom — matches sensor/ESP-NOW cadence again
 #define ESPNOW_TX_INTERVAL_MS  200   // unchanged — 5 Hz, matches SENSOR_INTERVAL_MS
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
@@ -127,6 +169,38 @@
 // external or internal pull resistor to idle at a defined level; try
 // INPUT_PULLUP first (idle HIGH, most common for these break-beam modules).
 #define RPM_PIN_MODE      INPUT_PULLUP
+
+// ── SD card (local telemetry log) ────────────────────────────────────
+// A SEPARATE SPI bus from the on-board LoRa radio's — the radio's SPI
+// (SCK=9/MISO=11/MOSI=10, see config.h) is wired chip-to-chip internally
+// to the co-packaged SX1262 and was never broken out to a header pin at
+// all, so there's nothing to physically share. These four pins were
+// specifically cross-checked against every other pin already in use on
+// this board (GPS/I2C/temp/ESC/RPM above, plus the LoRa radio's own
+// internal pins) before being chosen — see greenpower_sender/CLAUDE.md's
+// SD-card rule for the full pin-conflict check. GPIO47/48 have no other
+// function on this board at all; GPIO5/7 are touch/ADC1-capable but that
+// doesn't stop them being used as plain digital SPI pins here.
+#define SD_CS_PIN         47
+#define SD_SCK_PIN        48
+#define SD_MOSI_PIN        7
+#define SD_MISO_PIN        5
+
+// ── RTC (Elegoo DS1307-V03) ──────────────────────────────────────────
+// A SECOND, independent I2C bus — NOT the existing GPIO17/18 bus. The
+// DS1307 has a fixed, non-configurable I2C address (0x68), which is the
+// exact same address the MPU6050-compatible IMU already answers to on
+// that bus — putting both on one bus means one of them silently doesn't
+// respond. The ESP32-S3's I2C peripheral goes through the chip's internal
+// GPIO matrix (unlike, say, the LoRa radio's SPI pins, which are hardwired
+// chip-to-chip) so a second bus can live on any free GPIO pair — GPIO1/2
+// were cross-checked against every other pin already in use on this board
+// (see SD_*_PIN's own comment above and greenpower_sender/CLAUDE.md) and
+// are clean. Uses the ESP32's second hardware I2C controller (TwoWire
+// instance #1) via rtcWire below — this is a genuinely separate bus, not
+// a software/bit-banged one.
+#define RTC_SDA_PIN        1
+#define RTC_SCL_PIN        2
 
 // ADS1115 (Lonely Binary board) — I2C address, ADDR pin → GND = 0x48
 #define ADS_I2C_ADDR      0x48
@@ -168,18 +242,55 @@ Adafruit_ADS1115  ads;
 OneWire           oneWire(TEMP_PROBE_PIN);
 DallasTemperature tempSensor(&oneWire);
 
+// A dedicated second SPI bus (HSPI) for the SD card — the default `SPI`
+// object/pins are already claimed by the LoRa radio (SPI.begin() with
+// LORA_SCK/MISO/MOSI in setup() below).
+//
+// ⚠️ REAL, CONFIRMED bug this replaced: this was originally `SPIClass
+// sdSPI(FSPI)`, on the (wrong) assumption that requesting a SEPARATE
+// SPIClass object on different pins automatically means separate
+// hardware. It does NOT: on the ESP32-S3, arduino-esp32's own default
+// global `SPI` object (the one LoRa's `SPI.begin(LORA_SCK, ...)` call
+// uses) is ITSELF instantiated as `SPIClass SPI(FSPI)` internally — so a
+// second `SPIClass sdSPI(FSPI)` here wraps the EXACT SAME underlying
+// SPI2_HOST peripheral, not an independent one, regardless of which GPIO
+// pins either .begin() call names. The ESP32's SPI peripherals route
+// their pins through an internal GPIO matrix, so `sdSPI.begin(SD_SCK_PIN,
+// ...)` — called in setup() AFTER the LoRa radio's own SPI.begin()/
+// radio.begin() — silently REPROGRAMS that shared peripheral's pin
+// routing to the SD card's pins, out from under the LoRa radio that had
+// just configured it. Confirmed via real hardware symptoms that only
+// make sense with this explanation: radio.begin() (which runs first)
+// kept reporting success, but EVERY subsequent radio.startTransmit()
+// call in loop() (which runs long after initSdCard() has already
+// hijacked the shared peripheral) failed with a generic RadioLib error
+// — the SPI traffic intended for the SX1262 was actually going out on
+// the SD card's pins by then. Fixed by moving the SD card onto `HSPI`
+// (SPI3_HOST) instead — the ESP32-S3's OTHER general-purpose SPI
+// peripheral, genuinely independent hardware from FSPI/SPI2_HOST, not
+// just a different pin assignment on the same one.
+SPIClass sdSPI(HSPI);
+bool sdReady = false;
+File logFile;
+
+// Second hardware I2C bus (the ESP32-S3 has two independent I2C
+// controllers) for the RTC — kept separate from the default `Wire` object
+// used by the IMU/ADS1115 above, since the DS1307's fixed 0x68 address
+// would collide with the IMU on that bus. See RTC_SDA_PIN's own comment.
+TwoWire   rtcWire(1);
+RTC_DS1307 rtc;
+bool       rtcReady = false;
+
 // SX1262 radio (NSS, DIO1, RST, BUSY)
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 bool   loraReady   = false;
 
 // ── Async LoRa TX ───────────────────────────────────────────────────
-// At SF10 a single transmit's airtime is ~944ms — long enough that a
-// blocking radio.transmit() would stall this loop() (GPS parsing, ESC
-// UART polling, RPM period calc, and ESP-NOW TX to the steering wheel)
-// for nearly a full second every ~2s cycle. Non-blocking async TX avoids
-// that regardless of exactly how long a transmit takes — same
-// interrupt-driven pattern greenpower_receiver already uses proven on its
-// RX side (setPacketReceivedAction), mirrored here for TX instead of RX.
+// Kept even at SF7/BW500's short ~36ms airtime — non-blocking TX is
+// strictly safer regardless of spreading factor/bandwidth and costs
+// nothing to keep. Same interrupt-driven pattern greenpower_receiver
+// already uses proven on its RX side (setPacketReceivedAction), mirrored
+// here for TX instead of RX.
 volatile bool loraTxDoneFlag = false;
 void IRAM_ATTR setLoraTxFlag() { loraTxDoneFlag = true; }
 // Only ever read/written from loop() (unlike loraTxDoneFlag, which the ISR
@@ -201,7 +312,6 @@ static telemetry_packet_t pkt = {};
 static const uint32_t SENSOR_INTERVAL_MS   = 200;   // 5 Hz
 static const uint32_t RPM_CALC_INTERVAL_MS = 200;   // 5 Hz — matches SENSOR_INTERVAL_MS so RPM isn't stale between packets
 static uint32_t lastSensorMs = 0;
-static uint32_t lastGyroMs   = 0;
 static uint32_t lastRpmMs    = 0;
 static uint32_t lastLoraTxMs = 0;
 static uint32_t lastEspNowMs = 0;
@@ -386,6 +496,26 @@ struct EscData {
 
 static EscData esc = {};
 
+// String → packet-code lookups — only needed at the point esc.mode/esc.state
+// (parsed off the UART line, still real strings — see EscData above) get
+// copied into the packed telemetry_packet_t for LoRa TX. Everywhere else in
+// this sketch (SD log, ESP-NOW, serial dump) keeps using esc.mode/esc.state
+// directly as strings — only the LoRa packet itself needed shrinking. See
+// PKT_ESC_MODE_*/PKT_ESC_STATE_* in config.h for the values these map to.
+static uint8_t escModeToCode(const char* mode) {
+    if (strcmp(mode, "ECO")    == 0) return PKT_ESC_MODE_ECO;
+    if (strcmp(mode, "SPORT")  == 0) return PKT_ESC_MODE_SPORT;
+    if (strcmp(mode, "NORMAL") == 0) return PKT_ESC_MODE_NORMAL;
+    return PKT_ESC_MODE_UNKNOWN;   // unrecognized string — shouldn't happen, but don't guess
+}
+static uint8_t escStateToCode(const char* state) {
+    if (strcmp(state, "IDLE")  == 0) return PKT_ESC_STATE_IDLE;
+    if (strcmp(state, "REENG") == 0) return PKT_ESC_STATE_REENG;
+    if (strcmp(state, "RAMP")  == 0) return PKT_ESC_STATE_RAMP;
+    if (strcmp(state, "HOLD")  == 0) return PKT_ESC_STATE_HOLD;
+    return PKT_ESC_STATE_UNKNOWN;
+}
+
 static void parseEscLine(char* line) {
     char* tok = strtok(line, ",");
     if (!tok) return;
@@ -430,15 +560,167 @@ static void pollEsc() {
 
 
 // ════════════════════════════════════════════════════════════════════
+//  RTC  (Elegoo DS1307-V03, own I2C bus — see RTC_SDA_PIN's own comment)
+//  Only used to stamp the SD log with real wall-clock time — nothing in
+//  the LoRa/ESP-NOW packet depends on it, so a missing/dead RTC doesn't
+//  affect telemetry, only the SD log's timestamp column.
+// ════════════════════════════════════════════════════════════════════
+
+static void initRtc() {
+    rtcWire.begin(RTC_SDA_PIN, RTC_SCL_PIN);
+    if (!rtc.begin(&rtcWire)) {
+        Serial.println("[WARN] RTC (DS1307) not detected on I2C (0x68, second bus) — SD log will fall back to millis() only");
+        return;
+    }
+    if (!rtc.isrunning()) {
+        // First-ever power-up (or a dead backup battery) — the DS1307
+        // starts at an arbitrary/zeroed time until told otherwise. Set it
+        // once from the PC's clock at compile time; after that its own
+        // backup battery keeps it running across power-cycles, so this
+        // branch shouldn't normally fire again unless that battery is
+        // removed or dies.
+        Serial.println("[WARN] RTC not running — setting from compile time (check backup battery if this happens again)");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    }
+    rtcReady = true;
+    DateTime now = rtc.now();
+    Serial.printf("[OK]   RTC (DS1307)  %04d-%02d-%02d %02d:%02d:%02d\n",
+                  now.year(), now.month(), now.day(),
+                  now.hour(), now.minute(), now.second());
+}
+
+// Formats the RTC's current time as "YYYY-MM-DD HH:MM:SS" into buf, or
+// "NO_RTC" if the RTC was never detected — keeps the SD log's column count
+// consistent either way rather than shifting columns when the RTC is absent.
+static void getRtcTimestamp(char* buf, size_t len) {
+    if (!rtcReady) {
+        snprintf(buf, len, "NO_RTC");
+        return;
+    }
+    DateTime now = rtc.now();
+    snprintf(buf, len, "%04d-%02d-%02d %02d:%02d:%02d",
+             now.year(), now.month(), now.day(),
+             now.hour(), now.minute(), now.second());
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+//  SD CARD LOGGING  (local backup — independent of LoRa/ESP-NOW)
+//  A separate, persistent record of everything this sender sees, kept
+//  entirely on the vehicle regardless of whether the LoRa link to the
+//  base station ever actually connects. Useful on its own (post-run
+//  analysis straight off the card) and as a fallback if the radio link
+//  drops out mid-run — nothing here depends on LoRa/ESP-NOW being up.
+// ════════════════════════════════════════════════════════════════════
+
+// One new file per power-cycle (LOG001.CSV, LOG002.CSV, ...) rather than
+// one giant always-appended file — keeps each run's data separate for
+// easier post-race analysis, same reasoning telemetry_web's own
+// session-boundary logic uses for a similar problem server-side. Scans
+// for the first filename that doesn't already exist rather than assuming
+// LOG001 is free — the card persists across power cycles, so a fresh
+// boot after previous runs needs to find where the last one left off.
+static bool openNextLogFile() {
+    char name[16];
+    for (int i = 1; i <= 999; i++) {
+        snprintf(name, sizeof(name), "/LOG%03d.CSV", i);
+        if (!SD.exists(name)) {
+            logFile = SD.open(name, FILE_WRITE);
+            if (!logFile) return false;
+            Serial.printf("[OK]   SD log file: %s\n", name);
+            return true;
+        }
+    }
+    return false;   // 999 log files already on the card — extremely unlikely, but don't loop forever
+}
+
+static void initSdCard() {
+    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+    if (!SD.begin(SD_CS_PIN, sdSPI)) {
+        Serial.println("[WARN] SD card not detected — local logging disabled (LoRa/ESP-NOW unaffected)");
+        return;
+    }
+    if (!openNextLogFile()) {
+        Serial.println("[WARN] SD card present but couldn't open a log file — local logging disabled");
+        return;
+    }
+    // Header row — column order matches the fields written in logToSD()
+    // below. timestamp is real wall-clock time from the DS1307 RTC (or
+    // "NO_RTC" for every row if it was never detected); millis_ms is this
+    // board's own uptime clock, kept alongside it since it's still useful
+    // for computing relative timing/intervals within one run regardless of
+    // whether the RTC is present or correctly set.
+    logFile.println("timestamp,millis_ms,flags,speed_mph,latitude,longitude,hdop,satellites,"
+                     "temp_f,batt_volt,motor_volt,current_a,"
+                     "pitch_deg,accel_g,lateral_g,vertical_g,"
+                     "motor_rpm,wheel_rpm,"
+                     "esc_mode,esc_state,esc_setpoint_pct,esc_live_pct,esc_ramp_pct");
+    logFile.flush();
+    sdReady = true;
+    Serial.println("[OK]   SD card logging active");
+}
+
+// Called once per SENSOR_INTERVAL_MS tick (see loop()), right after
+// updateSensors() — logs the exact same `pkt` LoRa/ESP-NOW would send,
+// so the card's record and the transmitted telemetry never disagree.
+// flush()ed on every single write, not batched — at 5Hz this is a small
+// amount of data, and the whole point of a local backup is surviving a
+// sudden power loss (a real, plausible failure mode for a race vehicle);
+// data sitting in an unflushed buffer when power cuts is data this log
+// was specifically supposed to protect against losing.
+static void logToSD() {
+    if (!sdReady) return;
+    char ts[24];
+    getRtcTimestamp(ts, sizeof(ts));
+    // esc.mode/esc.state (not pkt.esc_mode_code/pkt.esc_state_code) — the SD
+    // log is local-only, never transmitted, so it can just use the real
+    // strings straight from the last parsed ESC line instead of the LoRa
+    // packet's compact numeric codes. "---" matches espNowSend()'s own
+    // fallback for "no ESC line ever parsed" (mirrors PKT_FLAG_ESC_VALID).
+    bool escValid = pkt.flags & PKT_FLAG_ESC_VALID;
+    float hdopOut = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
+    // Decoded back to human units from pkt's compressed fields — see config.h's
+    // "Fixed-point compression" block. This is the same ~0.1-unit-resolution
+    // data that was transmitted, not a separate higher-precision copy.
+    float tempFOut = (pkt.temp_f_x10 == PKT_TEMP_NO_READING) ? NAN : (pkt.temp_f_x10 / PKT_SCALE_TEMP);
+    logFile.printf(
+        "%s,%lu,%u,%.2f,%.6f,%.6f,%.1f,%u,"
+        "%.1f,%.2f,%.2f,%.2f,"
+        "%.2f,%.3f,%.3f,%.3f,"
+        "%.0f,%.0f,"
+        "%s,%s,%.1f,%.1f,%.1f\n",
+        ts, (unsigned long)millis(), pkt.flags, pkt.speed_mph_x10 / PKT_SCALE_SPEED, pkt.latitude, pkt.longitude, hdopOut, pkt.satellites,
+        tempFOut, pkt.batt_volt_x100 / PKT_SCALE_VOLT, pkt.motor_volt_x100 / PKT_SCALE_VOLT, pkt.current_a_x100 / PKT_SCALE_CURRENT,
+        pkt.pitch_deg_x100 / PKT_SCALE_ANGLE, pkt.accel_g_x1000 / PKT_SCALE_G, pkt.lateral_g_x1000 / PKT_SCALE_G, pkt.vertical_g_x1000 / PKT_SCALE_G,
+        (float)pkt.motor_rpm, pkt.wheel_rpm_x10 / PKT_SCALE_WHEEL_RPM,
+        escValid ? esc.mode : "---", escValid ? esc.state : "---",
+        (float)pkt.esc_setpoint_pct, (float)pkt.esc_live_pct, (float)pkt.esc_ramp_pct
+    );
+    logFile.flush();
+}
+
+
+// ════════════════════════════════════════════════════════════════════
 //  SENSOR UPDATE  (called at SENSOR_INTERVAL_MS)
 // ════════════════════════════════════════════════════════════════════
+
+// Packs a float HDOP into the packet's single-byte HDOP×10 field — see
+// PKT_HDOP_NO_FIX's own comment in config.h for why this isn't a float
+// anymore. Clamped to 254 (25.4 HDOP) rather than wrapping/overflowing on
+// an unexpectedly large value; 255 is reserved for "no fix".
+static uint8_t packHdop(float hdop) {
+    long v = lroundf(hdop * 10.0f);
+    if (v < 0)   v = 0;
+    if (v > 254) v = 254;
+    return (uint8_t)v;
+}
 
 static void updateGps() {
     if (gps.location.isValid() && gps.location.age() < 2000) {
         pkt.latitude   = (float)gps.location.lat();
         pkt.longitude  = (float)gps.location.lng();
-        pkt.speed_mph  = (float)gps.speed.mph();
-        pkt.hdop       = gps.hdop.isValid() ? (float)gps.hdop.hdop() : 99.9f;
+        pkt.speed_mph_x10 = pktEncU16((float)gps.speed.mph(), PKT_SCALE_SPEED);
+        pkt.hdop_x10   = gps.hdop.isValid() ? packHdop((float)gps.hdop.hdop()) : PKT_HDOP_NO_FIX;
         pkt.satellites = (uint8_t)gps.satellites.value();
         pkt.flags     |=  PKT_FLAG_GPS_VALID;
     } else {
@@ -454,23 +736,16 @@ static void updateImu() {
     float ay = accelEvt.acceleration.y;
     float az = accelEvt.acceleration.z;
 
-    pkt.accel_g    =  ax / 9.80665f;   // forward / braking
-    pkt.lateral_g  =  ay / 9.80665f;   // cornering
-    pkt.vertical_g =  az / 9.80665f;   // vertical
+    pkt.accel_g_x1000    = pktEncI16(ax / 9.80665f, PKT_SCALE_G);   // forward / braking
+    pkt.lateral_g_x1000  = pktEncI16(ay / 9.80665f, PKT_SCALE_G);   // cornering
+    pkt.vertical_g_x1000 = pktEncI16(az / 9.80665f, PKT_SCALE_G);   // vertical
 
-    // Static tilt angles from accelerometer (accurate at rest, noisy while moving)
-    pkt.roll_deg  = atan2f(ay, az) * 57.29578f;
-    pkt.pitch_deg = atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.29578f;
-
-    // Yaw from gyro integration — drifts without a magnetometer; reset on power-cycle
-    uint32_t now = millis();
-    if (lastGyroMs > 0) {
-        float dt = (now - lastGyroMs) * 0.001f;
-        if (dt < 1.0f) {
-            pkt.yaw_deg += gyroEvt.gyro.z * 57.29578f * dt;
-        }
-    }
-    lastGyroMs = now;
+    // Static tilt angle from accelerometer (accurate at rest, noisy while
+    // moving) — roll and yaw were removed per explicit request (not needed);
+    // pitch is the only orientation angle still tracked. Yaw's own gyro-
+    // integration state (lastGyroMs) was removed along with it — nothing
+    // else in this file used that variable.
+    pkt.pitch_deg_x100 = pktEncI16(atan2f(-ax, sqrtf(ay * ay + az * az)) * 57.29578f, PKT_SCALE_ANGLE);
 
     pkt.flags |= PKT_FLAG_IMU_VALID;
 }
@@ -480,25 +755,32 @@ static void updateSensors() {
     updateImu();
     updateRpm();
 
-    pkt.temp_f      = readTempF();
-    pkt.motor_volt  = readDividerVoltage(ADS_MOTOR_V_CH, VDIV_RATIO_MOTOR);
-    pkt.batt_volt   = readDividerVoltage(ADS_BATT_V_CH, VDIV_RATIO_BATT);
-    pkt.current_a   = readCurrentAmps();
-    pkt.motor_rpm   = motorRpm;
-    pkt.wheel_rpm   = wheelRpm;
+    // Raw Unix seconds, not a formatted string — see epoch_time's own
+    // comment in config.h for why (smallest possible over-the-air date/time
+    // representation; formatting happens receiver-side, off the radio link).
+    pkt.epoch_time  = rtcReady ? rtc.now().unixtime() : 0;
+    float tempF     = readTempF();
+    pkt.temp_f_x10  = isnan(tempF) ? PKT_TEMP_NO_READING : pktEncI16(tempF, PKT_SCALE_TEMP);
+    pkt.motor_volt_x100 = pktEncU16(readDividerVoltage(ADS_MOTOR_V_CH, VDIV_RATIO_MOTOR), PKT_SCALE_VOLT);
+    pkt.batt_volt_x100  = pktEncU16(readDividerVoltage(ADS_BATT_V_CH, VDIV_RATIO_BATT), PKT_SCALE_VOLT);
+    pkt.current_a_x100  = pktEncI16(readCurrentAmps(), PKT_SCALE_CURRENT);
+    pkt.motor_rpm       = pktEncU16(motorRpm, 1.0f);
+    pkt.wheel_rpm_x10   = pktEncU16(wheelRpm, PKT_SCALE_WHEEL_RPM);
     pkt.flags      |= PKT_FLAG_CUR_VALID;
 
     // ESC fields — copied in from the last successfully parsed UART line
     // (pollEsc() runs every loop() iteration, independent of this 200ms tick,
     // so this is just picking up whatever's most recent, not triggering a read).
     if (esc.valid) {
-        memcpy(pkt.esc_mode,  esc.mode,  sizeof(pkt.esc_mode));
-        memcpy(pkt.esc_state, esc.state, sizeof(pkt.esc_state));
-        pkt.esc_setpoint_pct = esc.setpointPct;
-        pkt.esc_live_pct     = esc.livePct;
-        pkt.esc_ramp_pct     = esc.rampPct;
+        pkt.esc_mode_code    = escModeToCode(esc.mode);
+        pkt.esc_state_code   = escStateToCode(esc.state);
+        pkt.esc_setpoint_pct = pktEncPct(esc.setpointPct);
+        pkt.esc_live_pct     = pktEncPct(esc.livePct);
+        pkt.esc_ramp_pct     = pktEncPct(esc.rampPct);
         pkt.flags           |= PKT_FLAG_ESC_VALID;
     } else {
+        pkt.esc_mode_code  = PKT_ESC_MODE_UNKNOWN;
+        pkt.esc_state_code = PKT_ESC_STATE_UNKNOWN;
         pkt.flags &= ~PKT_FLAG_ESC_VALID;
     }
 }
@@ -509,15 +791,15 @@ static void updateSensors() {
 // ════════════════════════════════════════════════════════════════════
 
 // Kicks off a transmission and returns immediately — does NOT block for the
-// ~944ms SF10 airtime. See loraTxDoneFlag's own comment (near the radio's
-// declaration) for why. Completion is picked up later by
-// checkLoraTxComplete(), called every loop() iteration independent of
-// LORA_TX_INTERVAL_MS's own timing.
+// transmit's airtime (~36ms at SF7/BW500). See loraTxDoneFlag's own
+// comment (near the radio's declaration) for why this is kept anyway.
+// Completion is picked up later by checkLoraTxComplete(), called every
+// loop() iteration independent of LORA_TX_INTERVAL_MS's own timing.
 static void loRaTx() {
     if (!loraReady) return;
     if (loraTxInFlight) {
         // The previous transmission hasn't finished yet — LORA_TX_INTERVAL_MS
-        // has real headroom above SF10's actual airtime specifically so this
+        // has real headroom above SF7/BW500's actual airtime so this
         // should be rare, not a normal steady-state occurrence. Skip this
         // cycle rather than call startTransmit() on top of an in-progress
         // one (undefined radio state) or block waiting for it.
@@ -570,18 +852,23 @@ static void espNowSend() {
 
     bool escValid = pkt.flags & PKT_FLAG_ESC_VALID;
 
+    // This CSV's own on-the-wire format is unchanged (still speed_mph,batV,
+    // rpm,amps,... as plain human-readable text over ESP-NOW) — only pkt's
+    // internal storage got compressed, so every value read out of it here
+    // is decoded back to its real unit first, same as the LoRa-side debug
+    // dump/JSON above.
     char payload[128];
     snprintf(payload, sizeof(payload),
-        "%.1f,%.2f,%.0f,%.1f,%s,%s,%.1f,%.1f,%.1f",
-        pkt.speed_mph,
-        pkt.batt_volt,
+        "%.1f,%.2f,%u,%.1f,%s,%s,%.1f,%.1f,%.1f",
+        pkt.speed_mph_x10 / PKT_SCALE_SPEED,
+        pkt.batt_volt_x100 / PKT_SCALE_VOLT,
         pkt.motor_rpm,
-        pkt.current_a,
-        escValid ? pkt.esc_mode  : "---",
-        escValid ? pkt.esc_state : "---",
-        escValid ? pkt.esc_setpoint_pct : 0.0f,
-        escValid ? pkt.esc_live_pct     : 0.0f,
-        escValid ? pkt.esc_ramp_pct     : 0.0f
+        pkt.current_a_x100 / PKT_SCALE_CURRENT,
+        escValid ? esc.mode  : "---",
+        escValid ? esc.state : "---",
+        escValid ? (float)pkt.esc_setpoint_pct : 0.0f,
+        escValid ? (float)pkt.esc_live_pct     : 0.0f,
+        escValid ? (float)pkt.esc_ramp_pct     : 0.0f
     );
 
     esp_err_t result = esp_now_send(PEER_MAC, (uint8_t*)payload, strlen(payload));
@@ -683,21 +970,47 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        125.0,                // bandwidth kHz
-        10,                   // spreading factor — SF10, real range gain (was SF7), deliberately NOT SF12 (hung on real hardware last attempt) — see LORA_TX_INTERVAL_MS's own comment
+        500.0,                // bandwidth kHz — raised from 125 for LATENCY (shorter symbol duration = far less airtime), at direct cost of range/sensitivity; see LORA_SCK's own comment for the full history and tradeoff reasoning
+        7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the receiver's copy exactly or packets won't decode
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // 22 dBm
-        8                     // preamble length
+        LORA_PREAMBLE_SYMBOLS // preamble length — see its own comment in config.h
     );
     if (loraState != RADIOLIB_ERR_NONE) {
         Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
     } else {
         radio.setDio2AsRfSwitch(true);   // required on Heltec V4
-        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — see loraTxDoneFlag's own comment for why this can't be a blocking transmit() at SF10's airtime
+        radio.setPacketSentAction(setLoraTxFlag);   // async TX completion — kept even at this short airtime, see loraTxDoneFlag's own comment
+
+        // Implicit header mode — every packet is a fixed sizeof(telemetry_packet_t)
+        // bytes, so there's nothing for an explicit LoRa header to usefully
+        // describe (it normally carries the payload length + coding rate for
+        // a receiver that doesn't already know them). Skipping it removes a
+        // real chunk of per-packet payload-symbol overhead for free — no
+        // range or reliability cost, since the receiver already knows the
+        // exact length via the same shared config.h struct. MUST match the
+        // receiver's own implicitHeader() call exactly (same length) or
+        // packets won't decode — see receiver's radio.begin() block.
+        int hdrState = radio.implicitHeader(sizeof(telemetry_packet_t));
+        if (hdrState != RADIOLIB_ERR_NONE) {
+            Serial.printf("[WARN] implicitHeader() failed  code=%d — falling back to explicit header (still works, just ~1.3ms/packet slower)\n", hdrState);
+        }
+
         loraReady = true;
-        Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm");
+        Serial.printf("[OK]   SX1262  915 MHz  SF7  BW500  22dBm  implicit-hdr  preamble=%u\n", LORA_PREAMBLE_SYMBOLS);
     }
+
+    // RTC — separate I2C bus, see RTC_SDA_PIN's own comment for why. Runs
+    // before initSdCard() so the very first SD log rows already have a
+    // real timestamp instead of "NO_RTC". Non-fatal if missing: initRtc()
+    // itself warns and leaves rtcReady false, everything else keeps working.
+    initRtc();
+
+    // SD card — separate SPI bus, see SD_*_PIN's own comment for why these
+    // specific pins. Non-fatal if missing/failed: initSdCard() itself
+    // warns and leaves sdReady false, everything else keeps working.
+    initSdCard();
 
     Serial.println("[RDY]  Sensor loop starting\n");
 }
@@ -710,7 +1023,7 @@ void setup() {
 void loop() {
     // These run every loop iteration — pollGps()/pollEsc() to keep their
     // UART buffers drained, checkLoraTxComplete() so an async LoRa TX
-    // finishing mid-cycle (anywhere in its ~944ms SF10 airtime) is noticed
+    // finishing mid-cycle (anywhere in its ~36ms SF7/BW500 airtime) is noticed
     // promptly rather than only at the next SENSOR_INTERVAL_MS tick.
     pollGps();
     pollEsc();
@@ -721,8 +1034,9 @@ void loop() {
     lastSensorMs = now;
 
     updateSensors();
+    logToSD();   // every SENSOR_INTERVAL_MS tick (5Hz) — independent of the LoRa/ESP-NOW radios below, see the SD CARD LOGGING section's own comment
 
-    // ── LoRa TX — every LORA_TX_INTERVAL_MS (~2s, SF10 airtime + headroom) ──
+    // ── LoRa TX — every LORA_TX_INTERVAL_MS (200ms, SF7/BW500 airtime + headroom) ──
     if (now - lastLoraTxMs >= LORA_TX_INTERVAL_MS) {
         lastLoraTxMs = now;
         loRaTx();
@@ -737,52 +1051,55 @@ void loop() {
     // ── Debug dump to USB serial ─────────────────────────────────────
     Serial.println("──────────────────────────────────────────");
 
+    // Timestamp — from the RTC, "NO_RTC" if it was never detected
+    char dbgTs[24];
+    getRtcTimestamp(dbgTs, sizeof(dbgTs));
+    Serial.printf("  Timestamp : %s UTC  (epoch=%lu)\n", dbgTs, (unsigned long)pkt.epoch_time);
+
     // Power
-    Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt);
-    Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt);
-    Serial.printf("  Current   : %.2f A\n",  pkt.current_a);
+    Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt_x100 / PKT_SCALE_VOLT);
+    Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt_x100 / PKT_SCALE_VOLT);
+    Serial.printf("  Current   : %.2f A\n",  pkt.current_a_x100 / PKT_SCALE_CURRENT);
 
     // RPM — raw edge counts + live pin state included for wiring diagnosis.
     // Edges always 0 with the pin state never changing = wiring/power issue,
     // not a code issue.
-    Serial.printf("  Motor RPM : %.0f  (raw edges=%lu/%.1fs, pin=%d)\n",
+    Serial.printf("  Motor RPM : %u  (raw edges=%lu/%.1fs, pin=%d)\n",
                   pkt.motor_rpm, (unsigned long)lastMotorEdges,
                   RPM_CALC_INTERVAL_MS / 1000.0f, digitalRead(MOTOR_RPM_PIN));
-    Serial.printf("  Wheel RPM : %.0f  (raw edges=%lu/%.1fs, pin=%d)\n",
-                  pkt.wheel_rpm, (unsigned long)lastWheelEdges,
+    Serial.printf("  Wheel RPM : %.1f  (raw edges=%lu/%.1fs, pin=%d)\n",
+                  pkt.wheel_rpm_x10 / PKT_SCALE_WHEEL_RPM, (unsigned long)lastWheelEdges,
                   RPM_CALC_INTERVAL_MS / 1000.0f, digitalRead(WHEEL_RPM_PIN));
 
     // Temperature
-    if (isnan(pkt.temp_f)) {
+    if (pkt.temp_f_x10 == PKT_TEMP_NO_READING) {
         Serial.println("  Temp      : DISCONNECTED (check pull-up + data line wiring)");
     } else {
-        Serial.printf("  Temp      : %.1f °F  (%.2f °C raw)\n", pkt.temp_f, lastTempRawC);
+        Serial.printf("  Temp      : %.1f °F  (%.2f °C raw)\n", pkt.temp_f_x10 / PKT_SCALE_TEMP, lastTempRawC);
     }
 
     // GPS
     Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
     Serial.printf("  Satellites: %u\n",       pkt.satellites);
-    Serial.printf("  Speed     : %.2f mph\n", pkt.speed_mph);
+    Serial.printf("  Speed     : %.1f mph\n", pkt.speed_mph_x10 / PKT_SCALE_SPEED);
     Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
     Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
-    Serial.printf("  HDOP      : %.1f\n",     pkt.hdop);
+    Serial.printf("  HDOP      : %.1f\n",     (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f));
 
     // IMU
     Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
-    Serial.printf("  Roll      : %.2f °\n",   pkt.roll_deg);
-    Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg);
-    Serial.printf("  Yaw       : %.2f °\n",   pkt.yaw_deg);
-    Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
-    Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
-    Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
+    Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg_x100 / PKT_SCALE_ANGLE);
+    Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g_x1000 / PKT_SCALE_G);
+    Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g_x1000 / PKT_SCALE_G);
+    Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g_x1000 / PKT_SCALE_G);
 
     // ESC
     if (pkt.flags & PKT_FLAG_ESC_VALID) {
-        Serial.printf("  ESC Mode  : %s\n",      pkt.esc_mode);
-        Serial.printf("  ESC State : %s\n",      pkt.esc_state);
-        Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
-        Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
-        Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);
+        Serial.printf("  ESC Mode  : %s  (code=%u)\n",  esc.mode,  pkt.esc_mode_code);
+        Serial.printf("  ESC State : %s  (code=%u)\n",  esc.state, pkt.esc_state_code);
+        Serial.printf("  Setpoint  : %u %%\n", pkt.esc_setpoint_pct);
+        Serial.printf("  Live      : %u %%\n", pkt.esc_live_pct);
+        Serial.printf("  Ramp      : %u %%\n", pkt.esc_ramp_pct);
     } else {
         Serial.println("  ESC       : waiting for data...");
     }

@@ -9,11 +9,20 @@
 //  directly, or have another program parse it off the serial port.
 //
 //  LoRa RX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Same RF settings as the sender (915 MHz, SF10, BW125, sync
-//           0xF3 — SF10 for real range, up from SF7; deliberately NOT
-//           SF12, which hung the board completely on an earlier attempt.
-//           Packets now arrive roughly once every ~2s, not 5x/sec) — see
-//           config.h, which must stay in sync with the sender's copy.
+//           Same RF settings as the sender (915 MHz, SF7, BW500, sync
+//           0xF3) — see config.h, which must stay in sync with the
+//           sender's copy. Latency now prioritized over range, per a
+//           direct request: SF7 (lowest value proven safe on this exact
+//           hardware — SF10/SF12 both hung this board's radio.begin()
+//           at BW125, see CLAUDE.md's ⚠️ rules for that history) + BW500
+//           (raised from 125 for shorter symbol duration/less airtime, at
+//           direct cost of range/sensitivity — the explicitly authorized
+//           tradeoff). Packet itself was later compressed 73→42 bytes
+//           (fixed-point instead of float, see config.h), plus implicit-
+//           header mode + a trimmed 6-symbol preamble (both must match the
+//           sender's copy exactly). ~20ms time-on-air per packet now, down
+//           from ~36ms right after the SF7/BW500 switch and ~6.9s at the
+//           prior SF12/BW62.5 range attempt.
 //
 //  Serial protocol for downstream tooling (e.g. receiver_agent):
 //    • Boot prints one line containing DEVICE_ID once — lets a host script
@@ -32,6 +41,7 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <string.h>
+#include <time.h>
 #include "config.h"
 
 
@@ -69,6 +79,29 @@ static uint32_t otherErrCount = 0;
 // the JSON schema below ever changes in a way a host script needs to know.
 #define DEVICE_ID  "GREENPOWER_RX_V1"
 
+// esc_mode_code/esc_state_code → string — the LoRa packet carries 1-byte
+// codes now instead of 8-byte ASCII strings (see config.h's own comment on
+// PKT_ESC_MODE_*/PKT_ESC_STATE_*); decoded back to real strings here,
+// receiver-side, for the pretty dump and the JSON line. Must match
+// ../esc%20controller/throttle_controller.ino's modeName()/stateName().
+static const char* escModeToStr(uint8_t code) {
+    switch (code) {
+        case PKT_ESC_MODE_ECO:    return "ECO";
+        case PKT_ESC_MODE_SPORT:  return "SPORT";
+        case PKT_ESC_MODE_NORMAL: return "NORMAL";
+        default:                  return "---";
+    }
+}
+static const char* escStateToStr(uint8_t code) {
+    switch (code) {
+        case PKT_ESC_STATE_IDLE:  return "IDLE";
+        case PKT_ESC_STATE_REENG: return "REENG";
+        case PKT_ESC_STATE_RAMP:  return "RAMP";
+        case PKT_ESC_STATE_HOLD:  return "HOLD";
+        default:                  return "---";
+    }
+}
+
 // Answers "ID?" from the USB host without needing a full packet round-trip.
 // Only ever called from loop(), not from the radio ISR.
 static void pollIdentityRequest() {
@@ -105,12 +138,12 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        125.0,                // bandwidth kHz
-        10,                   // spreading factor — SF10, real range gain (was SF7); MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
+        500.0,                // bandwidth kHz — raised from 125 for latency (shorter symbol duration = less airtime), at direct cost of range/sensitivity; see this file's own header comment for the full history
+        7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // unused for RX, kept for signature symmetry with sender
-        8                     // preamble length
+        LORA_PREAMBLE_SYMBOLS // preamble length — see its own comment in config.h; MUST match the sender's copy
     );
     if (loraState != RADIOLIB_ERR_NONE) {
         Serial.printf("[WARN] SX1262 init failed  code=%d\n", loraState);
@@ -118,12 +151,23 @@ void setup() {
         radio.setDio2AsRfSwitch(true);   // required on Heltec V4
         radio.setPacketReceivedAction(setPacketFlag);
 
+        // Implicit header mode — MUST match the sender's own implicitHeader()
+        // call (same fixed length) exactly, or packets won't decode. See the
+        // sender's radio.begin() block for the full reasoning; this side just
+        // needs to agree, since implicit-header receivers have to already
+        // know the payload length instead of reading it off an explicit
+        // header the sender no longer sends.
+        int hdrState = radio.implicitHeader(sizeof(telemetry_packet_t));
+        if (hdrState != RADIOLIB_ERR_NONE) {
+            Serial.printf("[WARN] implicitHeader() failed  code=%d — sender/receiver MUST agree on header mode or every packet will fail to decode\n", hdrState);
+        }
+
         int rxState = radio.startReceive();
         if (rxState != RADIOLIB_ERR_NONE) {
             Serial.printf("[WARN] startReceive() failed  code=%d\n", rxState);
         } else {
             loraReady = true;
-            Serial.println("[OK]   SX1262  915 MHz  SF10  BW125  22dBm  listening...");
+            Serial.printf("[OK]   SX1262  915 MHz  SF7  BW500  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
         }
     }
 
@@ -152,42 +196,71 @@ void loop() {
         Serial.printf("  Packet #%lu  RSSI:%.0f dBm  SNR:%.1f dB\n",
                       (unsigned long)rxCount, radio.getRSSI(), radio.getSNR());
 
+        // Timestamp — pkt.epoch_time is a raw Unix-seconds int on the wire
+        // (smallest possible over-the-air date/time representation, see
+        // config.h); the human-readable string is built here, receiver-side,
+        // entirely off the radio link, so it costs nothing in airtime.
+        char tsBuf[24];
+        if (pkt.epoch_time == 0) {
+            snprintf(tsBuf, sizeof(tsBuf), "NO_RTC");
+        } else {
+            time_t rawTime = (time_t)pkt.epoch_time;
+            struct tm tmInfo;
+            gmtime_r(&rawTime, &tmInfo);
+            strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%d %H:%M:%S", &tmInfo);
+        }
+        Serial.printf("  Timestamp : %s UTC\n", tsBuf);
+
+        // Decoded back to human units from pkt's compressed fields — see
+        // config.h's "Fixed-point compression" block. Done once here so the
+        // pretty-print block and the JSON block below both read off the
+        // same values instead of re-deriving them twice.
+        float speedMph  = pkt.speed_mph_x10  / PKT_SCALE_SPEED;
+        float tempF     = (pkt.temp_f_x10 == PKT_TEMP_NO_READING) ? NAN : (pkt.temp_f_x10 / PKT_SCALE_TEMP);
+        float battVolt  = pkt.batt_volt_x100  / PKT_SCALE_VOLT;
+        float motorVolt = pkt.motor_volt_x100 / PKT_SCALE_VOLT;
+        float currentA  = pkt.current_a_x100  / PKT_SCALE_CURRENT;
+        float pitchDeg  = pkt.pitch_deg_x100  / PKT_SCALE_ANGLE;
+        float accelG    = pkt.accel_g_x1000   / PKT_SCALE_G;
+        float lateralG  = pkt.lateral_g_x1000 / PKT_SCALE_G;
+        float verticalG = pkt.vertical_g_x1000 / PKT_SCALE_G;
+        float wheelRpm  = pkt.wheel_rpm_x10   / PKT_SCALE_WHEEL_RPM;
+        float hdop = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
+
         // Power
-        Serial.printf("  Motor Volt: %.2f V\n",  pkt.motor_volt);
-        Serial.printf("  Batt Volt : %.2f V\n",  pkt.batt_volt);
-        Serial.printf("  Current   : %.2f A\n",  pkt.current_a);
+        Serial.printf("  Motor Volt: %.2f V\n",  motorVolt);
+        Serial.printf("  Batt Volt : %.2f V\n",  battVolt);
+        Serial.printf("  Current   : %.2f A\n",  currentA);
 
         // RPM
-        Serial.printf("  Motor RPM : %.0f\n",    pkt.motor_rpm);
-        Serial.printf("  Wheel RPM : %.0f\n",    pkt.wheel_rpm);
+        Serial.printf("  Motor RPM : %u\n",      pkt.motor_rpm);
+        Serial.printf("  Wheel RPM : %.1f\n",    wheelRpm);
 
         // Temperature
-        Serial.printf("  Temp      : %.1f °F\n", pkt.temp_f);
+        Serial.printf("  Temp      : %.1f °F\n", tempF);
 
         // GPS
         Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
         Serial.printf("  Satellites: %u\n",       pkt.satellites);
-        Serial.printf("  Speed     : %.2f mph\n", pkt.speed_mph);
+        Serial.printf("  Speed     : %.1f mph\n", speedMph);
         Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
         Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
-        Serial.printf("  HDOP      : %.1f\n",     pkt.hdop);
+        Serial.printf("  HDOP      : %.1f\n",     hdop);
 
         // IMU
         Serial.printf("  IMU valid : %s\n",      (pkt.flags & PKT_FLAG_IMU_VALID) ? "YES" : "NO");
-        Serial.printf("  Roll      : %.2f °\n",   pkt.roll_deg);
-        Serial.printf("  Pitch     : %.2f °\n",   pkt.pitch_deg);
-        Serial.printf("  Yaw       : %.2f °\n",   pkt.yaw_deg);
-        Serial.printf("  Accel     : %.3f g\n",   pkt.accel_g);
-        Serial.printf("  Lateral   : %.3f g\n",   pkt.lateral_g);
-        Serial.printf("  Vertical  : %.3f g\n",   pkt.vertical_g);
+        Serial.printf("  Pitch     : %.2f °\n",   pitchDeg);
+        Serial.printf("  Accel     : %.3f g\n",   accelG);
+        Serial.printf("  Lateral   : %.3f g\n",   lateralG);
+        Serial.printf("  Vertical  : %.3f g\n",   verticalG);
 
         // ESC
         if (pkt.flags & PKT_FLAG_ESC_VALID) {
-            Serial.printf("  ESC Mode  : %s\n",      pkt.esc_mode);
-            Serial.printf("  ESC State : %s\n",      pkt.esc_state);
-            Serial.printf("  Setpoint  : %.1f %%\n", pkt.esc_setpoint_pct);
-            Serial.printf("  Live      : %.1f %%\n", pkt.esc_live_pct);
-            Serial.printf("  Ramp      : %.1f %%\n", pkt.esc_ramp_pct);
+            Serial.printf("  ESC Mode  : %s\n",      escModeToStr(pkt.esc_mode_code));
+            Serial.printf("  ESC State : %s\n",      escStateToStr(pkt.esc_state_code));
+            Serial.printf("  Setpoint  : %u %%\n", pkt.esc_setpoint_pct);
+            Serial.printf("  Live      : %u %%\n", pkt.esc_live_pct);
+            Serial.printf("  Ramp      : %u %%\n", pkt.esc_ramp_pct);
         } else {
             Serial.println("  ESC       : waiting for data...");
         }
@@ -197,28 +270,34 @@ void loop() {
         // ── Machine-readable line for host tooling (receiver_agent) ───
         // Kept as a single line, prefixed so it's trivial to filter out of
         // the human dump above with a simple startsWith("JSON:") check.
-        char json[480];
+        // Keys/units here are UNCHANGED from before the packet compression —
+        // telemetry_web and receiver_agent both consume real human units
+        // (mph, volts, °F, ...), so the wire-level fixed-point encoding is
+        // entirely invisible past this point; no downstream change needed.
+        char json[540];
         snprintf(json, sizeof(json),
             "JSON:{"
             "\"seq\":%lu,\"rssi\":%.0f,\"snr\":%.1f,\"flags\":%u,"
-            "\"speed_mph\":%.2f,\"latitude\":%.6f,\"longitude\":%.6f,"
+            "\"epoch_time\":%lu,\"timestamp\":\"%s\","
+            "\"speed_mph\":%.1f,\"latitude\":%.6f,\"longitude\":%.6f,"
             "\"hdop\":%.1f,\"satellites\":%u,\"temp_f\":%.1f,"
             "\"batt_volt\":%.2f,\"motor_volt\":%.2f,\"current_a\":%.2f,"
-            "\"roll_deg\":%.2f,\"pitch_deg\":%.2f,\"yaw_deg\":%.2f,"
+            "\"pitch_deg\":%.2f,"
             "\"accel_g\":%.3f,\"lateral_g\":%.3f,\"vertical_g\":%.3f,"
-            "\"motor_rpm\":%.0f,\"wheel_rpm\":%.0f,"
+            "\"motor_rpm\":%u,\"wheel_rpm\":%.1f,"
             "\"esc_valid\":%s,\"esc_mode\":\"%s\",\"esc_state\":\"%s\","
-            "\"esc_setpoint_pct\":%.1f,\"esc_live_pct\":%.1f,\"esc_ramp_pct\":%.1f"
+            "\"esc_setpoint_pct\":%u,\"esc_live_pct\":%u,\"esc_ramp_pct\":%u"
             "}",
             (unsigned long)rxCount, radio.getRSSI(), radio.getSNR(), pkt.flags,
-            pkt.speed_mph, pkt.latitude, pkt.longitude,
-            pkt.hdop, pkt.satellites, pkt.temp_f,
-            pkt.batt_volt, pkt.motor_volt, pkt.current_a,
-            pkt.roll_deg, pkt.pitch_deg, pkt.yaw_deg,
-            pkt.accel_g, pkt.lateral_g, pkt.vertical_g,
-            pkt.motor_rpm, pkt.wheel_rpm,
+            (unsigned long)pkt.epoch_time, tsBuf,
+            speedMph, pkt.latitude, pkt.longitude,
+            hdop, pkt.satellites, tempF,
+            battVolt, motorVolt, currentA,
+            pitchDeg,
+            accelG, lateralG, verticalG,
+            pkt.motor_rpm, wheelRpm,
             (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",
-            pkt.esc_mode, pkt.esc_state,
+            escModeToStr(pkt.esc_mode_code), escStateToStr(pkt.esc_state_code),
             pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
         );
         Serial.println(json);

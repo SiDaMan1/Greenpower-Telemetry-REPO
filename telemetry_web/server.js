@@ -194,7 +194,7 @@ const CSV_COLUMNS = [
     'received_at', 'seq', 'rssi', 'snr', 'flags',
     'speed_mph', 'latitude', 'longitude', 'hdop', 'satellites',
     'temp_f', 'batt_volt', 'motor_volt', 'current_a',
-    'roll_deg', 'pitch_deg', 'yaw_deg', 'accel_g', 'lateral_g', 'vertical_g',
+    'pitch_deg', 'accel_g', 'lateral_g', 'vertical_g',
     'motor_rpm', 'wheel_rpm',
     'esc_valid', 'esc_mode', 'esc_state', 'esc_setpoint_pct', 'esc_live_pct', 'esc_ramp_pct',
 ];

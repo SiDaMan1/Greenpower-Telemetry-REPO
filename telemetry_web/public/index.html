@@ -84,7 +84,7 @@
     --accent:#6366f1; --accent2:#0ea5e9; --accent3:#10b981; --danger:#f43f5e;
     --speed:#fb7185; --battv:#7dd3fc; --motorv:#93c5fd; --current:#fcd34d; --temp:#e2e8f0;
     --mrpm:#c4b5fd; --wrpm:#a78bfa;
-    --roll:#5eead4; --pitch:#2dd4bf; --yaw:#99f6e4;
+    --pitch:#2dd4bf;
     --accel:#fda4af; --lateral:#fca5a5; --vertical:#fdba74;
     --rssi:#cbd5e1; --snr:#94a3b8; --gps:#cbd5e1;
     --escset:#fde047; --esclive:#fcd34d; --escramp:#fbbf24; --escmode:#fef08a;
@@ -163,6 +163,7 @@
   .title-text { font-family:'Space Grotesk',sans-serif; font-size:clamp(14px,2.2vw,18px); font-weight:700; letter-spacing:.2px;
     background:linear-gradient(90deg,var(--accent),var(--accent2));
     -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .title-text-short { display:none; }   /* shown instead of -full on mobile — see the mobile media block */
   #header-right { display:flex; align-items:center; gap:12px; flex-shrink:0; }
   #conn-status { display:flex; align-items:center; font-family:'Share Tech Mono',monospace; font-size:11px;
     padding:5px 10px; border-radius:999px; background:rgba(255,255,255,.03); border:1px solid var(--border); }
@@ -707,6 +708,15 @@
        right above it. Flat and opaque removes both problems at once. */
     #header { background:#0b0c11; padding:0 12px; height:50px; }
     #server-time { display:none; }
+    /* Shorter title on mobile — see this element's own HTML comment for why
+       (frees up the width the delay badge below needs to fit safely). */
+    .title-text-full { display:none; }
+    .title-text-short { display:inline; }
+    /* The live-delay badge ("Xms ago") — shown on mobile now, not hidden.
+       Tightened (smaller font/padding than desktop's) specifically so it
+       comfortably fits next to the LIVE/OFFLINE pill even on a narrow
+       phone header, now that the shortened title above has made room. */
+    #age-badge { font-size:9px; padding:3px 7px; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
@@ -783,7 +793,14 @@
     }
   }
   @media (max-width: 480px) {
-    #age-badge { display:none; }
+    /* Shrunk further rather than hidden (as this used to do) — the delay
+       badge is exactly the thing a follow-up request asked to make sure
+       showed on mobile; a real phone in portrait is usually well under
+       480px wide, so hiding it here meant it was invisible on almost
+       every real phone despite "working" on wider mobile/tablet widths.
+       "--ms" (4 chars) is the longest content it ever shows besides the
+       real reading, so this still has real headroom at this size. */
+    #age-badge { font-size:8px; padding:3px 5px; }
     .dedicated-big-card { gap:14px; padding:14px 16px; }
   }
 
@@ -1410,7 +1427,20 @@
 <body>
 <div id="app">
   <div id="header">
-    <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
+    <!-- Two title strings, one shown at a time via CSS (not JS) — "Greenpower
+         Telemetry" is too wide to keep alongside the delay badge (#age-badge,
+         see its own mobile rule) on a real phone header without risking
+         overlap/clipping (no text-overflow/ellipsis is set here, and the
+         header has no overflow:hidden of its own). ".title-text-short"
+         reuses manifest.json's own existing short_name ("GP Telemetry") —
+         not a new piece of branding, just reapplying the name already
+         chosen for the exact same "not enough room" reason at install
+         time. -->
+    <div id="title">
+      <span class="title-icon icon" data-icon="zap"></span>
+      <span class="title-text title-text-full">Greenpower Telemetry</span>
+      <span class="title-text title-text-short">GP Telemetry</span>
+    </div>
     <div id="header-right">
       <!-- GreenpowerAgentSetup.msi is a pre-built WiX installer living
            right in this app's own public/ folder — replaced an EARLIER
@@ -1688,9 +1718,7 @@
           <div class="stat-card" data-ov-key="temp_f" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
           <div class="stat-card" data-ov-key="motor_rpm" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
           <div class="stat-card" data-ov-key="wheel_rpm" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
-          <div class="stat-card" data-ov-key="roll_deg" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
           <div class="stat-card" data-ov-key="pitch_deg" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" data-ov-key="yaw_deg" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
           <!-- GPS is the one deliberate exception — it's not a single short
                number, it's two lines (lat + lon) via `white-space:pre-line`
                (see .stat-value.tiny's own CSS), which genuinely doesn't fit
@@ -1821,16 +1849,8 @@
     <div id="page-imu" class="page">
       <div class="range-toggle-row" data-range-slot></div>
       <div class="section-heading">Orientation</div>
-      <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Roll</div><div class="dedicated-value size-sm" id="big-roll_deg" style="color:var(--roll)">--</div><div class="dedicated-unit">°</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value size-sm" id="big-pitch_deg" style="color:var(--pitch)">--</div><div class="dedicated-unit">°</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Yaw</div><div class="dedicated-value size-sm" id="big-yaw_deg" style="color:var(--yaw)">--</div><div class="dedicated-unit">°</div></div></div>
-      </div>
-      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;min-height:220px">
-        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-roll_deg"></canvas></div></div>
-        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-pitch_deg"></canvas></div></div>
-        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-yaw_deg"></canvas></div></div>
-      </div>
+      <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value" id="big-pitch_deg" style="color:var(--pitch)">--</div><div class="dedicated-unit">°</div></div></div>
+      <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-pitch_deg"></canvas></div></div>
       <div class="section-heading">G-Force</div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Accel</div><div class="dedicated-value size-sm" id="big-accel_g" style="color:var(--accel)">--</div><div class="dedicated-unit">G</div></div></div>
@@ -2076,9 +2096,7 @@ const METRICS = {
   temp_f:     {label:'Temp',       unit:'°F',  color:'var(--temp)',    dec:1, range:[32,150],   multiDefault:false},
   motor_rpm:  {label:'Motor RPM',  unit:'RPM', color:'var(--mrpm)',    dec:0, range:[0,3000],   multiDefault:true},
   wheel_rpm:  {label:'Wheel RPM',  unit:'RPM', color:'var(--wrpm)',    dec:0, range:[0,1000],   multiDefault:false},
-  roll_deg:   {label:'Roll',       unit:'°',   color:'var(--roll)',    dec:1, range:[-45,45],   multiDefault:false},
   pitch_deg:  {label:'Pitch',      unit:'°',   color:'var(--pitch)',   dec:1, range:[-45,45],   multiDefault:false},
-  yaw_deg:    {label:'Yaw',        unit:'°',   color:'var(--yaw)',     dec:1, range:[-180,180], multiDefault:false},
   accel_g:    {label:'Accel',      unit:'G',   color:'var(--accel)',   dec:3, range:[-3,3],     multiDefault:false},
   lateral_g:  {label:'Lateral',    unit:'G',   color:'var(--lateral)', dec:3, range:[-3,3],     multiDefault:false},
   vertical_g: {label:'Vertical',   unit:'G',   color:'var(--vertical)',dec:3, range:[-2,4],     multiDefault:false},
@@ -3314,7 +3332,7 @@ const ONBOARDING_KEY = 'gp_onboarding_v1_complete';
 // install.
 const ONBOARDING_PASSWORD_PASSED_KEY = 'gp_onboarding_password_passed';
 const ONBOARDING_INSTALL_DONE_KEY = 'gp_onboarding_install_done';
-const ONBOARDING_PASSWORD = 'SentinelRacing26!';
+const ONBOARDING_PASSWORD = 'ASCTE26';
 const onboardingSteps = IS_MOBILE
   ? ['password', 'install', 'overview', 'settings']
   : ['password', 'overview', 'agent', 'settings'];
@@ -4655,9 +4673,7 @@ const OV_MOBILE_ITEMS = [
   { key:'temp_f',     label:'Temp',       color:'var(--temp)' },
   { key:'motor_rpm',  label:'Motor RPM',  color:'var(--mrpm)' },
   { key:'wheel_rpm',  label:'Wheel RPM',  color:'var(--wrpm)' },
-  { key:'roll_deg',   label:'Roll',       color:'var(--roll)' },
   { key:'pitch_deg',  label:'Pitch',      color:'var(--pitch)' },
-  { key:'yaw_deg',    label:'Yaw',        color:'var(--yaw)' },
   { key:'gps',        label:'GPS',        color:'var(--gps)' },
   { key:'link',       label:'Link',       color:'var(--rssi)' },
   { key:'seq',        label:'Packet #',   color:'#64748b' },
