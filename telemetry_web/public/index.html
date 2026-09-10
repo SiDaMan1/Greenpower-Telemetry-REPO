@@ -182,6 +182,52 @@
   #signal-badge.sig-good { color:var(--accent3); border-color:var(--accent3); }
   #signal-badge.sig-warn { color:var(--warn); border-color:var(--warn); }
   #signal-badge.sig-bad  { color:var(--danger); border-color:var(--danger); }
+  /* Signal-strength meter — a small gradient bar reused in two places
+     (desktop header, mobile Efficiency tab — see updateSignalMeterEl()).
+     The fill's gradient is pinned to a FIXED background-size matching the
+     track's own fixed width, not "100%" (which would rescale to the
+     fill's own shrinking width and always show the same red→green blend
+     regardless of score) — so as the fill narrows toward 0, only the RED
+     end of the gradient is ever visible, and only at 10/10 does the fill
+     reach all the way to pure green. That's what makes the bar's color
+     itself, not just its length, actually track the score. `transition:
+     width` is what makes it animate smoothly as the score changes rather
+     than snapping — same easing token (`--ease`) already used for every
+     other subtle motion in this file (card borders, chart hides, etc).
+     The track's own box-shadow (sig-good/warn/bad, same score bands and
+     class names signal-badge already uses) adds a soft matching glow so
+     the meter and the text badge always visually agree at a glance. */
+  .sig-meter {
+    position:relative; width:64px; height:8px; border-radius:999px;
+    overflow:hidden; background:rgba(255,255,255,.08); border:1px solid var(--border);
+    flex-shrink:0; transition:box-shadow .4s var(--ease);
+  }
+  .sig-meter.sig-good { box-shadow:0 0 7px -1px var(--accent3); }
+  .sig-meter.sig-warn { box-shadow:0 0 7px -1px var(--warn); }
+  .sig-meter.sig-bad  { box-shadow:0 0 7px -1px var(--danger); }
+  .sig-meter-fill {
+    height:100%; width:0%; border-radius:999px;
+    background:linear-gradient(to right, #ef4444, #facc15, #22c55e);
+    background-size:64px 100%;
+    transition:width .5s var(--ease);
+  }
+  /* Efficiency tab's mobile-only row — same meter, plus a label/value pair
+     laid out like a small standalone card. Hidden by default (desktop
+     shows the header version instead, see the mobile media query below
+     for both halves of this swap). */
+  .efficiency-signal-row {
+    display:none; align-items:center; gap:12px; padding:11px 14px;
+    background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
+    margin-bottom:10px;
+  }
+  .efficiency-signal-label {
+    font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase;
+    color:var(--muted); flex-shrink:0;
+  }
+  .efficiency-signal-value {
+    font-family:'Share Tech Mono',monospace; font-size:13px; font-weight:600;
+    color:var(--text); margin-left:auto; flex-shrink:0;
+  }
   /* Test mode: feeds fake, plausible telemetry through the exact same
      render path as a real packet (applyState/pushHistory/applyHistory) at
      the same 5Hz cadence, so the whole UI — numbers, charts, GPS fix,
@@ -722,6 +768,13 @@
        comfortably fits next to the LIVE/OFFLINE pill even on a narrow
        phone header, now that the shortened title above has made room. */
     #age-badge, #signal-badge { font-size:9px; padding:3px 7px; }
+    /* Desktop-only, per explicit request — mobile's header has no room for
+       a meter alongside the shortened title/badges (see the whole "make
+       it show delay on mobile" thread earlier in this file's history for
+       just how tight that space already is); the same meter appears in
+       the Efficiency tab instead, see .efficiency-signal-row below. */
+    #signal-meter { display:none; }
+    .efficiency-signal-row { display:flex; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
@@ -1482,6 +1535,9 @@
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="signal-badge" title="LoRa link quality, 0 (no signal) to 10 (best this link can read) — derived from RSSI+SNR, see updateSignalBadge()">SIG --/10</span>
+      <div class="sig-meter" id="signal-meter" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the badge next to it. Desktop only; see the Efficiency tab on mobile.">
+        <div class="sig-meter-fill" id="signal-meter-fill"></div>
+      </div>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
       <span id="server-time">--:--:--</span>
     </div>
@@ -1802,6 +1858,17 @@
          trip total, not independent per-card state. -->
     <div id="page-efficiency" class="page">
       <div class="section-heading">Efficiency <button id="efficiency-reset-btn" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Reset Trip</button></div>
+      <!-- Mobile-only home for the signal-strength meter — desktop shows
+           this in the header instead (#signal-meter), per explicit
+           request; .efficiency-signal-row is display:none by default and
+           only turned on inside the max-width:860px media query. -->
+      <div class="efficiency-signal-row" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the header's SIG badge on desktop.">
+        <span class="efficiency-signal-label">Signal</span>
+        <div class="sig-meter" id="signal-meter-mobile">
+          <div class="sig-meter-fill" id="signal-meter-fill-mobile"></div>
+        </div>
+        <span class="efficiency-signal-value" id="signal-meter-value-mobile">--/10</span>
+      </div>
       <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Consumed</div><div class="dedicated-value size-md" id="eff-consumed-wh" style="color:var(--current)">--</div><div class="dedicated-unit">WH</div></div></div>
@@ -4440,12 +4507,33 @@ function signalScoreColorVar(score) {
   return cls === 'sig-good' ? 'var(--accent3)' : cls === 'sig-warn' ? 'var(--warn)' : 'var(--danger)';
 }
 function updateSignalBadge(d) {
-  const el = document.getElementById('signal-badge');
-  if (!el) return;
   const score = d ? signalScore(d.rssi, d.snr) : 0;
-  el.textContent = `SIG ${score}/10`;
-  el.classList.remove('sig-good','sig-warn','sig-bad');
-  el.classList.add(signalScoreClass(score));
+  const el = document.getElementById('signal-badge');
+  if (el) {
+    el.textContent = `SIG ${score}/10`;
+    el.classList.remove('sig-good','sig-warn','sig-bad');
+    el.classList.add(signalScoreClass(score));
+  }
+  // Desktop header meter + mobile Efficiency-tab meter — same score, same
+  // update, two DOM targets (one is always display:none depending on
+  // viewport width, see the shared .sig-meter/.efficiency-signal-row CSS).
+  updateSignalMeterEl('signal-meter', 'signal-meter-fill', null, score);
+  updateSignalMeterEl('signal-meter-mobile', 'signal-meter-fill-mobile', 'signal-meter-value-mobile', score);
+}
+// meterId's fill width (0-100%, CSS-transitioned — see .sig-meter-fill's
+// own comment for why the gradient itself, not just the width, tracks the
+// score) and its sig-good/warn/bad glow class, shared by every .sig-meter
+// instance on the page. valueId is optional — the header meter has no
+// separate text readout (the badge right next to it already shows one),
+// the Efficiency-tab meter does.
+function updateSignalMeterEl(meterId, fillId, valueId, score) {
+  const meter = document.getElementById(meterId);
+  const fill = document.getElementById(fillId);
+  if (!meter || !fill) return;
+  fill.style.width = (score * 10) + '%';
+  meter.classList.remove('sig-good','sig-warn','sig-bad');
+  meter.classList.add(signalScoreClass(score));
+  if (valueId) setText(valueId, `${score}/10`);
 }
 
 // ── CONNECTION STATUS ────────────────────────────────────────────────────────
