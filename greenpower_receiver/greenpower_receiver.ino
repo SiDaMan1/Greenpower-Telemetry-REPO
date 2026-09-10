@@ -20,7 +20,9 @@
 //           tradeoff). Packet itself was later compressed 73→42 bytes
 //           (fixed-point instead of float, see config.h), plus implicit-
 //           header mode + a trimmed 6-symbol preamble (both must match the
-//           sender's copy exactly). ~20ms time-on-air per packet now, down
+//           sender's copy exactly). ~21ms time-on-air per packet now — a
+//           real, hardware-measured value (see airtime_ms_x10 in config.h),
+//           not just a computed estimate — down
 //           from ~36ms right after the SF7/BW500 switch and ~6.9s at the
 //           prior SF12/BW62.5 range attempt.
 //
@@ -226,6 +228,11 @@ void loop() {
         float verticalG = pkt.vertical_g_x1000 / PKT_SCALE_G;
         float wheelRpm  = pkt.wheel_rpm_x10   / PKT_SCALE_WHEEL_RPM;
         float hdop = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
+        // REAL, measured airtime (not a computed estimate) of the PREVIOUS
+        // transmission — see airtime_ms_x10's own comment in config.h and
+        // loRaTx()/checkLoraTxComplete() in greenpower_sender.ino for why
+        // it's one packet behind, not the packet actually carrying it.
+        float airtimeMs = pkt.airtime_ms_x10 / PKT_SCALE_AIRTIME;
 
         // Power
         Serial.printf("  Motor Volt: %.2f V\n",  motorVolt);
@@ -238,6 +245,9 @@ void loop() {
 
         // Temperature
         Serial.printf("  Temp      : %.1f °F\n", tempF);
+
+        // Link — airtime is the PREVIOUS transmission's, see airtimeMs's own comment above
+        Serial.printf("  Airtime   : %.1f ms (measured, previous TX)\n", airtimeMs);
 
         // GPS
         Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
@@ -286,7 +296,8 @@ void loop() {
             "\"accel_g\":%.3f,\"lateral_g\":%.3f,\"vertical_g\":%.3f,"
             "\"motor_rpm\":%u,\"wheel_rpm\":%.1f,"
             "\"esc_valid\":%s,\"esc_mode\":\"%s\",\"esc_state\":\"%s\","
-            "\"esc_setpoint_pct\":%u,\"esc_live_pct\":%u,\"esc_ramp_pct\":%u"
+            "\"esc_setpoint_pct\":%u,\"esc_live_pct\":%u,\"esc_ramp_pct\":%u,"
+            "\"airtime_ms\":%.1f"
             "}",
             (unsigned long)rxCount, radio.getRSSI(), radio.getSNR(), pkt.flags,
             (unsigned long)pkt.epoch_time, tsBuf,
@@ -298,7 +309,8 @@ void loop() {
             pkt.motor_rpm, wheelRpm,
             (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",
             escModeToStr(pkt.esc_mode_code), escStateToStr(pkt.esc_state_code),
-            pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
+            pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct,
+            airtimeMs
         );
         Serial.println(json);
 

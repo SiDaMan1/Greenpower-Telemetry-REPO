@@ -32,7 +32,7 @@
 //
 //  LoRa TX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
 //           Transmits telemetry_packet_t (now includes ESC fields) every
-//           ~20ms (SF7/BW500, implicit header, 6-symbol preamble, 42-byte
+//           ~21ms (SF7/BW500, implicit header, 6-symbol preamble, 44-byte
 //           fixed-point-compressed packet — latency prioritized over range
 //           per direct request; see LORA_SCK's own comment for the full
 //           history)
@@ -124,19 +124,25 @@
 //      the receiver already knows both from the shared config.h struct)
 //      + preamble trimmed from 8 to 6 symbols (Semtech's documented
 //      minimum for reliable SX126x sync) → ~20.0ms.
-// Total ≈ 20ms per transmission now, down from ~36ms right after the
-// SF7/BW500 switch and ~6.9s at the SF12/BW62.5 range attempt — roughly
-// 345x faster than that attempt. This is close to the practical floor at
-// SF7/BW500 for a packet this shape; the only levers left (dropping
-// epoch_time to shrink the payload further, or going below SF7) trade
-// away either the sender's RTC timestamp or venture into spreading-factor
-// territory this project has explicitly avoided as untested — see
-// this folder's CLAUDE.md for that discussion, not just done silently.
+//   3. airtime_ms_x10 (2 bytes) added BACK to the packet — 42 → 44 bytes,
+//      ~20.0ms → ~21.3ms — a deliberate, small, explicitly-requested cost
+//      to carry a REAL, hardware-measured airtime value (see
+//      loRaTx()/checkLoraTxComplete() below) instead of only ever showing
+//      a computed Semtech-formula estimate on the dashboard.
+// Total ≈ 21ms per transmission now (was purely computed at ~20ms before
+// this field existed to actually measure it) — still roughly 325x faster
+// than the SF12/BW62.5 attempt's ~6.9s. This is close to the practical
+// floor at SF7/BW500 for a packet this shape; the levers still on the
+// table (dropping epoch_time to shrink the payload further, or going
+// below SF7) trade away either the sender's RTC timestamp or venture into
+// spreading-factor territory this project has explicitly avoided as
+// untested — see this folder's CLAUDE.md for that discussion, not just
+// done silently.
 // LORA_TX_INTERVAL_MS dropped back to 200ms (real headroom above the
-// ~20ms airtime) — matching SENSOR_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS
+// ~21ms airtime) — matching SENSOR_INTERVAL_MS/ESPNOW_TX_INTERVAL_MS
 // again, so LoRa updates as fast as the sensors themselves sample,
 // instead of the 9-second interval the range attempt required.
-#define LORA_TX_INTERVAL_MS    200   // ~20ms SF7/BW500 airtime (42-byte packet, implicit hdr, 6-symbol preamble) + real headroom — matches sensor/ESP-NOW cadence again
+#define LORA_TX_INTERVAL_MS    200   // ~21ms SF7/BW500 airtime (44-byte packet, implicit hdr, 6-symbol preamble) + real headroom — matches sensor/ESP-NOW cadence again
 #define ESPNOW_TX_INTERVAL_MS  200   // unchanged — 5 Hz, matches SENSOR_INTERVAL_MS
 
 #define GPS_RX_PIN        34   // ESP32 RX  ← GPS TX
@@ -292,11 +298,23 @@ bool   loraReady   = false;
 // already uses proven on its RX side (setPacketReceivedAction), mirrored
 // here for TX instead of RX.
 volatile bool loraTxDoneFlag = false;
-void IRAM_ATTR setLoraTxFlag() { loraTxDoneFlag = true; }
+// loraTxDoneUs is stamped INSIDE the ISR (micros() is ISR-safe on ESP32),
+// not later when checkLoraTxComplete() gets around to polling the flag —
+// this is what makes the measured airtime below a genuine hardware timing
+// (bounded only by real ISR entry latency, microseconds, not by loop()'s
+// own polling granularity) rather than a software-side approximation.
+volatile uint32_t loraTxDoneUs = 0;
+void IRAM_ATTR setLoraTxFlag() { loraTxDoneFlag = true; loraTxDoneUs = micros(); }
 // Only ever read/written from loop() (unlike loraTxDoneFlag, which the ISR
 // also touches) — true from the moment startTransmit() successfully kicks
 // off a transmission until finishTransmit() has been called for it.
 bool loraTxInFlight = false;
+// Stamped in loRaTx() right before startTransmit() — paired with
+// loraTxDoneUs above to measure this project's actual, real LoRa time-on-
+// air per transmission, instead of only ever computing/assuming it from
+// the Semtech formula. See checkLoraTxComplete() for where the two are
+// diffed and where the result lands in the outgoing packet.
+uint32_t loraTxStartUs = 0;
 
 // ESP-NOW peer (steering wheel display)
 static const uint8_t PEER_MAC[6] = ESPNOW_PEER_MAC;
@@ -807,9 +825,15 @@ static void loRaTx() {
         return;
     }
 
+    // Stamped immediately before the call, not after — startTransmit()
+    // itself does a small amount of SPI work to hand the payload to the
+    // radio before it actually begins transmitting, and that's real time
+    // this measurement deliberately does NOT want to count as "airtime."
+    uint32_t txStartUs = micros();
     int state = radio.startTransmit((uint8_t*)&pkt, sizeof(pkt));
     if (state == RADIOLIB_ERR_NONE) {
         loraTxInFlight = true;
+        loraTxStartUs = txStartUs;
     } else {
         Serial.printf("  [LoRa] startTransmit() ERR %d\n", state);
     }
@@ -829,9 +853,27 @@ static void checkLoraTxComplete() {
     int state = radio.finishTransmit();
     loraTxInFlight = false;
 
+    // Real, measured airtime for the transmission that just completed —
+    // loraTxDoneUs was stamped inside the TX-complete ISR itself (see its
+    // own comment), loraTxStartUs right before startTransmit() kicked this
+    // same transmission off. This is genuine hardware timing, not the
+    // Semtech-formula estimate this project used before adding this.
+    //
+    // IMPORTANT: this measures the packet that was JUST sent, but that
+    // packet has already left the radio by the time this line runs — there
+    // is no way to retroactively stuff a measurement into bytes already on
+    // the air. So the result goes into `pkt` for the NEXT transmission
+    // instead: every packet's airtime_ms_x10 field reports how long the
+    // PREVIOUS packet actually took, one 200ms cycle behind. At a steady
+    // 5Hz cadence this lag is invisible in practice (the real value barely
+    // changes packet to packet, since SF/BW/packet size never change
+    // mid-run) — worth knowing if this field and the current one being
+    // logged elsewhere (SD/serial) are ever compared side-by-side though.
     if (state == RADIOLIB_ERR_NONE) {
-        Serial.printf("  [LoRa] TX OK  %u bytes  RSSI:%.0f dBm\n",
-                      sizeof(pkt), radio.getRSSI());
+        uint32_t durationUs = loraTxDoneUs - loraTxStartUs;
+        pkt.airtime_ms_x10 = pktEncU16(durationUs / 1000.0f, PKT_SCALE_AIRTIME);
+        Serial.printf("  [LoRa] TX OK  %u bytes  RSSI:%.0f dBm  airtime=%.2fms (measured)\n",
+                      sizeof(pkt), radio.getRSSI(), durationUs / 1000.0f);
     } else {
         Serial.printf("  [LoRa] TX ERR %d\n", state);
     }
