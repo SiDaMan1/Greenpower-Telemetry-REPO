@@ -325,7 +325,39 @@
 // instance #1) via rtcWire below — this is a genuinely separate bus, not
 // a software/bit-banged one.
 #define RTC_SDA_PIN        1
-#define RTC_SCL_PIN        2
+#define RTC_SCL_PIN        2   // ⚠️ RTC currently DISABLED (initRtc() not called) — this pin is reused below as FEM_EN_PIN. See both comments before reusing this bus.
+
+// ⚠️ Heltec V4 antenna front-end enable — real bug found and fixed this
+// pass, reported as "-120dBm at only 15ft, is this normal?" (no). This
+// board routes its LoRa antenna through an external front-end module
+// (a GC1109 power-amp/LNA chip) sitting BETWEEN the SX1262 and the
+// antenna connector — separate hardware from the SX1262 itself, so
+// RadioLib (which only knows about the SX1262 chip) has no way to
+// control it. Without these two pins driven correctly, the FEM stays
+// powered down and the antenna path is effectively dead — packets barely
+// leak through and RSSI sits pinned near the noise floor, exactly
+// matching the reported symptom. Confirmed against TWO independent
+// sources (not just one forum post): a Reddit report of the identical
+// fix, and a real GitHub PR to the MeshCore project (which specifically
+// maintains Heltec-V4 hardware support) using the exact same two pins.
+//   FEM_EN_PIN  (a.k.a. CSD, "chip shutdown", active HIGH = enabled) —
+//     powers up the FEM itself; needed for BOTH transmit AND receive,
+//     since the whole antenna path (TX power-amp AND RX low-noise-amp)
+//     routes through this one chip. This is THE fix for the reported
+//     RSSI-near-noise-floor symptom.
+//   FEM_CPS_PIN (a.k.a. CPS, "current path select") — selects full-power
+//     PA mode for transmit vs. a lower-power bypass path. Matters most
+//     for TX; harmless to also assert on a receive-only board.
+// FEM_CPS_PIN (46) is one of the ESP32-S3's four hardware STRAPPING pins
+// (sampled at boot to select flash/console behavior) — but that sampling
+// only happens during the very early boot ROM, before this sketch's
+// setup() ever runs, so driving it as a normal output afterward is safe
+// UNLESS this sketch ever starts using esp_deep_sleep() (which re-runs
+// the same boot-time strapping sample on wake) — it doesn't today, this
+// being an always-on vehicle telemetry unit, not a sleep-cycling one.
+// Revisit this pin's handling if deep sleep is ever added later.
+#define FEM_EN_PIN         2   // CSD — same physical pin RTC_SCL_PIN used before the RTC was disabled above
+#define FEM_CPS_PIN       46   // CPS — strapping pin, see comment above
 
 // ADS1115 (Lonely Binary board) — I2C address, ADDR pin → GND = 0x48
 #define ADS_I2C_ADDR      0x48
@@ -1107,6 +1139,16 @@ void setup() {
         }
     }
 
+    // Heltec V4 antenna front-end enable — MUST happen before radio.begin()
+    // below, so the antenna path is actually live from the radio's very
+    // first transmit/receive attempt onward. See FEM_EN_PIN's own comment
+    // (near RTC_SDA_PIN above) for the full story and sourcing.
+    pinMode(FEM_EN_PIN, OUTPUT);
+    digitalWrite(FEM_EN_PIN, HIGH);   // CSD — power up the front-end module
+    pinMode(FEM_CPS_PIN, OUTPUT);
+    digitalWrite(FEM_CPS_PIN, HIGH);  // CPS — full-power PA mode for TX
+    Serial.println("[OK]   Heltec V4 antenna front-end enabled (FEM_EN/FEM_CPS)");
+
     // SX1262 LoRa radio
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
@@ -1142,11 +1184,29 @@ void setup() {
         Serial.printf("[OK]   SX1262  915 MHz  SF9  BW125  22dBm  implicit-hdr  preamble=%u\n", LORA_PREAMBLE_SYMBOLS);
     }
 
-    // RTC — separate I2C bus, see RTC_SDA_PIN's own comment for why. Runs
-    // before initSdCard() so the very first SD log rows already have a
-    // real timestamp instead of "NO_RTC". Non-fatal if missing: initRtc()
-    // itself warns and leaves rtcReady false, everything else keeps working.
-    initRtc();
+    // ⚠️ RTC temporarily DISABLED — not removed, just not called. Per
+    // explicit request: GPIO2 (RTC_SCL_PIN) is needed for the Heltec V4
+    // antenna front-end fix below (FEM_EN/CSD — see that section's own
+    // comment for the full story: a -120dBm reading at 15ft traced to
+    // this board's external antenna amplifier chip needing to be
+    // explicitly enabled, which RadioLib has no way to know about).
+    // Skipping initRtc() entirely means rtcWire.begin(RTC_SDA_PIN,
+    // RTC_SCL_PIN) never runs, so GPIO2 is never claimed by I2C — safe to
+    // reuse for FEM_EN without any pin conflict, and without needing to
+    // desolder/move the RTC's physical wiring at all: `rtcReady` simply
+    // stays false (its default), and getRtcTimestamp() already has a
+    // graceful built-in fallback for exactly this case (prints "NO_RTC"
+    // in the SD log's timestamp column, same as if the RTC chip were
+    // physically unplugged or dead) — no other code needed changing.
+    // Only effect: SD log rows lose real wall-clock timestamps until this
+    // is reconsidered (falls back to relative millis() timing instead) —
+    // the live LoRa/dashboard telemetry is completely unaffected either
+    // way, since epoch_time was already removed from the transmitted
+    // packet in an earlier pass (see this file's own CLAUDE.md).
+    // Re-enable by uncommenting the line below — but only once GPIO2 is
+    // free again (i.e. the antenna fix moves to a different enable pin,
+    // or is removed).
+    // initRtc();
 
     // SD card — separate SPI bus, see SD_*_PIN's own comment for why these
     // specific pins. Non-fatal if missing/failed: initSdCard() itself

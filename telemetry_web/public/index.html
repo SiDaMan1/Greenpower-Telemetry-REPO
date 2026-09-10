@@ -4629,8 +4629,7 @@ function signalScore(rssi, snr) {
   //
   // RSSI: -128dBm (this radio's real SF9/BW125 sensitivity floor,
   //       estimated — see below) -> 0
-  //       -70dBm  (as good as this actual hardware gets, from a REAL
-  //       close-range measurement)                                -> 10
+  //       0dBm    (as good as this actual hardware gets — see below)  -> 10
   // Derived from Semtech's own published SF7/BW125 spec (-123dBm) via the
   // standard LoRa link-budget relation (sensitivity = -174dBm/Hz thermal
   // floor + 10·log10(BW) + receiver noise figure + required SNR for the
@@ -4639,17 +4638,33 @@ function signalScore(rssi, snr) {
   // just the one calibration point this estimate is built from. Recompute
   // this again if SF or BW ever change: -174 + 10·log10(BW_Hz) + 7.53
   // (this radio's derived noise figure) + requiredSNR(SF).
-  // The -70dBm ceiling stays a real measurement (see below) — revisit if
-  // a stronger real reading ever shows up.
-  const rssiScore = clampToRange((rssi - -128) / (-70 - -128) * 10, 0, 10);
+  // Ceiling bumped -70dBm -> 0dBm after fixing a real hardware bug: this
+  // board (Heltec V4) routes its antenna through an external front-end
+  // amplifier chip that RadioLib doesn't know to enable — see
+  // greenpower_sender/CLAUDE.md's V4.14 entry. The old -70dBm ceiling was
+  // the best this hardware could do with that chip left OFF; once
+  // enabled, a real point-blank measurement read 0dBm — at or very near
+  // the practical ceiling of what an SX126x's RSSI reporting can even
+  // show (LoRa RSSI essentially never reads positive), so unlike the
+  // previous calibration this one isn't leaving deliberate headroom above
+  // the observed value — there likely isn't meaningfully more headroom to
+  // leave. Revisit only if a genuinely stronger real reading ever turns up.
+  const rssiScore = clampToRange((rssi - -128) / (0 - -128) * 10, 0, 10);
   // SNR: -12.5dB (SF9's REAL required-SNR floor per Semtech's spec) -> 0
-  //      15dB (very clean signal, well above the noise floor)      -> 10
+  //      3.5dB (as good as SNR actually gets on this real setup)    -> 10
   // Required SNR drops ~2.5dB per SF step (SF7≈-7.5, SF8≈-10, SF9≈-12.5,
-  // ... SF12≈-20) — if SF ever changes again, recompute this floor:
-  // -7.5 - 2.5×(newSF-7). The 15dB ceiling is unaffected by SF/BW —
-  // SX126x can report up to ~+19.5dB in ideal conditions, 15dB is a
-  // realistic "excellent" cutoff short of chasing that theoretical max.
-  const snrScore = clampToRange((snr - -12.5) / (15 - -12.5) * 10, 0, 10);
+  // ... SF12≈-20) — if SF ever changes again, recompute the FLOOR:
+  // -7.5 - 2.5×(newSF-7). The ceiling used to be a theoretical 15dB
+  // ("SX126x can report up to ~+19.5dB in ideal conditions") — replaced
+  // per explicit request/real observation: even right at point-blank
+  // range with the antenna-amp bug fixed (see the RSSI ceiling's own
+  // comment above), SNR topped out around 3.5dB on this actual setup —
+  // this vehicle's own electrical noise (motor, ESC controller) most
+  // likely keeps the real noise floor higher than a clean lab/theoretical
+  // environment would, so chasing the SX126x's theoretical best case
+  // was never going to reflect what this hardware can actually achieve
+  // in practice. Revisit only if a genuinely cleaner real reading turns up.
+  const snrScore = clampToRange((snr - -12.5) / (3.5 - -12.5) * 10, 0, 10);
   return Math.round(Math.min(rssiScore, snrScore));
 }
 // Same score bands drive both the header badge's color class and the
@@ -4664,29 +4679,27 @@ function signalScoreColorVar(score) {
   return cls === 'sig-good' ? 'var(--accent3)' : cls === 'sig-warn' ? 'var(--warn)' : 'var(--danger)';
 }
 // The SIG number is NOT always a fresh signalScore(rssi,snr) computation —
-// three distinct states, per explicit request:
+// two states now, per explicit follow-up request (dropping the earlier
+// "forced 1 on packet loss" rule, keeping the icon):
 //   1. FORCED 0 — no genuinely NEW packet (new seq) in over
 //      SIGNAL_ZERO_AFTER_MS (1000ms). This is deliberately a SEPARATE,
 //      stricter timer from server.js's own STALE_MS (2000ms, what the
 //      LIVE/OFFLINE pill uses) — the two can legitimately disagree for up
 //      to a second (still "LIVE" by the pill's looser threshold, already
 //      "0" on the SIG badge) and that's intentional, not a bug to unify.
-//   2. FORCED 1 + packet-loss icon shown — a NEW packet just arrived (so
-//      the connection is genuinely still alive, case 1 doesn't apply),
-//      but a gap was detected in the last PACKET_LOSS_HOLD_MS (3000ms) —
-//      poll()'s seq-dedupe block is what actually detects the gap and
-//      sets packetLossUntil; this function only reads that state. A weak
-//      link that's still delivering *some* packets reads as "1", not
-//      whatever RSSI/SNR happen to say — dropping packets at all is worse
-//      news than any non-zero RSSI/SNR combination would suggest.
-//   3. Normal — neither of the above — a real signalScore(rssi,snr).
+//   2. Normal — a real signalScore(rssi,snr), even while packets are being
+//      dropped (droppingPackets, below). Per explicit request, the number
+//      no longer gets forced to 1 just because a gap was detected — the
+//      packet-loss icon (setClass calls below) is what now carries that
+//      information on its own, so the badge's actual number always
+//      reflects real link quality, and the icon separately flags "and
+//      also, packets are currently being dropped."
 function updateSignalBadge(d) {
   const now = Date.now();
   const noRecentPacket = lastPacketAt === 0 || (now - lastPacketAt) > SIGNAL_ZERO_AFTER_MS;
   const droppingPackets = !noRecentPacket && now < packetLossUntil;
   let score;
   if (noRecentPacket) score = 0;
-  else if (droppingPackets) score = 1;
   else score = d ? signalScore(d.rssi, d.snr) : 0;
 
   const el = document.getElementById('signal-badge');

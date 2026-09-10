@@ -69,6 +69,16 @@
 #define LORA_MISO         11
 #define LORA_MOSI         10
 
+// ⚠️ Heltec V4 antenna front-end enable — see greenpower_sender.ino's
+// matching FEM_EN_PIN comment for the full story (real bug found this
+// pass: "-120dBm at only 15ft, is this normal?" — no, this board routes
+// its antenna through an external GC1109 front-end chip RadioLib has no
+// way to know about, and without these two pins enabled it stays
+// powered down). No pin conflict on this board — unlike the sender,
+// nothing here was already using GPIO2/46 for anything else.
+#define FEM_EN_PIN         2   // CSD — powers up the front-end; this is what actually fixes RX sensitivity (receive path runs through the same chip as TX)
+#define FEM_CPS_PIN       46   // CPS — full-power PA mode; matters most for TX, harmless to also set here since this board never transmits LoRa
+
 
 // ════════════════════════════════════════════════════════════════════
 //  PERIPHERAL OBJECTS
@@ -148,6 +158,15 @@ void setup() {
     while (!Serial && millis() - t0 < 3000) delay(10);  // wait up to 3s for serial monitor
     Serial.println("\n[BOOT] Greenpower Receiver V1");
     Serial.println(DEVICE_ID);   // one-shot identity beacon for host tooling
+
+    // Heltec V4 antenna front-end enable — MUST happen before radio.begin()
+    // below, so the antenna path is live from the radio's very first
+    // receive attempt onward. See FEM_EN_PIN's own comment above.
+    pinMode(FEM_EN_PIN, OUTPUT);
+    digitalWrite(FEM_EN_PIN, HIGH);   // CSD — power up the front-end module
+    pinMode(FEM_CPS_PIN, OUTPUT);
+    digitalWrite(FEM_CPS_PIN, HIGH);  // CPS — full-power PA mode
+    Serial.println("[OK]   Heltec V4 antenna front-end enabled (FEM_EN/FEM_CPS)");
 
     // SX1262 LoRa radio
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
