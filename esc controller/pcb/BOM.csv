@@ -1,0 +1,11 @@
+Ref,Value,Footprint,Qty,Description
+U1,1x15 female header 2.54mm,esc:ESP32_DEVKITV1_30P_SOCKET,2,Socket strips for ESP32 DevKit V1 30-pin (cut from 40-pin strip)
+R1,4k7,esc:Resistor_THT_Axial_P2.54mm_Vertical,1,Pull-down from ESC signal to GND - MOUNTED VERTICALLY (bend one lead back along the body)
+H1-H4,M3,esc:MountingHole_3.2mm_M3,4,Mounting holes
+J1,OLED holes,esc:OLED_SSD1306_096_FLUSH_1x4,1,4 plated holes 2.54mm - SSD1306 solders flush - GND VCC SCL SDA
+J2,POT pads,esc:SOLDERPAD_POT_3P,1,Solder pads 1x2mm: 3V3 / WIPER / GND
+J3,ESC OUT pads,esc:SOLDERPAD_ESC_OUT_2P,1,Solder pads 1x2mm: SIG / GND
+J4,MODE SW pads,esc:SOLDERPAD_MODE_SW_3P,1,Solder pads 1x2mm: ECO / COM / SPORT - one 3-position switch, common to COM
+J5,TRIGGER pads,esc:SOLDERPAD_TRIGGER_2P,1,Solder pads 1x2mm: SW / GND
+J6,UART OUT pads,esc:SOLDERPAD_UART_OUT_3P,1,Solder pads 1x2mm: TX / RX / GND
+J7,5V IN pads,esc:SOLDERPAD_5V_IN_2P,1,Solder pads 1x2mm: 5V / GND - OPTIONAL do not fit for USB power
