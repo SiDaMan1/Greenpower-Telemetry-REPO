@@ -86,7 +86,7 @@
     --mrpm:#c4b5fd; --wrpm:#a78bfa;
     --pitch:#2dd4bf;
     --accel:#fda4af; --lateral:#fca5a5; --vertical:#fdba74;
-    --rssi:#cbd5e1; --snr:#94a3b8; --gps:#cbd5e1; --airtime:#7dd3fc;
+    --rssi:#cbd5e1; --snr:#94a3b8; --gps:#cbd5e1;
     --escset:#fde047; --esclive:#fcd34d; --escramp:#fbbf24; --escmode:#fef08a;
     --text:#e7ebf3; --muted:#828a9c; --warn:#f59e0b;
     --radius:14px; --radius-sm:10px;
@@ -172,20 +172,24 @@
   #conn-dot.stale { background:var(--warn); animation:pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
   #server-time { font-family:'Share Tech Mono',monospace; font-size:12px; color:var(--muted); }
-  #age-badge, #signal-badge, #airtime-badge {
+  #age-badge, #signal-badge {
     font-family:'Share Tech Mono',monospace; font-size:10px; padding:4px 9px;
     border-radius:999px; border:1px solid var(--border); color:var(--muted);
     white-space:nowrap; background:rgba(255,255,255,.02);
   }
-  /* airtime-badge's color is fixed (--airtime), not score-banded like
-     signal-badge — a real, measured on-air time doesn't have a good/bad
-     judgment the way link quality does, it's just informational. */
-  #airtime-badge { color:var(--airtime); border-color:var(--airtime); }
   /* signal-badge's color rides on top of the shared badge look above —
      see updateSignalBadge()'s own comment for the 0-10 score/color bands. */
   #signal-badge.sig-good { color:var(--accent3); border-color:var(--accent3); }
   #signal-badge.sig-warn { color:var(--warn); border-color:var(--warn); }
   #signal-badge.sig-bad  { color:var(--danger); border-color:var(--danger); }
+  /* Packet-loss warning icon — shown next to the SIG number (both the
+     header badge and the Link tab's mobile row) whenever a seq gap was
+     detected recently (see PACKET_LOSS_HOLD_MS/updateSignalBadge()).
+     display:none by default, .show turns it on — same pattern as every
+     other toggle-visibility element in this file (.install-fab etc). */
+  .packet-loss-icon { display:none; color:var(--danger); flex-shrink:0; }
+  .packet-loss-icon.show { display:inline-flex; }
+  .packet-loss-icon .icon { width:13px; height:13px; }
   /* Signal-strength meter — a small gradient bar reused in two places
      (desktop header, mobile Link tab — see updateSignalMeterEl()).
      The fill's gradient is pinned to a FIXED background-size matching the
@@ -776,10 +780,14 @@
        a meter alongside the shortened title/badges (see the whole "make
        it show delay on mobile" thread earlier in this file's history for
        just how tight that space already is); the same meter appears on
-       the Link tab instead, see .link-signal-row below. airtime-badge is
-       desktop-only for the identical reason — the Link page (both
-       platforms) already carries this value full-time. */
-    #signal-meter, #airtime-badge { display:none; }
+       the Link tab instead, see .link-signal-row below. */
+    #signal-meter { display:none; }
+    /* #packet-loss-icon.show (ID+class) beats the base .packet-loss-icon.show
+       (class-only) rule by specificity regardless of source order — needed
+       since JS toggles the SAME .show class on both the header and mobile
+       instances; this is what keeps the header one off on mobile even
+       while packet loss is actively being shown on the Link tab instead. */
+    #packet-loss-icon.show { display:none; }
     .link-signal-row { display:flex; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
@@ -1541,13 +1549,10 @@
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="signal-badge" title="LoRa link quality, 0 (no signal) to 10 (best this link can read) — derived from RSSI+SNR, see updateSignalBadge()">SIG --/10</span>
+      <span class="packet-loss-icon" id="packet-loss-icon" title="Dropping packets — a gap in the sequence number was detected recently. The link is still alive (new packets are still arriving), just not lossless right now."><span class="icon" data-icon="alert-triangle"></span></span>
       <div class="sig-meter" id="signal-meter" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the badge next to it. Desktop only; see the Link tab on mobile.">
         <div class="sig-meter-fill" id="signal-meter-fill"></div>
       </div>
-      <!-- Desktop only, per explicit request — same "no room on a phone
-           header" reasoning as signal-meter above; the Link page (both
-           platforms) is still where this value lives full-time. -->
-      <span id="airtime-badge" title="Real, hardware-measured LoRa time-on-air of the previous transmission — see the Link page for the full breakdown. Desktop only.">TX --ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
       <span id="server-time">--:--:--</span>
     </div>
@@ -1986,6 +1991,7 @@
           <div class="sig-meter-fill" id="signal-meter-fill-mobile"></div>
         </div>
         <span class="link-signal-value" id="signal-meter-value-mobile">--/10</span>
+        <span class="packet-loss-icon" id="packet-loss-icon-mobile" title="Dropping packets — a gap in the sequence number was detected recently. The link is still alive (new packets are still arriving), just not lossless right now."><span class="icon" data-icon="alert-triangle"></span></span>
       </div>
       <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr">
@@ -1996,29 +2002,13 @@
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-rssi"></canvas></div></div>
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-snr"></canvas></div></div>
       </div>
-      <div class="big-row" style="grid-template-columns:1fr 1fr; margin-top:12px">
-        <!-- Unit text kept terse ("score", not "0 = none, 10 = best") —
-             matches every other card's one-word-unit style, and a longer
-             string here forced this mobile tile wider than its 1fr grid
-             share (fixed 15px .dedicated-unit font, no room to wrap at
-             the compact aspect-ratio:8/5 tile size — a real overflow bug
-             caught via direct measurement, not just a style preference).
-             Full explanation lives in the tooltip instead. -->
-        <div class="dedicated-big-card" title="Derived from RSSI+SNR — 0 means no signal (offline), 10 means as strong/clean a link as this radio can plausibly read. See signalScore() in index.html for the exact scoring.">
-          <div><div class="dedicated-label">Signal</div><div class="dedicated-value" id="big-sig-score">--</div><div class="dedicated-unit">score</div></div>
-        </div>
-        <!-- REAL, hardware-measured airtime — see airtime_ms's own METRICS
-             comment and greenpower_sender.ino's loRaTx()/checkLoraTxComplete()
-             for how it's actually timed. This value describes the PREVIOUS
-             transmission, not this packet's own — a one-packet lag that's
-             invisible in practice at a steady 5Hz cadence. Unit text kept
-             to "ms" alone for the same mobile-overflow reason as Signal's
-             card above — full detail is in the tooltip. -->
-        <div class="dedicated-big-card" title="Real, hardware-measured LoRa time-on-air, timestamped by the sender's own TX-complete interrupt — not a computed formula estimate. Describes the PREVIOUS transmission (one packet's lag), since a transmission can't carry a measurement of itself.">
-          <div><div class="dedicated-label">Airtime</div><div class="dedicated-value" id="big-airtime_ms" style="color:var(--airtime)">--</div><div class="dedicated-unit">ms</div></div>
-        </div>
+      <!-- A lone card, not wrapped in .big-row — same pattern this file
+           already uses for single-card dedicated sections (Speed,
+           Temperature). Was paired with an Airtime card here; that field
+           was removed entirely per explicit request, leaving this alone. -->
+      <div class="dedicated-big-card" style="margin-top:12px" title="Derived from RSSI+SNR — 0 means no signal (offline), 10 means as strong/clean a link as this radio can plausibly read. See signalScore() in index.html for the exact scoring.">
+        <div><div class="dedicated-label">Signal</div><div class="dedicated-value" id="big-sig-score">--</div><div class="dedicated-unit">score</div></div>
       </div>
-      <div class="chart-card" style="margin-top:12px"><div class="chart-canvas-wrap"><canvas id="chart-airtime_ms"></canvas></div></div>
     </div>
 
     <div id="page-multi" class="page">
@@ -2208,15 +2198,6 @@ const METRICS = {
   vertical_g: {label:'Vertical',   unit:'G',   color:'var(--vertical)',dec:3, range:[-2,4],     multiDefault:false},
   rssi:       {label:'RSSI',       unit:'dBm', color:'var(--rssi)',    dec:0, range:[-120,-30], multiDefault:false},
   snr:        {label:'SNR',        unit:'dB',  color:'var(--snr)',     dec:1, range:[-20,10],   multiDefault:false},
-  // Real, hardware-measured LoRa time-on-air of the PREVIOUS transmission
-  // (see greenpower_receiver's JSON "airtime_ms" — one packet's worth of
-  // lag, not this packet's own airtime; see config.h's airtime_ms_x10
-  // comment for why). NOT a computed Semtech-formula estimate.
-  // range bumped 50→100 when the firmware moved SF7/BW500 (~21ms typical)
-  // back to SF7/BW125 (~85ms typical) for range — just a chart y-axis
-  // seeding hint (see the "Chart axes are pre-filled" rule in CLAUDE.md),
-  // not a hard clamp; real values outside it still display fine either way.
-  airtime_ms: {label:'Airtime',    unit:'ms',  color:'var(--airtime)', dec:1, range:[0,100],     multiDefault:false},
   esc_setpoint_pct: {label:'ESC Setpoint', unit:'%', color:'var(--escset)',  dec:1, range:[0,100], multiDefault:false},
   esc_live_pct:     {label:'ESC Live',     unit:'%', color:'var(--esclive)', dec:1, range:[0,100], multiDefault:true},
   esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},
@@ -2342,6 +2323,7 @@ const ICONS = {
   check:        `<svg ${ICON_ATTRS}><polyline points="20 6 9 17 4 12"/></svg>`,
   'chevron-up':   `<svg ${ICON_ATTRS}><polyline points="18 15 12 9 6 15"/></svg>`,
   'chevron-down': `<svg ${ICON_ATTRS}><polyline points="6 9 12 15 18 9"/></svg>`,
+  'alert-triangle': `<svg ${ICON_ATTRS}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
 };
 function applyIcons(root=document) {
   root.querySelectorAll('[data-icon]').forEach(el => {
@@ -4274,6 +4256,15 @@ let lastSeq = null;
 const rawLines = [];
 const MAX_RAW_LINES = 80;
 
+// ── SIGNAL BADGE: packet-loss + connection-liveness state ────────────────
+// See updateSignalBadge()'s own comment for the full 0/1/normal-score
+// state machine these three feed. All three are updated from poll()'s
+// existing seq-dedupe block — no separate polling path.
+let lastPacketAt = 0;       // Date.now() of the last genuinely NEW packet (new seq) — 0 means "never seen one"
+let packetLossUntil = 0;    // Date.now() timestamp; while now < this, a recent seq gap is still being shown
+const PACKET_LOSS_HOLD_MS = 3000;  // how long the dropped-packet icon/forced-1 state lingers after the last detected gap — long enough to actually be seen, short enough to clear once the link's genuinely clean again
+const SIGNAL_ZERO_AFTER_MS = 1000; // per explicit request — the badge only forces to 0 after this long with NO new packet at all, not on the existing 2000ms STALE_MS the LIVE/OFFLINE pill uses
+
 function gpsValid(flags) { return !!(flags & 0x01); }
 function imuValid(flags) { return !!(flags & 0x02); }
 function escValid(flags) { return !!(flags & 0x08); }   // PKT_FLAG_ESC_VALID — bit 2 (0x04) is current-sensor valid, not ESC
@@ -4316,13 +4307,6 @@ function applyState(d, online) {
       setStyle('big-sig-score', 'color', 'var(--muted)');
     }
     setValueText('ov-seq', d.seq!=null ? d.seq : 0);
-
-    // Header badge — desktop only (see #airtime-badge's own CSS rule),
-    // same real measured value the Link page's big-airtime_ms card shows
-    // (that one's driven by the generic METRICS loop above; this is a
-    // second, hand-written target for the same field, same reasoning as
-    // ov-link/big-sig-score just above).
-    setText('airtime-badge', d.airtime_ms!=null ? `TX ${fv(d.airtime_ms,1)}ms` : 'TX --ms');
 
     // ESC mode/state are strings, not chartable numbers — handled separately
     // from the METRICS-driven loop above, same reason GPS fix gets special
@@ -4508,28 +4492,35 @@ function pushRawLine(d) {
 function clampToRange(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function signalScore(rssi, snr) {
   if (rssi == null || snr == null) return 0;
-  // RSSI: -110dBm (near this radio's SF7/BW500 sensitivity floor) -> 0
-  //       -70dBm  (as good as this actual hardware gets)          -> 10
-  // The -70dBm ceiling is calibrated from a REAL measurement, not a
-  // generic guess — the original -50dBm ceiling was theoretical and left
-  // the score stuck around 5-6/10 even with the two radios placed right
-  // next to each other (confirmed: -76dBm/+12.8dB measured that way
-  // scored 5.7/10 under the old -50dBm ceiling). -70dBm gives that exact
-  // real reading a little headroom below a true 10/10 rather than pinning
-  // the score at 10 for the one data point it was calibrated against —
-  // revisit this ceiling if a stronger real reading ever shows up (e.g.
-  // at a few feet of clear-line-of-sight separation rather than the
-  // antennas touching, which can actually read WORSE due to near-field
-  // coupling/front-end desense between two closely-packed antennas).
-  const rssiScore = clampToRange((rssi - -110) / (-70 - -110) * 10, 0, 10);
-  // SNR: -20dB (borderline demodulation, packet barely decodable) -> 0
+  // RSSI: -126dBm (this radio's real SF7/BW62.5 sensitivity floor,
+  //       estimated — see below) -> 0
+  //       -70dBm  (as good as this actual hardware gets, from a REAL
+  //       close-range measurement)                                -> 10
+  // The floor was a generic -110dBm guess until this pass — replaced with
+  // an estimate of the ACTUAL SX1262 sensitivity floor at this radio's
+  // current settings, derived from Semtech's own published SF7/BW125
+  // spec (-123dBm) via the standard LoRa link-budget relation
+  // (sensitivity = -174dBm/Hz thermal floor + 10·log10(BW) + receiver
+  // noise figure + required SNR for the spreading factor) — NOT a
+  // directly-published number for BW62.5 specifically, since Semtech
+  // doesn't tabulate every SF/BW combination, just the one calibration
+  // point this estimate is built from. Recompute this if SF or BW ever
+  // change again (BW125's real floor is ~-123dBm, BW500's is ~-117dBm).
+  // The -70dBm ceiling stays a real measurement (see below) — revisit if
+  // a stronger real reading ever shows up.
+  const rssiScore = clampToRange((rssi - -126) / (-70 - -126) * 10, 0, 10);
+  // SNR: -7.5dB (SF7's REAL required-SNR floor per Semtech's spec — not
+  //       a generic guess like the -20dB this used to be) -> 0
   //       15dB (very clean signal, well above the noise floor)    -> 10
-  // Raised from a 10dB ceiling — that same real close-range measurement
-  // (+12.8dB) already exceeded it, meaning SNR was never actually the
-  // bottleneck; RSSI's ceiling was. SX126x can report up to ~+19.5dB SNR
-  // in ideal conditions, but 15dB is a more realistic "excellent" cutoff
-  // for real-world use than chasing that theoretical max.
-  const snrScore = clampToRange((snr - -20) / (15 - -20) * 10, 0, 10);
+  // The -20dB floor this had before was a guess that turned out to be
+  // ~12.5dB too pessimistic — SF7 actually starts failing around -7.5dB,
+  // not -20dB (that's closer to SF12's real floor). Required SNR drops
+  // ~2.5dB per SF step (SF8≈-10, SF9≈-12.5, ... SF12≈-20) — if SF ever
+  // changes, recompute this floor: -7.5 - 2.5×(newSF-7). The 15dB
+  // ceiling is unaffected by SF/BW — SX126x can report up to ~+19.5dB in
+  // ideal conditions, 15dB is a realistic "excellent" cutoff short of
+  // chasing that theoretical max.
+  const snrScore = clampToRange((snr - -7.5) / (15 - -7.5) * 10, 0, 10);
   return Math.round(Math.min(rssiScore, snrScore));
 }
 // Same score bands drive both the header badge's color class and the
@@ -4543,15 +4534,41 @@ function signalScoreColorVar(score) {
   const cls = signalScoreClass(score);
   return cls === 'sig-good' ? 'var(--accent3)' : cls === 'sig-warn' ? 'var(--warn)' : 'var(--danger)';
 }
+// The SIG number is NOT always a fresh signalScore(rssi,snr) computation —
+// three distinct states, per explicit request:
+//   1. FORCED 0 — no genuinely NEW packet (new seq) in over
+//      SIGNAL_ZERO_AFTER_MS (1000ms). This is deliberately a SEPARATE,
+//      stricter timer from server.js's own STALE_MS (2000ms, what the
+//      LIVE/OFFLINE pill uses) — the two can legitimately disagree for up
+//      to a second (still "LIVE" by the pill's looser threshold, already
+//      "0" on the SIG badge) and that's intentional, not a bug to unify.
+//   2. FORCED 1 + packet-loss icon shown — a NEW packet just arrived (so
+//      the connection is genuinely still alive, case 1 doesn't apply),
+//      but a gap was detected in the last PACKET_LOSS_HOLD_MS (3000ms) —
+//      poll()'s seq-dedupe block is what actually detects the gap and
+//      sets packetLossUntil; this function only reads that state. A weak
+//      link that's still delivering *some* packets reads as "1", not
+//      whatever RSSI/SNR happen to say — dropping packets at all is worse
+//      news than any non-zero RSSI/SNR combination would suggest.
+//   3. Normal — neither of the above — a real signalScore(rssi,snr).
 function updateSignalBadge(d) {
-  const score = d ? signalScore(d.rssi, d.snr) : 0;
+  const now = Date.now();
+  const noRecentPacket = lastPacketAt === 0 || (now - lastPacketAt) > SIGNAL_ZERO_AFTER_MS;
+  const droppingPackets = !noRecentPacket && now < packetLossUntil;
+  let score;
+  if (noRecentPacket) score = 0;
+  else if (droppingPackets) score = 1;
+  else score = d ? signalScore(d.rssi, d.snr) : 0;
+
   const el = document.getElementById('signal-badge');
   if (el) {
     el.textContent = `SIG ${score}/10`;
     el.classList.remove('sig-good','sig-warn','sig-bad');
     el.classList.add(signalScoreClass(score));
   }
-  // Desktop header meter + mobile Efficiency-tab meter — same score, same
+  setClass('packet-loss-icon', 'show', droppingPackets);
+  setClass('packet-loss-icon-mobile', 'show', droppingPackets);
+  // Desktop header meter + mobile Link-tab meter — same score, same
   // update, two DOM targets (one is always display:none depending on
   // viewport width, see the shared .sig-meter/.link-signal-row CSS).
   updateSignalMeterEl('signal-meter', 'signal-meter-fill', null, score);
@@ -4562,7 +4579,7 @@ function updateSignalBadge(d) {
 // score) and its sig-good/warn/bad glow class, shared by every .sig-meter
 // instance on the page. valueId is optional — the header meter has no
 // separate text readout (the badge right next to it already shows one),
-// the Efficiency-tab meter does.
+// the Link-tab meter does.
 function updateSignalMeterEl(meterId, fillId, valueId, score) {
   const meter = document.getElementById(meterId);
   const fill = document.getElementById(fillId);
@@ -4580,10 +4597,15 @@ function updateConnStatus(online, ageMs, data) {
   setText('conn-text', online ? 'LIVE' : 'OFFLINE');
   if (ageMs != null) setText('age-badge', online ? `${ageMs}ms ago` : 'NO SIGNAL');
   // signal-badge is owned here too, same reasoning as age-badge (see
-  // applyState's own comment) — a single place that knows both "are we
-  // online" and "what's the latest packet" so the two badges can't drift
-  // out of sync with each other.
-  updateSignalBadge(online ? data : null);
+  // applyState's own comment). Passed `data` directly now, NOT gated on
+  // `online` the way this used to be — updateSignalBadge() has its own,
+  // stricter (1000ms vs STALE_MS's 2000ms) liveness check now via
+  // lastPacketAt, so double-gating here would just be redundant; when the
+  // server-side `online` flag does go false, lastPacketAt is already well
+  // past its own threshold too (server staleness always implies client
+  // staleness here), so the two checks can't actually disagree in a way
+  // that matters.
+  updateSignalBadge(data);
 }
 
 setInterval(() => setText('server-time', new Date().toLocaleTimeString()), 1000);
@@ -4602,6 +4624,17 @@ async function poll() {
     // (dedupe by seq) — otherwise polling faster than data arrives would
     // plot the same value repeatedly as if it were fresh samples.
     if (data.seq !== undefined && data.seq !== lastSeq) {
+      // Packet-loss / connection-liveness tracking for the SIG badge — see
+      // updateSignalBadge()'s own comment for the full state machine this
+      // feeds. A gap (new seq more than +1 past the last one) means one or
+      // more packets were dropped since then, but the link is still alive
+      // — a genuinely NEW seq just arrived — which is exactly the
+      // "dropping packets but keeping a connection" case that forces the
+      // badge to 1/10 + the warning icon, distinct from a real disconnect.
+      if (lastSeq !== null && data.seq > lastSeq + 1) {
+        packetLossUntil = Date.now() + PACKET_LOSS_HOLD_MS;
+      }
+      lastPacketAt = Date.now();
       lastSeq = data.seq;
       pushHistory(data);
       applyHistory();
@@ -4721,6 +4754,14 @@ function genTestPacket() {
 
 function testModeTick() {
   const d = genTestPacket();
+  // Mirrors poll()'s own lastPacketAt bookkeeping — Test Mode has its own
+  // separate packet-injection path (doesn't go through poll()'s seq-dedupe
+  // block at all), and updateSignalBadge()'s liveness check needs this
+  // updated every tick or the SIG badge would incorrectly force to 0 the
+  // entire time Test Mode is on. genTestPacket()'s testSeq always
+  // increments by exactly 1, so there's no gap to simulate here — Test
+  // Mode intentionally doesn't exercise the packet-loss/icon path.
+  lastPacketAt = Date.now();
   updateConnStatus(true, 0, d);
   applyState(d, true);
   pushHistory(d);

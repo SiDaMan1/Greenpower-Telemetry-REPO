@@ -9,25 +9,38 @@
 //  directly, or have another program parse it off the serial port.
 //
 //  LoRa RX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Same RF settings as the sender (915 MHz, SF7, BW125, sync
+//           Same RF settings as the sender (915 MHz, SF7, BW62.5, sync
 //           0xF3) — see config.h, which must stay in sync with the
 //           sender's copy. History: latency was prioritized over range
-//           first (SF7 — lowest value proven safe on this exact hardware,
-//           SF10/SF12 both hung this board's radio.begin() at BW125, see
-//           CLAUDE.md's ⚠️ rules — + BW500, the explicitly authorized
-//           range-for-latency trade). Packet was then compressed
-//           73→42→44 bytes (fixed-point instead of float, implicit header,
-//           trimmed preamble, then a real measured-airtime field added
-//           back — see config.h), which freed up enough of the 200ms
-//           update budget that BW went back DOWN to 125 for real range —
-//           per a direct follow-up request, using the slack the
-//           compression work created rather than accepting either less
-//           range or a slower update rate. SF stayed at 7 throughout —
-//           BW125 is this project's ORIGINAL setting, not a new gamble.
-//           ~85ms time-on-air per packet now — a real, hardware-measured
-//           value (see airtime_ms_x10 in config.h), not just a computed
-//           estimate — still comfortably under the 200ms update interval,
-//           down from the ~6.9s at the SF12/BW62.5 range attempt.
+//           first (SF7 — lowest value proven safe on this exact hardware;
+//           SF10/SF12 APPEARED to hang this board's radio.begin() at
+//           BW125 at the time, but that was later confirmed by the user
+//           to be a flashing mistake, not a real SF incompatibility —
+//           see CLAUDE.md's ✅ CORRECTION note, higher SF is not actually
+//           known-risky — + BW500, the explicitly authorized range-for-
+//           latency trade at the time). Packet was then compressed
+//           73→42 bytes (fixed-point instead of float, implicit header,
+//           trimmed preamble — see config.h; a real measured-airtime
+//           field was added and then removed again per explicit request,
+//           net zero change to packet size), which freed up enough of
+//           the 200ms update budget that bandwidth went back down twice
+//           more for range: 500→125→62.5, per two direct follow-up
+//           requests ("max range without sacrificing an update every
+//           200ms"), spending the slack the compression work created
+//           instead of accepting either less range or a slower update
+//           rate. SF stayed at 7 throughout this whole bandwidth-only
+//           path — not because higher SF is risky (it isn't, per the
+//           correction above), just because a bandwidth-only step was
+//           simpler to reason about and this exact SF7/BW62.5
+//           combination costs LESS airtime than the SF12/BW62.5 range
+//           attempt further below ever did.
+//           ~160ms computed time-on-air per packet now (Semtech-formula
+//           estimate — this project no longer measures it directly, see
+//           the ⚠️ SEVENTH pass note in greenpower_sender.ino), still
+//           under the 200ms update interval (~40ms margin, the practical
+//           ceiling for a bandwidth-only push at SF7 within that
+//           budget), down from the ~6.9s at the SF12/BW62.5 range
+//           attempt.
 //
 //  Serial protocol for downstream tooling (e.g. receiver_agent):
 //    • Boot prints one line containing DEVICE_ID once — lets a host script
@@ -143,7 +156,7 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        125.0,                // bandwidth kHz — back down from 500 for RANGE (narrower bandwidth = better receiver sensitivity); MUST match the sender's copy exactly or packets won't decode — see this file's own header comment for the full history
+        62.5,                 // bandwidth kHz — pushed down again from 125 for MAX range within the 200ms budget; MUST match the sender's copy exactly or packets won't decode — see this file's own header comment for the full history
         7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
@@ -172,7 +185,7 @@ void setup() {
             Serial.printf("[WARN] startReceive() failed  code=%d\n", rxState);
         } else {
             loraReady = true;
-            Serial.printf("[OK]   SX1262  915 MHz  SF7  BW125  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
+            Serial.printf("[OK]   SX1262  915 MHz  SF7  BW62.5  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
         }
     }
 
@@ -231,11 +244,6 @@ void loop() {
         float verticalG = pkt.vertical_g_x1000 / PKT_SCALE_G;
         float wheelRpm  = pkt.wheel_rpm_x10   / PKT_SCALE_WHEEL_RPM;
         float hdop = (pkt.hdop_x10 == PKT_HDOP_NO_FIX) ? 99.9f : (pkt.hdop_x10 / 10.0f);
-        // REAL, measured airtime (not a computed estimate) of the PREVIOUS
-        // transmission — see airtime_ms_x10's own comment in config.h and
-        // loRaTx()/checkLoraTxComplete() in greenpower_sender.ino for why
-        // it's one packet behind, not the packet actually carrying it.
-        float airtimeMs = pkt.airtime_ms_x10 / PKT_SCALE_AIRTIME;
 
         // Power
         Serial.printf("  Motor Volt: %.2f V\n",  motorVolt);
@@ -248,9 +256,6 @@ void loop() {
 
         // Temperature
         Serial.printf("  Temp      : %.1f °F\n", tempF);
-
-        // Link — airtime is the PREVIOUS transmission's, see airtimeMs's own comment above
-        Serial.printf("  Airtime   : %.1f ms (measured, previous TX)\n", airtimeMs);
 
         // GPS
         Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
@@ -299,8 +304,7 @@ void loop() {
             "\"accel_g\":%.3f,\"lateral_g\":%.3f,\"vertical_g\":%.3f,"
             "\"motor_rpm\":%u,\"wheel_rpm\":%.1f,"
             "\"esc_valid\":%s,\"esc_mode\":\"%s\",\"esc_state\":\"%s\","
-            "\"esc_setpoint_pct\":%u,\"esc_live_pct\":%u,\"esc_ramp_pct\":%u,"
-            "\"airtime_ms\":%.1f"
+            "\"esc_setpoint_pct\":%u,\"esc_live_pct\":%u,\"esc_ramp_pct\":%u"
             "}",
             (unsigned long)rxCount, radio.getRSSI(), radio.getSNR(), pkt.flags,
             (unsigned long)pkt.epoch_time, tsBuf,
@@ -312,8 +316,7 @@ void loop() {
             pkt.motor_rpm, wheelRpm,
             (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",
             escModeToStr(pkt.esc_mode_code), escStateToStr(pkt.esc_state_code),
-            pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct,
-            airtimeMs
+            pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
         );
         Serial.println(json);
 

@@ -197,7 +197,6 @@ const CSV_COLUMNS = [
     'pitch_deg', 'accel_g', 'lateral_g', 'vertical_g',
     'motor_rpm', 'wheel_rpm',
     'esc_valid', 'esc_mode', 'esc_state', 'esc_setpoint_pct', 'esc_live_pct', 'esc_ramp_pct',
-    'airtime_ms',
 ];
 
 function csvEscape(val) {

@@ -49,7 +49,7 @@
 
 // ════════════════════════════════════════════════════════════════════
 //  SHARED TELEMETRY PACKET  (binary, sender → receiver over LoRa)
-//  Both sides must include this header — 44 bytes, no padding.
+//  Both sides must include this header — 42 bytes, no padding.
 // ════════════════════════════════════════════════════════════════════
 
 
@@ -102,7 +102,6 @@
 #define PKT_SCALE_ANGLE     100.0f    // pitch_deg_x100:    0.01°    res, ±327.67° range
 #define PKT_SCALE_G         1000.0f   // *_g_x1000:         0.001 g  res, ±32.767 g range
 #define PKT_SCALE_WHEEL_RPM 10.0f     // wheel_rpm_x10:     0.1 rpm  res, 0-6553.5 rpm range
-#define PKT_SCALE_AIRTIME   10.0f     // airtime_ms_x10:    0.1 ms   res, 0-6553.5 ms range
 
 // Sentinel for "sensor disconnected" on temp_f_x10 — mirrors PKT_HDOP_NO_FIX
 // above; an int16 has no NaN, so this stands in for the old isnan(float) check.
@@ -157,19 +156,11 @@ typedef struct __attribute__((packed)) {
     uint8_t  esc_setpoint_pct;   // pot target, from ESC controller — whole %, see pktEncPct()
     uint8_t  esc_live_pct;       // live output %, from ESC controller
     uint8_t  esc_ramp_pct;       // ramp/re-engage tracker %, from ESC controller
-    uint16_t airtime_ms_x10;     // REAL, measured LoRa time-on-air of the PREVIOUS transmission
-                                  // (one packet's worth of lag — see loRaTx()/checkLoraTxComplete()
-                                  // in greenpower_sender.ino for how it's actually timed and why it
-                                  // can't describe the packet carrying it). NOT the same thing as a
-                                  // computed Semtech-formula estimate — this is real hardware timing.
 } telemetry_packet_t;       // flags(1)+epoch(4)+speed(2)+lat(4)+lon(4)+hdop(1)+sat(1)+temp(2)+
                              // battV(2)+motorV(2)+curA(2)+pitch(2)+accel(2)+lat_g(2)+vert_g(2)+
                              // motorRpm(2)+wheelRpm(2)+escMode(1)+escState(1)+setpoint(1)+live(1)+
-                             // ramp(1)+airtime(2) = 44 bytes (was 42 before airtime_ms_x10 was added
-                             // back — a deliberate, small, explicitly-requested cost to carry a real
-                             // measured value instead of nothing; see "Current State" in this
-                             // folder's CLAUDE.md for the compression pass writeup and this field's
-                             // own addition).
+                             // ramp(1) = 42 bytes (airtime_ms_x10 was added, then removed again per
+                             // explicit request — see "Current State" in this folder's CLAUDE.md).
 
 
 #endif // CONFIG_H
