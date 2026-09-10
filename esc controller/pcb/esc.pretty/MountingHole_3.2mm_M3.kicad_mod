@@ -1,0 +1,13 @@
+(footprint "MountingHole_3.2mm_M3" (version 20221018) (generator pcbnew)
+  (layer "F.Cu")
+  (attr through_hole exclude_from_pos_files exclude_from_bom)
+  (fp_text reference "H1" (at 0 -2.4) (layer "F.Fab")
+      (effects (font (size 0.95 0.95) (thickness 0.15)))
+    (tstamp a4b5407d-0e95-45ee-83a4-d3ab114cb8d9)
+  )
+  (fp_text value "MountingHole_M3" (at 0 2.4) (layer "F.Fab") hide
+      (effects (font (size 0.9 0.9) (thickness 0.15)))
+    (tstamp 5f2715c4-b802-46da-b3e8-0c7b4ea8bb25)
+  )
+  (pad "" np_thru_hole circle (at 0 0) (size 3.2 3.2) (drill 3.2) (layers "F&B.Cu" "*.Mask") (tstamp 010c164e-b6db-4ebd-8167-395c1a914c21))
+)
