@@ -4613,35 +4613,43 @@ function pushRawLine(d) {
 function clampToRange(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function signalScore(rssi, snr) {
   if (rssi == null || snr == null) return 0;
-  // RSSI: -126dBm (this radio's real SF7/BW62.5 sensitivity floor,
+  // ⚠️ REAL bug, found and fixed this pass: these floors were still the
+  // SF7/BW62.5 values from an earlier pass, never recomputed when the
+  // radio moved to SF9/BW125 (see greenpower_sender/CLAUDE.md's V4.13
+  // entry) — despite this exact function's own prior comment saying
+  // "recompute this if SF or BW ever change again." Not the explanation
+  // for a real "1/10 at 15ft" report (that's the forced-1 packet-loss
+  // state below, unrelated to these constants — see updateSignalBadge()'s
+  // comment), but a real accuracy bug in its own right, worth fixing
+  // regardless: required SNR is HIGHER at SF9 than SF7 (LoRa trades range
+  // for airtime by tolerating a WORSE SNR at lower SF, not this one — SF9
+  // actually needs a cleaner signal than SF7 to demodulate correctly), so
+  // using SF7's more lenient floor was making genuinely-fine SF9 readings
+  // score slightly lower than they should.
+  //
+  // RSSI: -128dBm (this radio's real SF9/BW125 sensitivity floor,
   //       estimated — see below) -> 0
   //       -70dBm  (as good as this actual hardware gets, from a REAL
   //       close-range measurement)                                -> 10
-  // The floor was a generic -110dBm guess until this pass — replaced with
-  // an estimate of the ACTUAL SX1262 sensitivity floor at this radio's
-  // current settings, derived from Semtech's own published SF7/BW125
-  // spec (-123dBm) via the standard LoRa link-budget relation
-  // (sensitivity = -174dBm/Hz thermal floor + 10·log10(BW) + receiver
-  // noise figure + required SNR for the spreading factor) — NOT a
-  // directly-published number for BW62.5 specifically, since Semtech
-  // doesn't tabulate every SF/BW combination, just the one calibration
-  // point this estimate is built from. Recompute this if SF or BW ever
-  // change again (BW125's real floor is ~-123dBm, BW500's is ~-117dBm).
+  // Derived from Semtech's own published SF7/BW125 spec (-123dBm) via the
+  // standard LoRa link-budget relation (sensitivity = -174dBm/Hz thermal
+  // floor + 10·log10(BW) + receiver noise figure + required SNR for the
+  // spreading factor) — NOT a directly-published number for SF9
+  // specifically, since Semtech doesn't tabulate every SF/BW combination,
+  // just the one calibration point this estimate is built from. Recompute
+  // this again if SF or BW ever change: -174 + 10·log10(BW_Hz) + 7.53
+  // (this radio's derived noise figure) + requiredSNR(SF).
   // The -70dBm ceiling stays a real measurement (see below) — revisit if
   // a stronger real reading ever shows up.
-  const rssiScore = clampToRange((rssi - -126) / (-70 - -126) * 10, 0, 10);
-  // SNR: -7.5dB (SF7's REAL required-SNR floor per Semtech's spec — not
-  //       a generic guess like the -20dB this used to be) -> 0
-  //       15dB (very clean signal, well above the noise floor)    -> 10
-  // The -20dB floor this had before was a guess that turned out to be
-  // ~12.5dB too pessimistic — SF7 actually starts failing around -7.5dB,
-  // not -20dB (that's closer to SF12's real floor). Required SNR drops
-  // ~2.5dB per SF step (SF8≈-10, SF9≈-12.5, ... SF12≈-20) — if SF ever
-  // changes, recompute this floor: -7.5 - 2.5×(newSF-7). The 15dB
-  // ceiling is unaffected by SF/BW — SX126x can report up to ~+19.5dB in
-  // ideal conditions, 15dB is a realistic "excellent" cutoff short of
-  // chasing that theoretical max.
-  const snrScore = clampToRange((snr - -7.5) / (15 - -7.5) * 10, 0, 10);
+  const rssiScore = clampToRange((rssi - -128) / (-70 - -128) * 10, 0, 10);
+  // SNR: -12.5dB (SF9's REAL required-SNR floor per Semtech's spec) -> 0
+  //      15dB (very clean signal, well above the noise floor)      -> 10
+  // Required SNR drops ~2.5dB per SF step (SF7≈-7.5, SF8≈-10, SF9≈-12.5,
+  // ... SF12≈-20) — if SF ever changes again, recompute this floor:
+  // -7.5 - 2.5×(newSF-7). The 15dB ceiling is unaffected by SF/BW —
+  // SX126x can report up to ~+19.5dB in ideal conditions, 15dB is a
+  // realistic "excellent" cutoff short of chasing that theoretical max.
+  const snrScore = clampToRange((snr - -12.5) / (15 - -12.5) * 10, 0, 10);
   return Math.round(Math.min(rssiScore, snrScore));
 }
 // Same score bands drive both the header badge's color class and the

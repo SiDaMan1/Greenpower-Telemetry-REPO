@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.5.8.0';
+const AGENT_VERSION = '1.5.9.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -1077,27 +1077,38 @@ public class HandCursorRichTextBox : RichTextBox {
     public static IntPtr HandCursorHandle = IntPtr.Zero;
     [DllImport("user32.dll")]
     static extern IntPtr SetCursor(IntPtr hCursor);
+    // ⚠️ REAL bug, reported directly ("there is still a tiny hand on
+    // the links") in the FIRST attempt at this fix, which checked
+    // SelectionFont.Underline as a proxy for "is this character part of
+    // a detected link". That was wrong: DetectUrls marks a link using
+    // the native RichEdit control's own CFE_LINK character effect — a
+    // completely separate bit from the standard CFE_UNDERLINE effect
+    // that Font.Underline actually reflects. A detected link LOOKS
+    // underlined (that's RichEdit's own default rendering for CFE_LINK)
+    // but Font.Underline never becomes true for it, so the old check
+    // was always false and this override never actually fired for a
+    // real link. Reading the real CFE_LINK bit would need manually
+    // marshaling the native CHARFORMAT2 struct via EM_GETCHARFORMAT —
+    // doable, but fragile to get exactly right. Simpler and just as
+    // correct here: since this box's own content is entirely generated
+    // by this same script, independently regex-matching the same
+    // http(s) URLs DetectUrls would find, directly against Text, avoids
+    // needing to query native formatting at all.
+    static readonly System.Text.RegularExpressions.Regex UrlPattern =
+        new System.Text.RegularExpressions.Regex(@"https?://[^\s)]+", System.Text.RegularExpressions.RegexOptions.Compiled);
     protected override void WndProc(ref Message m) {
         const int WM_SETCURSOR = 0x0020;
         if (m.Msg == WM_SETCURSOR && HandCursorHandle != IntPtr.Zero) {
             Point pos = PointToClient(Cursor.Position);
             int idx = GetCharIndexFromPosition(pos);
-            if (idx >= 0 && idx < TextLength) {
-                // Peek the character's formatting without visibly
-                // disturbing the real selection — save/restore around a
-                // 1-char Select(), the only way WinForms' RichTextBox
-                // exposes per-character formatting. DetectUrls marks a
-                // detected link with Underline formatting, which normal
-                // log text never has, making it a reliable "is this a
-                // link" check without re-implementing URL detection.
-                int savedStart = SelectionStart, savedLength = SelectionLength;
-                Select(idx, 1);
-                bool isLink = SelectionFont != null && SelectionFont.Underline;
-                Select(savedStart, savedLength);
-                if (isLink) {
-                    SetCursor(HandCursorHandle);
-                    m.Result = (IntPtr)1;
-                    return;
+            string text = Text;
+            if (idx >= 0 && idx < text.Length) {
+                foreach (System.Text.RegularExpressions.Match match in UrlPattern.Matches(text)) {
+                    if (idx >= match.Index && idx < match.Index + match.Length) {
+                        SetCursor(HandCursorHandle);
+                        m.Result = (IntPtr)1;
+                        return;
+                    }
                 }
             }
         }
