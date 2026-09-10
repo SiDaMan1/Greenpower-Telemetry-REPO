@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.5.7.0';
+const AGENT_VERSION = '1.5.8.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -263,6 +263,12 @@ const IDENTIFY_TIMEOUT_MS = 6000;
 const NOTIFY_TIMEOUT_S    = 20;   // how long the accept/decline prompt stays up
 const UPDATE_CHECK_MS     = 60 * 60 * 1000;   // check every 1h (was 6h) — per explicit request, prioritizing reaching people quickly (e.g. after a bad update like 1.5.3.0's) over the small extra bandwidth/load
 const GUI_PORT             = 47821;   // arbitrary fixed high port, loopback-only — see startGuiServer()
+// Written by the OLD process right before an auto-update hands off to
+// msiexec (see performUpdate()), consumed once by the NEW process's own
+// startup below — see that block's comment for why a %TEMP% file, not
+// something in-process, is what's needed to carry this across the real
+// process boundary an update creates.
+const UPDATE_SUCCESS_MARKER = path.join(os.tmpdir(), 'greenpower-agent-update-success.json');
 
 // Ports we've already looked at (identified as Greenpower / not / still
 // being decided) — keyed by port path, so we don't re-prompt every scan
@@ -275,7 +281,7 @@ const knownPorts = new Map();   // path -> 'pending' | 'ours' | 'not-ours'
 const guiState = {
     startedAt: new Date().toISOString(),
     forwarding: { active: false, port: null, confirmed: false },
-    update: { checking: false, lastCheckedAt: null, latestVersion: null, updateAvailable: false, installing: false, lastError: null },
+    update: { checking: false, lastCheckedAt: null, latestVersion: null, updateAvailable: false, installing: false, lastError: null, justUpdatedTo: null },
 };
 
 log(`[READY] Greenpower receiver agent v${AGENT_VERSION} running — watching for USB connections...`);
@@ -693,6 +699,21 @@ async function performUpdate(newVersion, msiUrl) {
         fs.writeFileSync(tempMsiPath, buf);
         log(`[UPDATE] Downloaded ${tempMsiPath} (${buf.length} bytes). Handing off to installer and exiting.`);
 
+        // Marker consumed by the NEXT agent process's own startup (see
+        // near acquireSingleInstanceLock() below) — per explicit request
+        // ("it should open the GUI back up and show successful update"):
+        // this process is about to exit and hand off to msiexec, so it
+        // has no way to show a "success" state itself; the NEW process
+        // that LaunchAgentNow starts after install is what needs to know
+        // it just came from an update, not a normal boot, so it can
+        // auto-open the GUI and report success. A plain file in %TEMP%
+        // (not e.g. an env var) is what survives across the real process
+        // boundary here — msiexec/LaunchAgentNow starts a genuinely new
+        // process tree, not a child of this one.
+        try {
+            fs.writeFileSync(UPDATE_SUCCESS_MARKER, JSON.stringify({ version: newVersion }));
+        } catch (e) { /* non-fatal — worst case, the update still completes, just without the auto-reopen/success message */ }
+
         notifier.notify({
             title: 'Greenpower Receiver Agent — Updating',
             message: `Installing version ${newVersion}. The agent will restart automatically.`,
@@ -1028,6 +1049,19 @@ public class NativeDwm {
 public class NativeCursor {
     [DllImport("user32.dll")]
     public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
+}
+// ⚠️ REAL bug, reported directly: "copying text is still buggy, it
+// flashes when updating." A plain Clear() followed by a burst of
+// AppendText() calls repaints the RichTextBox on every intermediate
+// step by default — visibly blanking it for a frame before the new
+// content finishes filling back in, every single time the log
+// actually changes. WM_SETREDRAW (there is no public BeginUpdate/
+// EndUpdate on RichTextBox the way there is on ListBox/ListView) is
+// the standard, documented way to suspend a control's repainting for a
+// batch of changes and repaint once at the end instead.
+public class NativeRedraw {
+    [DllImport("user32.dll")]
+    public static extern IntPtr SendMessage(IntPtr hWnd, int msg, bool wParam, int lParam);
 }
 // ⚠️ REAL bug, reported directly: the hand-cursor fix on buttons didn't
 // carry over to the "GUI available at ..." link inside the log — because
@@ -1514,16 +1548,34 @@ function Refresh-Status {
         }
         $lblTarget.Text = "Dashboard: " + $status.websiteUrl
         $u = $status.update
-        if ($u.installing) {
+        # Checked FIRST, ahead of every other branch — per explicit
+        # request ("it should open the GUI back up and show successful
+        # update"). This window is either the SAME one that was open
+        # during the update (which just spent a stretch showing "agent
+        # not responding" while the old process was gone) or a brand
+        # new one the agent auto-opened itself right after restarting —
+        # either way, a distinct, obviously-different green success line
+        # here is what actually confirms the update completed, instead
+        # of just quietly reverting to a normal status line that looks
+        # no different from any other check.
+        if ($u.justUpdatedTo) {
+            $lblUpdate.Text = "Successfully updated to " + $u.justUpdatedTo
+            $lblUpdate.ForeColor = $colorGood
+        } elseif ($u.installing) {
             $lblUpdate.Text = "Update status: installing update..."
+            $lblUpdate.ForeColor = $colorText
         } elseif ($u.checking) {
             $lblUpdate.Text = "Update status: checking..."
+            $lblUpdate.ForeColor = $colorText
         } elseif ($u.updateAvailable) {
             $lblUpdate.Text = "Update status: update available (" + $u.latestVersion + ")"
+            $lblUpdate.ForeColor = $colorText
         } elseif ($u.lastCheckedAt) {
             $lblUpdate.Text = "Update status: up to date (checked " + ([DateTime]$u.lastCheckedAt).ToLocalTime().ToString("t") + ")"
+            $lblUpdate.ForeColor = $colorText
         } else {
             $lblUpdate.Text = "Update status: not checked yet"
+            $lblUpdate.ForeColor = $colorText
         }
     } catch {
         $lblVersion.Text = "Version (agent not responding)"
@@ -1565,6 +1617,14 @@ function Refresh-Status {
             $savedStart = $rtbLog.SelectionStart
             $savedLength = $rtbLog.SelectionLength
             $wasAtBottom = ($savedLength -eq 0) -and ($savedStart -ge $rtbLog.TextLength - 1)
+            # WM_SETREDRAW off/on around the whole Clear()+refill —
+            # eliminates the visible blank-flash a bare Clear() causes
+            # (see NativeRedraw's own comment above). Invalidate() at the
+            # end forces one single real repaint of the final content,
+            # since turning WM_SETREDRAW back on alone doesn't itself
+            # trigger a repaint.
+            $WM_SETREDRAW = 0x000B
+            [NativeRedraw]::SendMessage($rtbLog.Handle, $WM_SETREDRAW, $false, 0) | Out-Null
             $rtbLog.Clear()
             foreach ($line in $logResp.lines) { Add-LogLine $line }
             if ($savedLength -gt 0) {
@@ -1576,6 +1636,8 @@ function Refresh-Status {
                 $rtbLog.SelectionStart = $rtbLog.TextLength
                 $rtbLog.ScrollToCaret()
             }
+            [NativeRedraw]::SendMessage($rtbLog.Handle, $WM_SETREDRAW, $true, 0) | Out-Null
+            $rtbLog.Invalidate()
         }
     } catch {}
 }
@@ -1724,4 +1786,28 @@ try {
     guiServer = startGuiServer();
 } catch (e) {
     log(`[WARN] Could not start GUI server (continuing without one): ${e.message}`);
+}
+
+// Consumed once per real auto-update — per explicit request ("it should
+// open the GUI back up and show successful update"). See performUpdate()
+// and UPDATE_SUCCESS_MARKER's own comments for why this crosses via a
+// %TEMP% file rather than anything in-process: the OLD process that
+// wrote it is long gone by the time this (genuinely new) process starts.
+// Placed after startGuiServer() so the auto-opened window's very first
+// poll has a real server to reach — a startup race here is harmless
+// either way (the GUI already tolerates "agent not responding" for a
+// tick or two on every normal manual open, same code path).
+try {
+    if (fs.existsSync(UPDATE_SUCCESS_MARKER)) {
+        const marker = JSON.parse(fs.readFileSync(UPDATE_SUCCESS_MARKER, 'utf8'));
+        fs.unlinkSync(UPDATE_SUCCESS_MARKER);   // consume once — a later normal restart must not keep re-announcing this
+        guiState.update.justUpdatedTo = marker.version || AGENT_VERSION;
+        log(`[UPDATE] Successfully updated to v${AGENT_VERSION}.`);
+        // Cleared after a while so a GUI window left open long after the
+        // update doesn't keep claiming "just updated" indefinitely.
+        setTimeout(() => { guiState.update.justUpdatedTo = null; }, 60000);
+        openNativeGuiWindow();
+    }
+} catch (e) {
+    log(`[WARN] Couldn't process update-success marker: ${e.message}`);
 }
