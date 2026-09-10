@@ -3351,24 +3351,33 @@ document.getElementById('download-confirm-go').addEventListener('click', hideDow
 // mechanism that closes any other installed WebAPK. If no second press
 // comes in time, the timer re-arms the guard so a later stray tap doesn't
 // unexpectedly land one gesture away from exiting.
-window.history.pushState({ gpExitGuard:true }, '');
-const EXIT_REARM_MS = 2500;
-let exitRearmTimer = null;
-function showExitToast() {
-  const toast = document.getElementById('exit-toast');
-  toast.classList.add('show');
-  clearTimeout(showExitToast._hideTimer);
-  showExitToast._hideTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+// Mobile-only (IS_MOBILE) — desktop has a real, expected browser back
+// button with its own normal history behavior; this whole guard/toast is
+// specifically a WebAPK-exit workaround for a case that doesn't exist on
+// desktop, and previously fired there too (a real bug — a desktop user
+// pressing their browser's own back button got an irrelevant "Press back
+// again to exit" toast, and a phantom re-pushed history entry, for no
+// reason).
+if (IS_MOBILE) {
+  window.history.pushState({ gpExitGuard:true }, '');
+  const EXIT_REARM_MS = 2500;
+  let exitRearmTimer = null;
+  const showExitToast = () => {
+    const toast = document.getElementById('exit-toast');
+    toast.classList.add('show');
+    clearTimeout(showExitToast._hideTimer);
+    showExitToast._hideTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+  };
+  window.addEventListener('popstate', () => {
+    showExitToast();
+    clearTimeout(exitRearmTimer);
+    // window.history, NOT bare `history` — this script already has a
+    // top-level `const history = {}` (the live-chart data buffer, see
+    // CLAUDE.md), which shadows the global History object for any bare
+    // `history` reference anywhere in this same script.
+    exitRearmTimer = setTimeout(() => { window.history.pushState({ gpExitGuard:true }, ''); }, EXIT_REARM_MS);
+  });
 }
-window.addEventListener('popstate', () => {
-  showExitToast();
-  clearTimeout(exitRearmTimer);
-  // window.history, NOT bare `history` — this script already has a
-  // top-level `const history = {}` (the live-chart data buffer, see
-  // CLAUDE.md), which shadows the global History object for any bare
-  // `history` reference anywhere in this same script.
-  exitRearmTimer = setTimeout(() => { window.history.pushState({ gpExitGuard:true }, ''); }, EXIT_REARM_MS);
-});
 
 // ── CLEAR WEBSITE DATA ───────────────────────────────────────────────────────
 // Wipes every locally-persisted preference this page has ever written
@@ -3815,12 +3824,53 @@ function renderSessionLapSummary(scopeLabel, rowsSubset, lap) {
     : `${scopeLabel}: ${rowsSubset.length} packets · ${sessionLapsInfo.totalDistanceMi.toFixed(2)} mi · top ${sessionLapsInfo.totalTopSpeedMph.toFixed(1)} mph · ${sessionLapsInfo.totalWh.toFixed(1)} Wh${sessionLapsInfo.totalWhPerMile != null ? ` (${sessionLapsInfo.totalWhPerMile.toFixed(0)} Wh/mi)` : ''}`;
 }
 
+// A long session at 4Hz racks up thousands of points fast (an hour ≈
+// 14,400) — plotting every one of them made these charts genuinely laggy
+// to render/hover/pan, the real bug behind "graphs like amps are laggy"
+// on the Sessions tab. SESSION_CHART_MAX_POINTS caps what actually gets
+// drawn; decimateSessionRows() below thins a session down to that cap
+// PER METRIC before charting. This only affects the on-screen chart —
+// the full-resolution data is untouched in `sessionRowsFull` and in the
+// CSV export (`session-view-export`), so nothing is lost, only not all
+// drawn at once.
+const SESSION_CHART_MAX_POINTS = 1500;
+
+// Min/max bucket decimation, not a naive "every Nth point" stride — a
+// stride can silently skip a real spike entirely (a brief current surge,
+// a speed peak) if it happens to land between sampled indices. Splits
+// `rows` into up to `maxPoints/2` chronological buckets and keeps BOTH
+// the min and max sample per bucket for the given key, so any real
+// extremum survives the thinning. Returns `rows` unchanged when there's
+// nothing to decimate.
+function decimateSessionRows(rows, key, maxPoints) {
+  if (rows.length <= maxPoints) return rows;
+  const bucketCount = Math.max(1, Math.floor(maxPoints / 2));
+  const bucketSize = rows.length / bucketCount;
+  const out = [];
+  for (let b = 0; b < bucketCount; b++) {
+    const start = Math.floor(b * bucketSize);
+    const end = Math.min(rows.length, Math.floor((b + 1) * bucketSize));
+    if (end <= start) continue;
+    let minRow = null, maxRow = null, minVal = Infinity, maxVal = -Infinity;
+    for (let i = start; i < end; i++) {
+      const v = rows[i].data[key];
+      if (typeof v !== 'number') continue;
+      if (v < minVal) { minVal = v; minRow = rows[i]; }
+      if (v > maxVal) { maxVal = v; maxRow = rows[i]; }
+    }
+    if (!minRow && !maxRow) { out.push(rows[start]); continue; } // no numeric data this bucket — keep one placeholder so the time axis doesn't gap
+    out.push(minRow);
+    if (maxRow && maxRow !== minRow) out.push(maxRow);
+  }
+  out.sort((a, b) => a.received_at - b.received_at); // min/max within a bucket can land in either order chronologically
+  return out;
+}
+
 // Extracted out of viewSession() itself so it can be called again, scoped
 // to just one lap's row slice, when the lap <select> below changes — was
 // previously inline in viewSession() and only ever ran once per session
 // open.
 function renderSessionCharts(rows) {
-  const labels = rows.map(r => fmtTimeNoSeconds(r.received_at));
   SESSION_CHART_KEYS.forEach(k => {
     const canvasId = 'session-chart-'+k;
     if (sessionCharts[k]) { try { sessionCharts[k].destroy(); } catch(e) {} }
@@ -3828,7 +3878,9 @@ function renderSessionCharts(rows) {
     if (!ctx) return;
     const metric = METRICS[k];
     const color = resolveColor(metric ? metric.color : 'var(--accent2)');
-    const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
+    const chartRows = decimateSessionRows(rows, k, SESSION_CHART_MAX_POINTS);
+    const labels = chartRows.map(r => fmtTimeNoSeconds(r.received_at));
+    const data = chartRows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
     sessionCharts[k] = attachTouchTooltipAutoHide(new Chart(ctx, {
       type:'line',
       data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3, borderJoinStyle:'round', borderCapStyle:'round' }] },

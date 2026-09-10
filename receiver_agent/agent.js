@@ -353,7 +353,13 @@ try {
 function openNativeGuiWindow() {
     const ps1Path = path.join(os.tmpdir(), 'greenpower-agent-gui.ps1');
     try {
-        fs.writeFileSync(ps1Path, guiWindowPs1());
+        // Leading UTF-8 BOM is deliberate — without one, Windows PowerShell
+        // 5.1 reads a .ps1 file's own literal text using the system's ANSI
+        // codepage, not UTF-8, so any non-ASCII character written directly
+        // into guiWindowPs1()'s script text (not just data it fetches at
+        // runtime) would risk the same kind of mojibake the log view had.
+        // The BOM makes PowerShell detect UTF-8 correctly regardless.
+        fs.writeFileSync(ps1Path, '\uFEFF' + guiWindowPs1(), 'utf8');
     } catch (e) {
         log(`[WARN] Couldn't write GUI window script: ${e.message}`);
         return;
@@ -986,77 +992,170 @@ Add-Type -AssemblyName System.Drawing
 
 $apiBase = "http://127.0.0.1:${GUI_PORT}"
 
+# ── Windows 11-ish palette ──────────────────────────────────────────
+# Plain neutrals + one accent, matching the modern Settings-app look
+# (light "Mica" gray page, white cards, a single blue accent) rather
+# than the flat all-white/all-default-gray dialog this window used to
+# be. Kept as named variables, not scattered literals, so the whole
+# look can be re-tuned from one place.
+$colorBg      = [System.Drawing.Color]::FromArgb(243, 243, 243)
+$colorCard    = [System.Drawing.Color]::White
+$colorBorder  = [System.Drawing.Color]::FromArgb(229, 229, 229)
+$colorText    = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$colorSubtext = [System.Drawing.Color]::FromArgb(96, 96, 96)
+$colorAccent  = [System.Drawing.Color]::FromArgb(0, 103, 192)
+$colorGood    = [System.Drawing.Color]::FromArgb(16, 124, 16)
+$colorWarn    = [System.Drawing.Color]::FromArgb(157, 93, 0)
+$colorBad     = [System.Drawing.Color]::FromArgb(196, 43, 28)
+$colorMuted   = [System.Drawing.Color]::FromArgb(120, 120, 120)
+
+# WinForms has no native border-radius — this is the standard way to
+# fake one: clip a control to a rounded-rectangle Region. Used on the
+# status card and both buttons below instead of the sharp 90s-dialog
+# rectangles this window used to have.
+function Set-RoundedRegion($ctrl, $radius) {
+    $w = $ctrl.Width; $h = $ctrl.Height; $d = $radius * 2
+    if ($w -lt $d) { $d = $w }
+    if ($h -lt $d) { $d = $h }
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddArc(0, 0, $d, $d, 180, 90)
+    $path.AddArc($w - $d, 0, $d, $d, 270, 90)
+    $path.AddArc($w - $d, $h - $d, $d, $d, 0, 90)
+    $path.AddArc(0, $h - $d, $d, $d, 90, 90)
+    $path.CloseFigure()
+    $ctrl.Region = New-Object System.Drawing.Region($path)
+}
+
+# Fetches JSON over loopback HTTP and decodes it as UTF-8 explicitly.
+# NOT Invoke-RestMethod: its fallback text-encoding when a response
+# doesn't pin one down is ambiguous and version/locale-dependent, and
+# that ambiguity is exactly what was turning this agent's real "-"
+# (em dash) characters in agent.log into garbled "a-circumflex"-style
+# text in this window — the log content itself was always correct
+# UTF-8, only how this window decoded it wasn't. WebClient with an
+# explicit Encoding removes that ambiguity outright.
+function Invoke-JsonUtf8($uri) {
+    $wc = New-Object System.Net.WebClient
+    $wc.Encoding = [System.Text.Encoding]::UTF8
+    $raw = $wc.DownloadString($uri)
+    return $raw | ConvertFrom-Json
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Greenpower Receiver Agent"
-$form.Size = New-Object System.Drawing.Size(560, 600)
+$form.Size = New-Object System.Drawing.Size(640, 700)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
+$form.BackColor = $colorBg
+$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $form.Icon = [System.Drawing.SystemIcons]::Application
 
-$y = 15
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Location = New-Object System.Drawing.Point(20, 18)
+$lblTitle.Size = New-Object System.Drawing.Size(560, 30)
+$lblTitle.Text = "Greenpower Receiver Agent"
+$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 14, [System.Drawing.FontStyle]::Bold)
+$lblTitle.ForeColor = $colorText
+$form.Controls.Add($lblTitle)
+
 $lblVersion = New-Object System.Windows.Forms.Label
-$lblVersion.Location = New-Object System.Drawing.Point(15, $y)
-$lblVersion.Size = New-Object System.Drawing.Size(520, 20)
-$lblVersion.Text = "Version: (loading...)"
+$lblVersion.Location = New-Object System.Drawing.Point(20, 50)
+$lblVersion.Size = New-Object System.Drawing.Size(560, 18)
+$lblVersion.Text = "Version (loading...)"
+$lblVersion.ForeColor = $colorSubtext
 $form.Controls.Add($lblVersion)
 
-$y += 24
+# ── Status card ───────────────────────────────────────────────────
+$card = New-Object System.Windows.Forms.Panel
+$card.Location = New-Object System.Drawing.Point(20, 82)
+$card.Size = New-Object System.Drawing.Size(580, 128)
+$card.BackColor = $colorCard
+$form.Controls.Add($card)
+Set-RoundedRegion $card 8
+
 $lblForwarding = New-Object System.Windows.Forms.Label
-$lblForwarding.Location = New-Object System.Drawing.Point(15, $y)
-$lblForwarding.Size = New-Object System.Drawing.Size(520, 20)
-$lblForwarding.Text = "Forwarding: (loading...)"
-$form.Controls.Add($lblForwarding)
+$lblForwarding.Location = New-Object System.Drawing.Point(18, 16)
+$lblForwarding.Size = New-Object System.Drawing.Size(544, 24)
+$lblForwarding.Text = "Not connected"
+$lblForwarding.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
+$lblForwarding.ForeColor = $colorMuted
+$card.Controls.Add($lblForwarding)
 
-$y += 24
+$sep = New-Object System.Windows.Forms.Panel
+$sep.Location = New-Object System.Drawing.Point(18, 48)
+$sep.Size = New-Object System.Drawing.Size(544, 1)
+$sep.BackColor = $colorBorder
+$card.Controls.Add($sep)
+
 $lblTarget = New-Object System.Windows.Forms.Label
-$lblTarget.Location = New-Object System.Drawing.Point(15, $y)
-$lblTarget.Size = New-Object System.Drawing.Size(520, 20)
-$lblTarget.Text = "Dashboard target: (loading...)"
-$form.Controls.Add($lblTarget)
+$lblTarget.Location = New-Object System.Drawing.Point(18, 60)
+$lblTarget.Size = New-Object System.Drawing.Size(544, 20)
+$lblTarget.Text = "Dashboard: (loading...)"
+$lblTarget.ForeColor = $colorText
+$card.Controls.Add($lblTarget)
 
-$y += 24
 $lblUpdate = New-Object System.Windows.Forms.Label
-$lblUpdate.Location = New-Object System.Drawing.Point(15, $y)
-$lblUpdate.Size = New-Object System.Drawing.Size(520, 20)
+$lblUpdate.Location = New-Object System.Drawing.Point(18, 86)
+$lblUpdate.Size = New-Object System.Drawing.Size(544, 20)
 $lblUpdate.Text = "Update status: (loading...)"
-$form.Controls.Add($lblUpdate)
+$lblUpdate.ForeColor = $colorText
+$card.Controls.Add($lblUpdate)
 
-$y += 30
+# ── Log ───────────────────────────────────────────────────────────
 $lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Location = New-Object System.Drawing.Point(15, $y)
-$lblLog.Size = New-Object System.Drawing.Size(520, 18)
-$lblLog.Text = "Log (latest 150 lines):"
+$lblLog.Location = New-Object System.Drawing.Point(20, 224)
+$lblLog.Size = New-Object System.Drawing.Size(400, 20)
+$lblLog.Text = "Activity log (latest 150 lines)"
+$lblLog.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$lblLog.ForeColor = $colorText
 $form.Controls.Add($lblLog)
 
-$y += 20
-$txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Multiline = $true
-$txtLog.ScrollBars = "Vertical"
-$txtLog.ReadOnly = $true
-$txtLog.WordWrap = $false
-$txtLog.Location = New-Object System.Drawing.Point(15, $y)
-$txtLog.Size = New-Object System.Drawing.Size(520, 340)
-$txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
-$txtLog.BackColor = [System.Drawing.Color]::White
-$form.Controls.Add($txtLog)
+# RichTextBox, not a plain TextBox — the only way to color individual
+# lines by log level (see Add-LogLine below) without hand-rolling a
+# custom-drawn list. This is also what actually fixes the "buggy
+# looking" garbled characters report: Invoke-JsonUtf8 above decodes
+# the log text correctly before it ever reaches this control.
+$rtbLog = New-Object System.Windows.Forms.RichTextBox
+$rtbLog.Location = New-Object System.Drawing.Point(20, 248)
+$rtbLog.Size = New-Object System.Drawing.Size(580, 320)
+$rtbLog.ReadOnly = $true
+$rtbLog.WordWrap = $false
+$rtbLog.ScrollBars = "Both"
+$rtbLog.BorderStyle = "FixedSingle"
+$rtbLog.BackColor = [System.Drawing.Color]::White
+$rtbLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+$form.Controls.Add($rtbLog)
 
-$y += 350
+# ── Buttons ───────────────────────────────────────────────────────
 $btnUpdate = New-Object System.Windows.Forms.Button
-$btnUpdate.Text = "Check for Updates Now"
-$btnUpdate.Location = New-Object System.Drawing.Point(15, $y)
-$btnUpdate.Size = New-Object System.Drawing.Size(190, 30)
+$btnUpdate.Text = "Check for Updates"
+$btnUpdate.Location = New-Object System.Drawing.Point(20, 588)
+$btnUpdate.Size = New-Object System.Drawing.Size(210, 36)
+$btnUpdate.FlatStyle = "Flat"
+$btnUpdate.FlatAppearance.BorderSize = 0
+$btnUpdate.BackColor = $colorAccent
+$btnUpdate.ForeColor = [System.Drawing.Color]::White
+$btnUpdate.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+$btnUpdate.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnUpdate.Add_Click({
     $lblUpdate.Text = "Update status: checking..."
     try { Invoke-RestMethod -Uri "$apiBase/api/check-update" -Method Post -TimeoutSec 5 | Out-Null } catch {}
 })
 $form.Controls.Add($btnUpdate)
+Set-RoundedRegion $btnUpdate 6
 
 $btnUninstall = New-Object System.Windows.Forms.Button
 $btnUninstall.Text = "Uninstall"
-$btnUninstall.Location = New-Object System.Drawing.Point(360, $y)
-$btnUninstall.Size = New-Object System.Drawing.Size(175, 30)
-$btnUninstall.ForeColor = [System.Drawing.Color]::DarkRed
+$btnUninstall.Location = New-Object System.Drawing.Point(390, 588)
+$btnUninstall.Size = New-Object System.Drawing.Size(210, 36)
+$btnUninstall.FlatStyle = "Flat"
+$btnUninstall.FlatAppearance.BorderSize = 1
+$btnUninstall.FlatAppearance.BorderColor = $colorBad
+$btnUninstall.BackColor = [System.Drawing.Color]::White
+$btnUninstall.ForeColor = $colorBad
+$btnUninstall.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+$btnUninstall.Cursor = [System.Windows.Forms.Cursors]::Hand
 $btnUninstall.Add_Click({
     $result = [System.Windows.Forms.MessageBox]::Show(
         "This will completely remove the Greenpower Receiver Agent from this computer, including all files and settings. Continue?",
@@ -1072,21 +1171,44 @@ $btnUninstall.Add_Click({
     }
 })
 $form.Controls.Add($btnUninstall)
+Set-RoundedRegion $btnUninstall 6
+
+# Appends one line to the log with a color picked from its [LEVEL]
+# tag — turns the log from a flat wall of text into something
+# scannable at a glance (errors jump out red, a found receiver jumps
+# out green), the same way a real log viewer would.
+function Add-LogLine($line) {
+    $color = $colorText
+    if ($line -match '\\[ERROR\\]') { $color = $colorBad }
+    elseif ($line -match '\\[WARN\\]') { $color = $colorWarn }
+    elseif ($line -match '\\[FOUND\\]') { $color = $colorGood }
+    elseif ($line -match '\\[OK\\]') { $color = $colorGood }
+    elseif ($line -match '\\[DEBUG\\]') { $color = $colorAccent }
+    $rtbLog.SelectionStart = $rtbLog.TextLength
+    $rtbLog.SelectionLength = 0
+    $rtbLog.SelectionColor = $color
+    $rtbLog.AppendText($line + "\`r\`n")
+}
+
+$lastLogText = ""
 
 function Refresh-Status {
     try {
-        $status = Invoke-RestMethod -Uri "$apiBase/api/status" -TimeoutSec 3
-        $lblVersion.Text = "Version: " + $status.version
+        $status = Invoke-JsonUtf8("$apiBase/api/status")
+        $lblVersion.Text = "Version " + $status.version
         if ($status.forwarding.active) {
             if ($status.forwarding.confirmed) {
-                $lblForwarding.Text = "Forwarding: Yes - " + $status.forwarding.port
+                $lblForwarding.Text = "Connected - forwarding via " + $status.forwarding.port
+                $lblForwarding.ForeColor = $colorGood
             } else {
-                $lblForwarding.Text = "Forwarding: Connecting... - " + $status.forwarding.port
+                $lblForwarding.Text = "Connecting... (" + $status.forwarding.port + ")"
+                $lblForwarding.ForeColor = $colorWarn
             }
         } else {
-            $lblForwarding.Text = "Forwarding: No"
+            $lblForwarding.Text = "Not connected"
+            $lblForwarding.ForeColor = $colorMuted
         }
-        $lblTarget.Text = "Dashboard target: " + $status.websiteUrl
+        $lblTarget.Text = "Dashboard: " + $status.websiteUrl
         $u = $status.update
         if ($u.installing) {
             $lblUpdate.Text = "Update status: installing update..."
@@ -1100,16 +1222,17 @@ function Refresh-Status {
             $lblUpdate.Text = "Update status: not checked yet"
         }
     } catch {
-        $lblVersion.Text = "Version: (agent not responding)"
+        $lblVersion.Text = "Version (agent not responding)"
     }
     try {
-        $logResp = Invoke-RestMethod -Uri "$apiBase/api/log" -TimeoutSec 3
-        $newText = [string]::Join("\`r\`n", $logResp.lines)
-        if ($txtLog.Text -ne $newText) {
-            $wasAtBottom = ($txtLog.SelectionStart -ge $txtLog.Text.Length - 1)
-            $txtLog.Text = $newText
-            $txtLog.SelectionStart = $txtLog.Text.Length
-            $txtLog.ScrollToCaret()
+        $logResp = Invoke-JsonUtf8("$apiBase/api/log")
+        $newText = [string]::Join("\`n", $logResp.lines)
+        if ($newText -ne $lastLogText) {
+            $lastLogText = $newText
+            $rtbLog.Clear()
+            foreach ($line in $logResp.lines) { Add-LogLine $line }
+            $rtbLog.SelectionStart = $rtbLog.TextLength
+            $rtbLog.ScrollToCaret()
         }
     } catch {}
 }
@@ -1209,17 +1332,26 @@ function startGuiServer() {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(guiPageHtml());
         } else if (req.method === 'GET' && req.url === '/api/status') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            // charset=utf-8 explicit here (and on every JSON route below) —
+            // see guiWindowPs1()'s Invoke-JsonUtf8() comment for why: this
+            // agent's log lines contain real non-ASCII characters (an em
+            // dash, "—"), and PowerShell's Invoke-RestMethod has an
+            // ambiguous fallback text-encoding when a response doesn't pin
+            // one down — that's what was turning them into "â" in the GUI.
+            // This header alone isn't the fix (the GUI decodes explicitly
+            // now regardless), but it's the correct, spec-compliant thing
+            // to send either way.
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ version: AGENT_VERSION, websiteUrl: WEBSITE_URL, ...guiState }));
         } else if (req.method === 'GET' && req.url === '/api/log') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ lines: readLogTail(150) }));
         } else if (req.method === 'POST' && req.url === '/api/check-update') {
             checkForUpdate(true);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true }));
         } else if (req.method === 'POST' && req.url === '/api/uninstall') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true }));
             triggerUninstall();
         } else {
