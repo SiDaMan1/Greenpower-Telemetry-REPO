@@ -94,6 +94,40 @@ This is purely a wire-format change — the `JSON:` line's own shape didn't chan
 ### `epoch_time` — decoded and formatted receiver-side, not on the wire
 `telemetry_packet_t.epoch_time` (added in the same pass that added the sender's DS1307 RTC — see `greenpower_sender/CLAUDE.md`) is a raw `uint32_t` Unix-seconds value, `0` meaning "sender has no RTC." This device decodes it into a human `"YYYY-MM-DD HH:MM:SS"` string with `gmtime_r()`/`strftime()` (both standard C, no extra library) purely for the pretty serial dump and the `JSON:` line's `timestamp` field — that formatting happens entirely after the packet has already arrived over LoRa, so it has zero effect on airtime/latency. The `JSON:` line carries both `epoch_time` (raw int) and `timestamp` (formatted string) — raw for anything downstream that wants to do its own date math (e.g. `new Date(epoch_time * 1000)` in JS), formatted for anything that just wants to display it. `0`/`"NO_RTC"` means the sender's RTC wasn't detected at boot — not a real 1970-01-01 timestamp.
 
+## Current State (V2.10 — cadence dropped to 250ms; SF9/BW125, matching greenpower_sender's V4.13)
+
+- **Matching `greenpower_sender`'s V4.13 pass**: `radio.begin()`'s SF/BW args changed SF7/BW62.5 → SF9/BW125, boot-print string updated to `SF9  BW125` — see the sender's own CLAUDE.md entry for the full reasoning (SF9/BW125 chosen over the theoretically-tighter-margin SF8/BW62.5 to preserve real headroom, per the user's explicit motivation for this change). No decode-side/struct changes — this is a pure radio-parameter change, `config.h` unaffected.
+- **Top-of-file header comment rewritten** to describe the current SF9/BW125/250ms state directly rather than accumulating every historical detail inline — the full pass-by-pass compression history (73→42→39→35→34→33 bytes) is summarized there, not repeated verbatim.
+- **Not yet reflashed/verified on real hardware.**
+
+## Current State (V2.9 — batt/motor volt + current cross-byte packed, matching greenpower_sender's V4.12 — 34→33 bytes)
+
+- **Matching `greenpower_sender`'s V4.12 pass**: `pkt.batt_volt_x100`/`pkt.motor_volt_x100`/`pkt.current_a_x100` decode changed to one `pktUnpackVoltCur(pkt.volt_cur_pack, ...)` call recovering all three raw values, each then divided by its usual `PKT_SCALE_*` constant exactly as before — this device's existing "decode once, reuse for pretty-dump and JSON both" pattern absorbed the change with no other call sites needing updates.
+- **`current_a` is unsigned now** — this vehicle has no regen braking (confirmed explicitly), so a value here is never negative.
+- **Still ~140ms airtime at 33 bytes** — one byte short of the real 32-byte threshold where the Semtech formula's payload-symbol count would actually drop. See `greenpower_sender/CLAUDE.md`'s matching entry for the independent bit-math verification (a PowerShell simulation of the exact pack/unpack logic, since this is the first cross-byte, non-byte-aligned packing in this struct).
+- **Not yet reflashed/verified on real hardware.**
+
+## Current State (V2.8 — satellites+esc_state bit-packed, matching greenpower_sender's V4.11 — 35→34 bytes)
+
+- **Matching `greenpower_sender`'s V4.11 pass**: `pkt.satellites`/`pkt.esc_state_code` decode changed to `pktGetSatellites(pkt.sat_esc_state)`/`pktGetEscState(pkt.sat_esc_state)` — one combined byte, zero precision loss (see `config.h`'s comment for the exact bit split and the one assumption behind it, satellite count ≤31).
+- **This one byte alone does not reduce airtime** — confirmed the payload-symbol count is identical at 35/34/33 bytes; see `greenpower_sender/CLAUDE.md`'s matching entry for the full honest breakdown of what would actually be needed to reach a real range improvement (32 bytes minimum, ~28-30 for safe margin) and why that wasn't pursued unilaterally in this pass.
+- **This device's own JSON/pretty-dump output is unchanged in shape** — same keys, same decoded values, only how they're pulled out of `pkt` changed.
+- **Not yet reflashed/verified on real hardware.**
+
+## Current State (V2.7 — `epoch_time` removed entirely, matching greenpower_sender's V4.10 — 39→35 bytes)
+
+- **Matching `greenpower_sender`'s V4.10 pass**: `pkt.epoch_time` no longer exists. The pretty-dump's `Timestamp` line is gone entirely (this device has no RTC of its own — that field only ever carried the SENDER's DS1307 reading — so there's genuinely nothing left to print here; see `config.h`'s own comment). `#include <time.h>` removed (no longer used — `gmtime_r()`/`strftime()`/`time_t` were only ever needed to format `epoch_time`).
+- **JSON schema change: `"epoch_time"` and `"timestamp"` keys removed from the `JSON:` line.** Deliberately **NOT** treated as needing a `DEVICE_ID` bump: per the "Serial protocol is a contract" rule above, the bump exists for changes `receiver_agent`'s own *handshake* would care about — and `receiver_agent` parses the `JSON:` line generically (`JSON.parse()` + forward the whole object, no hardcoded field names), so it doesn't care whether these two keys are present any more than it cared when new ones were added. Confirmed no downstream consumer actually used either key: `telemetry_web` was grepped and never referenced `epoch_time`/`timestamp` from the live feed — it's always used its own server-stamped `received_at` instead (see that project's own CLAUDE.md).
+- **New time-on-air ≈ 140ms** at SF7/BW62.5 (was ~150ms) — checked again whether this unlocks more range; it doesn't, SF7/BW62.5 is still the best option under the 200ms budget (see `greenpower_sender/CLAUDE.md`'s matching entry for the full comparison).
+- **Not yet reflashed/verified on real hardware.**
+
+## Current State (V2.6 — further packet optimization, matching greenpower_sender's V4.9 — 42→39 bytes)
+
+- **Matching `greenpower_sender`'s V4.9 pass**: `esc_mode_code` decode changed from its own byte to `pktGetEscMode(pkt.flags)` (bits 4-5, zero precision loss — see `config.h`'s comment for why `esc_state_code` was deliberately left as its own byte instead of also being packed). `temp_f`/`pitch_deg` decode changed from scaled int16 divides to plain `(float)` casts of the new int8 fields.
+- **New time-on-air ≈ 150ms** at SF7/BW62.5 (was ~160ms) — ~50ms margin under the 200ms budget.
+- **This device's own JSON/pretty-dump output is unchanged in shape** — same keys, same decoded human units — only how those values get pulled out of `pkt` changed.
+- **Not yet reflashed/verified on real hardware.**
+
 ## Current State (V2.5 — airtime measurement removed entirely, matching greenpower_sender's V4.8)
 
 - **Matching `greenpower_sender`'s V4.8 pass** — `airtime_ms_x10` (added in V2.1) removed completely, per explicit request. Packet back to 42 bytes. Removed: the field from `telemetry_packet_t` (`config.h`), the `airtimeMs` decode line, its pretty-dump `Airtime :` line, and its `"airtime_ms"` JSON key.

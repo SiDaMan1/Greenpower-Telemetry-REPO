@@ -9,38 +9,35 @@
 //  directly, or have another program parse it off the serial port.
 //
 //  LoRa RX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Same RF settings as the sender (915 MHz, SF7, BW62.5, sync
+//           Same RF settings as the sender (915 MHz, SF9, BW125, sync
 //           0xF3) — see config.h, which must stay in sync with the
-//           sender's copy. History: latency was prioritized over range
-//           first (SF7 — lowest value proven safe on this exact hardware;
-//           SF10/SF12 APPEARED to hang this board's radio.begin() at
-//           BW125 at the time, but that was later confirmed by the user
-//           to be a flashing mistake, not a real SF incompatibility —
-//           see CLAUDE.md's ✅ CORRECTION note, higher SF is not actually
-//           known-risky — + BW500, the explicitly authorized range-for-
-//           latency trade at the time). Packet was then compressed
-//           73→42 bytes (fixed-point instead of float, implicit header,
-//           trimmed preamble — see config.h; a real measured-airtime
-//           field was added and then removed again per explicit request,
-//           net zero change to packet size), which freed up enough of
-//           the 200ms update budget that bandwidth went back down twice
-//           more for range: 500→125→62.5, per two direct follow-up
-//           requests ("max range without sacrificing an update every
-//           200ms"), spending the slack the compression work created
-//           instead of accepting either less range or a slower update
-//           rate. SF stayed at 7 throughout this whole bandwidth-only
-//           path — not because higher SF is risky (it isn't, per the
-//           correction above), just because a bandwidth-only step was
-//           simpler to reason about and this exact SF7/BW62.5
-//           combination costs LESS airtime than the SF12/BW62.5 range
-//           attempt further below ever did.
-//           ~160ms computed time-on-air per packet now (Semtech-formula
-//           estimate — this project no longer measures it directly, see
-//           the ⚠️ SEVENTH pass note in greenpower_sender.ino), still
-//           under the 200ms update interval (~40ms margin, the practical
-//           ceiling for a bandwidth-only push at SF7 within that
-//           budget), down from the ~6.9s at the SF12/BW62.5 range
-//           attempt.
+//           sender's copy. Long history of prior settings (SF7/BW500 for
+//           latency, then SF7/BW62.5 for range within a 200ms budget) —
+//           see greenpower_sender/CLAUDE.md for the full blow-by-blow;
+//           the short version is that a long chain of lossless/confirmed-
+//           bounds packet compression passes (73→42→39→35→34→33 bytes —
+//           see config.h) freed up enough airtime budget that, combined
+//           with a deliberate cadence relaxation (200ms→250ms, explicitly
+//           traded for real headroom — see below), SF could finally move
+//           up from 7 for a genuine sensitivity gain, not just bandwidth
+//           tricks. SF10/SF12 were once thought to hang this board's
+//           radio.begin() — CONFIRMED to have actually been a flashing
+//           mistake, not a real incompatibility (see CLAUDE.md's ✅
+//           CORRECTION note) — so SF9 here carries no more hang risk than
+//           any other spreading factor, just genuinely new territory for
+//           this project.
+//           Update interval: 200ms (5Hz) → 250ms (4Hz), per explicit
+//           request specifically to buy real LoRa margin — this is a
+//           sensor-sample-rate change on the sender side too, not just a
+//           radio one (see SENSOR_INTERVAL_MS in greenpower_sender.ino).
+//           ~218ms computed time-on-air per packet now at SF9/BW125
+//           (Semtech-formula estimate — this project no longer measures
+//           it directly), leaving ~32ms of real margin under the new
+//           250ms interval — picked over a theoretically-0.5dB-better
+//           option (SF8/BW62.5) specifically because that one only had
+//           ~11ms margin, too tight for what this whole cadence change
+//           was FOR. See greenpower_sender/CLAUDE.md for the full
+//           candidate comparison table.
 //
 //  Serial protocol for downstream tooling (e.g. receiver_agent):
 //    • Boot prints one line containing DEVICE_ID once — lets a host script
@@ -59,7 +56,6 @@
 #include <SPI.h>
 #include <RadioLib.h>
 #include <string.h>
-#include <time.h>
 #include "config.h"
 
 
@@ -97,10 +93,11 @@ static uint32_t otherErrCount = 0;
 // the JSON schema below ever changes in a way a host script needs to know.
 #define DEVICE_ID  "GREENPOWER_RX_V1"
 
-// esc_mode_code/esc_state_code → string — the LoRa packet carries 1-byte
+// esc_mode/esc_state_code → string — the LoRa packet carries small numeric
 // codes now instead of 8-byte ASCII strings (see config.h's own comment on
-// PKT_ESC_MODE_*/PKT_ESC_STATE_*); decoded back to real strings here,
-// receiver-side, for the pretty dump and the JSON line. Must match
+// PKT_ESC_MODE_*/PKT_ESC_STATE_* — mode is packed into flags bits 4-5,
+// pktGetEscMode(), not its own byte anymore); decoded back to real strings
+// here, receiver-side, for the pretty dump and the JSON line. Must match
 // ../esc%20controller/throttle_controller.ino's modeName()/stateName().
 static const char* escModeToStr(uint8_t code) {
     switch (code) {
@@ -156,8 +153,8 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        62.5,                 // bandwidth kHz — pushed down again from 125 for MAX range within the 200ms budget; MUST match the sender's copy exactly or packets won't decode — see this file's own header comment for the full history
-        7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
+        125.0,                // bandwidth kHz — paired with SF9 for MAX range within the new 250ms budget; MUST match the sender's copy exactly or packets won't decode — see this file's own header comment for the full history
+        9,                    // spreading factor — SF9 (was SF7); MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
         LORA_TX_POWER_DBM,    // unused for RX, kept for signature symmetry with sender
@@ -185,7 +182,7 @@ void setup() {
             Serial.printf("[WARN] startReceive() failed  code=%d\n", rxState);
         } else {
             loraReady = true;
-            Serial.printf("[OK]   SX1262  915 MHz  SF7  BW62.5  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
+            Serial.printf("[OK]   SX1262  915 MHz  SF9  BW125  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
         }
     }
 
@@ -214,31 +211,33 @@ void loop() {
         Serial.printf("  Packet #%lu  RSSI:%.0f dBm  SNR:%.1f dB\n",
                       (unsigned long)rxCount, radio.getRSSI(), radio.getSNR());
 
-        // Timestamp — pkt.epoch_time is a raw Unix-seconds int on the wire
-        // (smallest possible over-the-air date/time representation, see
-        // config.h); the human-readable string is built here, receiver-side,
-        // entirely off the radio link, so it costs nothing in airtime.
-        char tsBuf[24];
-        if (pkt.epoch_time == 0) {
-            snprintf(tsBuf, sizeof(tsBuf), "NO_RTC");
-        } else {
-            time_t rawTime = (time_t)pkt.epoch_time;
-            struct tm tmInfo;
-            gmtime_r(&rawTime, &tmInfo);
-            strftime(tsBuf, sizeof(tsBuf), "%Y-%m-%d %H:%M:%S", &tmInfo);
-        }
-        Serial.printf("  Timestamp : %s UTC\n", tsBuf);
+        // No Timestamp line here anymore — pkt.epoch_time was removed
+        // entirely per explicit request (see config.h's own comment). This
+        // device has no RTC of its own (that's the sender's DS1307, whose
+        // reading used to ride along in the packet), so it genuinely can't
+        // produce a calendar date/time locally anymore. That's fine: the
+        // dashboard's server already stamps every packet with its own
+        // real, NTP-synced clock the instant it arrives — see server.js's
+        // `received_at`/`now()` — which was already the actual source of
+        // truth for session timestamps even before this change.
 
         // Decoded back to human units from pkt's compressed fields — see
         // config.h's "Fixed-point compression" block. Done once here so the
         // pretty-print block and the JSON block below both read off the
         // same values instead of re-deriving them twice.
         float speedMph  = pkt.speed_mph_x10  / PKT_SCALE_SPEED;
-        float tempF     = (pkt.temp_f_x10 == PKT_TEMP_NO_READING) ? NAN : (pkt.temp_f_x10 / PKT_SCALE_TEMP);
-        float battVolt  = pkt.batt_volt_x100  / PKT_SCALE_VOLT;
-        float motorVolt = pkt.motor_volt_x100 / PKT_SCALE_VOLT;
-        float currentA  = pkt.current_a_x100  / PKT_SCALE_CURRENT;
-        float pitchDeg  = pkt.pitch_deg_x100  / PKT_SCALE_ANGLE;
+        float tempF     = (pkt.temp_f == PKT_TEMP_NO_READING) ? NAN : (float)pkt.temp_f;
+        // batt_volt/motor_volt/current_a are cross-byte packed into
+        // pkt.volt_cur_pack now — one unpack call recovers all three raw
+        // values, then each decodes with its usual PKT_SCALE_* divide,
+        // same as every other scaled field. See pktUnpackVoltCur()'s own
+        // comment in config.h for the 12+12+14-bit layout.
+        uint16_t battVoltRaw, motorVoltRaw, currentRaw;
+        pktUnpackVoltCur(pkt.volt_cur_pack, &battVoltRaw, &motorVoltRaw, &currentRaw);
+        float battVolt  = battVoltRaw  / PKT_SCALE_VOLT;
+        float motorVolt = motorVoltRaw / PKT_SCALE_VOLT;
+        float currentA  = currentRaw   / PKT_SCALE_CURRENT;
+        float pitchDeg  = (float)pkt.pitch_deg;
         float accelG    = pkt.accel_g_x1000   / PKT_SCALE_G;
         float lateralG  = pkt.lateral_g_x1000 / PKT_SCALE_G;
         float verticalG = pkt.vertical_g_x1000 / PKT_SCALE_G;
@@ -259,7 +258,7 @@ void loop() {
 
         // GPS
         Serial.printf("  GPS valid : %s\n",      (pkt.flags & PKT_FLAG_GPS_VALID) ? "YES" : "NO");
-        Serial.printf("  Satellites: %u\n",       pkt.satellites);
+        Serial.printf("  Satellites: %u\n",       pktGetSatellites(pkt.sat_esc_state));
         Serial.printf("  Speed     : %.1f mph\n", speedMph);
         Serial.printf("  Latitude  : %.6f\n",     pkt.latitude);
         Serial.printf("  Longitude : %.6f\n",     pkt.longitude);
@@ -274,8 +273,8 @@ void loop() {
 
         // ESC
         if (pkt.flags & PKT_FLAG_ESC_VALID) {
-            Serial.printf("  ESC Mode  : %s\n",      escModeToStr(pkt.esc_mode_code));
-            Serial.printf("  ESC State : %s\n",      escStateToStr(pkt.esc_state_code));
+            Serial.printf("  ESC Mode  : %s\n",      escModeToStr(pktGetEscMode(pkt.flags)));
+            Serial.printf("  ESC State : %s\n",      escStateToStr(pktGetEscState(pkt.sat_esc_state)));
             Serial.printf("  Setpoint  : %u %%\n", pkt.esc_setpoint_pct);
             Serial.printf("  Live      : %u %%\n", pkt.esc_live_pct);
             Serial.printf("  Ramp      : %u %%\n", pkt.esc_ramp_pct);
@@ -296,7 +295,6 @@ void loop() {
         snprintf(json, sizeof(json),
             "JSON:{"
             "\"seq\":%lu,\"rssi\":%.0f,\"snr\":%.1f,\"flags\":%u,"
-            "\"epoch_time\":%lu,\"timestamp\":\"%s\","
             "\"speed_mph\":%.1f,\"latitude\":%.6f,\"longitude\":%.6f,"
             "\"hdop\":%.1f,\"satellites\":%u,\"temp_f\":%.1f,"
             "\"batt_volt\":%.2f,\"motor_volt\":%.2f,\"current_a\":%.2f,"
@@ -307,15 +305,14 @@ void loop() {
             "\"esc_setpoint_pct\":%u,\"esc_live_pct\":%u,\"esc_ramp_pct\":%u"
             "}",
             (unsigned long)rxCount, radio.getRSSI(), radio.getSNR(), pkt.flags,
-            (unsigned long)pkt.epoch_time, tsBuf,
             speedMph, pkt.latitude, pkt.longitude,
-            hdop, pkt.satellites, tempF,
+            hdop, pktGetSatellites(pkt.sat_esc_state), tempF,
             battVolt, motorVolt, currentA,
             pitchDeg,
             accelG, lateralG, verticalG,
             pkt.motor_rpm, wheelRpm,
             (pkt.flags & PKT_FLAG_ESC_VALID) ? "true" : "false",
-            escModeToStr(pkt.esc_mode_code), escStateToStr(pkt.esc_state_code),
+            escModeToStr(pktGetEscMode(pkt.flags)), escStateToStr(pktGetEscState(pkt.sat_esc_state)),
             pkt.esc_setpoint_pct, pkt.esc_live_pct, pkt.esc_ramp_pct
         );
         Serial.println(json);

@@ -238,7 +238,7 @@
   }
   /* Test mode: feeds fake, plausible telemetry through the exact same
      render path as a real packet (applyState/pushHistory/applyHistory) at
-     the same 5Hz cadence, so the whole UI — numbers, charts, GPS fix,
+     the same 4Hz cadence, so the whole UI — numbers, charts, GPS fix,
      ESC mode/state — can be exercised for visual/UI work without the car,
      receiver, or receiver_agent running at all. Off by default; a bright
      amber accent when on so it's unmistakable this isn't real data. */
@@ -275,6 +275,7 @@
   .btn:active { transform:scale(.96); }
   .btn-accent { color:var(--accent2); border-color:rgba(14,165,233,.3); }
   .btn-good { color:var(--accent3); border-color:rgba(16,185,129,.3); }
+  .btn-danger { color:var(--danger); border-color:rgba(239,68,68,.35); }
   .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
   .btn:active, .tab:active { transform:scale(.95); }
 
@@ -1755,6 +1756,24 @@
     </div>
   </div>
 
+  <!-- Delete Session confirmation — reuses the same .confirm-modal pattern
+       as the clear-data/download-agent/exit-app confirmations above.
+       Destructive/irreversible (permanently deletes the session and every
+       telemetry point in it, server-side), hence a real confirm step
+       rather than firing straight from the Sessions table's Delete button.
+       Which session id is pending is tracked in JS (pendingDeleteSessionId),
+       not baked into this markup — one modal instance, reused for whichever
+       row's Delete button was last clicked. -->
+  <div class="confirm-modal-backdrop" id="delete-session-confirm-backdrop"></div>
+  <div class="confirm-modal" id="delete-session-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-confirm-title">
+    <div class="confirm-modal-title" id="delete-session-confirm-title">Delete This Session?</div>
+    <div class="confirm-modal-body">This permanently deletes session <strong id="delete-session-confirm-id">#--</strong> and every telemetry point recorded in it. This cannot be undone.</div>
+    <div class="confirm-modal-actions">
+      <button class="btn btn-sm" id="delete-session-confirm-cancel">Cancel</button>
+      <button class="btn btn-sm btn-danger" id="delete-session-confirm-go">Delete</button>
+    </div>
+  </div>
+
   <!-- Landscape lock overlay — pure CSS (see its own rule for why: the
        actual orientation lock lives in manifest.json + a best-effort
        screen.orientation.lock() call, neither of which reaches every
@@ -2189,10 +2208,15 @@ const METRICS = {
   batt_volt:  {label:'Battery',    unit:'V',   color:'var(--battv)',   dec:2, range:[18,27],    multiDefault:true},
   motor_volt: {label:'Motor Volt', unit:'V',   color:'var(--motorv)',  dec:2, range:[0,30],      multiDefault:false},
   current_a:  {label:'Current',    unit:'A',   color:'var(--current)', dec:2, range:[0,100],    multiDefault:true},
-  temp_f:     {label:'Temp',       unit:'°F',  color:'var(--temp)',    dec:1, range:[32,150],   multiDefault:false},
+  // dec:0, not 1 — the firmware only sends whole-degree resolution now
+  // (int8 temp_f, see greenpower_sender/config.h's V4.9 pass), so a
+  // trailing ".0" here would imply precision that isn't actually there.
+  temp_f:     {label:'Temp',       unit:'°F',  color:'var(--temp)',    dec:0, range:[32,150],   multiDefault:false},
   motor_rpm:  {label:'Motor RPM',  unit:'RPM', color:'var(--mrpm)',    dec:0, range:[0,3000],   multiDefault:true},
   wheel_rpm:  {label:'Wheel RPM',  unit:'RPM', color:'var(--wrpm)',    dec:0, range:[0,1000],   multiDefault:false},
-  pitch_deg:  {label:'Pitch',      unit:'°',   color:'var(--pitch)',   dec:1, range:[-45,45],   multiDefault:false},
+  // dec:0, not 1 — same reasoning as temp_f above (int8 pitch_deg now,
+  // whole-degree resolution only).
+  pitch_deg:  {label:'Pitch',      unit:'°',   color:'var(--pitch)',   dec:0, range:[-45,45],   multiDefault:false},
   accel_g:    {label:'Accel',      unit:'G',   color:'var(--accel)',   dec:3, range:[-3,3],     multiDefault:false},
   lateral_g:  {label:'Lateral',    unit:'G',   color:'var(--lateral)', dec:3, range:[-3,3],     multiDefault:false},
   vertical_g: {label:'Vertical',   unit:'G',   color:'var(--vertical)',dec:3, range:[-2,4],     multiDefault:false},
@@ -2636,7 +2660,7 @@ statsBarToggle.addEventListener('click', () => setStatsBarCollapsed(!statsBar.cl
 // ── OVERVIEW CHART VISIBILITY (hide/show + persisted) ────────────────────────
 // Lets the user declutter the Overview page by hiding mini-charts they don't
 // care about right now. Purely a display toggle — hidden charts keep updating
-// in the background (cheap for 8 line charts at 5 Hz) so they're instantly
+// in the background (cheap for 8 line charts at 4 Hz) so they're instantly
 // current again the moment they're re-shown, no "catching up" delay.
 const OV_VIS_KEY = 'gp_overview_chart_visibility';
 let ovVisible = {};
@@ -3388,6 +3412,50 @@ document.getElementById('clear-data-confirm-cancel').addEventListener('click', h
 document.getElementById('clear-data-confirm-backdrop').addEventListener('click', hideClearDataConfirm);
 document.getElementById('clear-data-confirm-go').addEventListener('click', clearAllWebsiteData);
 
+// ── Delete Session confirmation — one modal instance, reused for whichever
+// row's Delete button was last clicked (pendingDeleteSessionId tracks it,
+// same "one modal, dynamic target" approach as viewSession() below reusing
+// one set of session-chart canvases for whichever session was opened). ──
+let pendingDeleteSessionId = null;
+function showDeleteSessionConfirm(id) {
+  pendingDeleteSessionId = id;
+  setText('delete-session-confirm-id', `#${id}`);
+  document.getElementById('delete-session-confirm-backdrop').classList.add('show');
+  document.getElementById('delete-session-confirm-modal').classList.add('show');
+}
+function hideDeleteSessionConfirm() {
+  pendingDeleteSessionId = null;
+  document.getElementById('delete-session-confirm-backdrop').classList.remove('show');
+  document.getElementById('delete-session-confirm-modal').classList.remove('show');
+}
+async function deleteSessionConfirmed() {
+  if (pendingDeleteSessionId == null) return;
+  const id = pendingDeleteSessionId;
+  const goBtn = document.getElementById('delete-session-confirm-go');
+  goBtn.disabled = true;
+  goBtn.textContent = 'Deleting…';
+  try {
+    const res = await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+    if (!res.ok && res.status !== 204) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    hideDeleteSessionConfirm();
+    loadSessions();   // refresh the table — the deleted row simply won't be in the response anymore
+  } catch (e) {
+    console.warn('deleteSessionConfirmed error:', e);
+    // Left the modal open with the button re-enabled below rather than
+    // silently closing on failure — a failed delete should be obvious,
+    // not look like it quietly succeeded.
+  } finally {
+    goBtn.disabled = false;
+    goBtn.textContent = 'Delete';
+  }
+}
+document.getElementById('delete-session-confirm-cancel').addEventListener('click', hideDeleteSessionConfirm);
+document.getElementById('delete-session-confirm-backdrop').addEventListener('click', hideDeleteSessionConfirm);
+document.getElementById('delete-session-confirm-go').addEventListener('click', deleteSessionConfirmed);
+
 // One-time cookie clear tied to THIS update specifically (the new
 // password-gated onboarding flow below) — per explicit request, every
 // existing visitor's local state gets a clean slate for this deploy, not
@@ -3654,6 +3722,7 @@ async function loadSessions() {
         <td style="text-align:right;white-space:nowrap">
           <button class="btn btn-sm btn-accent" onclick="viewSession(${s.id})">View</button>
           <a class="btn btn-sm btn-good" href="/api/sessions/${s.id}/export.csv">CSV</a>
+          <button class="btn btn-sm btn-danger" onclick="showDeleteSessionConfirm(${s.id})">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -4373,7 +4442,7 @@ function pushHistory(d) {
   // Evict anything older than the hard retention ceiling — this is the
   // outer bound on the whole buffer, independent of whatever range is
   // currently SELECTED for display (see RANGE_OPTIONS above). Normally
-  // evicts 0-1 entries per call (one point pushed at a time at ~5Hz); the
+  // evicts 0-1 entries per call (one point pushed at a time at ~4Hz); the
   // splice cost only becomes noticeable right as a long-open tab first
   // crosses HISTORY_HARD_CAP_MS, not on a steady-state basis.
   const cutoff = t - HISTORY_HARD_CAP_MS;
@@ -4386,7 +4455,7 @@ function pushHistory(d) {
   renderEfficiencyLive();
 }
 
-// Hour:minute only — no seconds. Chart x-axis labels at 5 Hz would otherwise
+// Hour:minute only — no seconds. Chart x-axis labels at 4 Hz would otherwise
 // show the same handful of seconds values wrapping over and over across the
 // visible window, which reads as noisy clutter rather than useful context;
 // dropping seconds here (raw-log timestamps keep them — those genuinely
@@ -4610,7 +4679,7 @@ function updateConnStatus(online, ageMs, data) {
 
 setInterval(() => setText('server-time', new Date().toLocaleTimeString()), 1000);
 
-// ── POLL /api/latest (5 Hz, matching the sender's transmit rate) ────────────
+// ── POLL /api/latest (4 Hz / 250ms, matching the sender's transmit rate — was 5Hz/200ms) ────────────
 async function poll() {
   try {
     const res = await fetch('/api/latest', { cache:'no-store' });
@@ -4664,7 +4733,7 @@ async function poll() {
 applyHistory();
 
 // ── TEST MODE (fake data for UI testing, no car/receiver required) ──────────
-// Generates a plausible packet every 200ms (same cadence as the real poll)
+// Generates a plausible packet every 250ms (same cadence as the real poll)
 // and pushes it through the exact same applyState/pushHistory/applyHistory/
 // pushRawLine functions a real packet would go through — so every chart,
 // stat card, GPS fix indicator, and ESC mode/state exercises real rendering
@@ -4786,7 +4855,7 @@ function setTestMode(on) {
   if (settingsToggle) settingsToggle.checked = on;
   if (testModeTimer) { clearInterval(testModeTimer); testModeTimer = null; }
   if (on) {
-    testModeTimer = setInterval(testModeTick, 200);
+    testModeTimer = setInterval(testModeTick, 250);   // matches the real poll's 250ms cadence — see its own comment
     testModeTick();
   } else {
     // Hand back to the real poll loop immediately rather than waiting for
@@ -5004,7 +5073,10 @@ applyOvMobileVisibility();
 renderOvMobileList();
 
 poll();
-setInterval(() => { if (!testModeActive) poll(); }, 200);
+// 200ms (5Hz) → 250ms (4Hz), matching the firmware's own cadence change
+// (SENSOR_INTERVAL_MS/LORA_TX_INTERVAL_MS in greenpower_sender.ino, per
+// explicit request to trade update rate for real LoRa range margin).
+setInterval(() => { if (!testModeActive) poll(); }, 250);
 </script>
 </body>
 </html>
