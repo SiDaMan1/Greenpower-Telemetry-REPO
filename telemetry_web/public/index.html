@@ -2212,7 +2212,11 @@ const METRICS = {
   // (see greenpower_receiver's JSON "airtime_ms" — one packet's worth of
   // lag, not this packet's own airtime; see config.h's airtime_ms_x10
   // comment for why). NOT a computed Semtech-formula estimate.
-  airtime_ms: {label:'Airtime',    unit:'ms',  color:'var(--airtime)', dec:1, range:[0,50],      multiDefault:false},
+  // range bumped 50→100 when the firmware moved SF7/BW500 (~21ms typical)
+  // back to SF7/BW125 (~85ms typical) for range — just a chart y-axis
+  // seeding hint (see the "Chart axes are pre-filled" rule in CLAUDE.md),
+  // not a hard clamp; real values outside it still display fine either way.
+  airtime_ms: {label:'Airtime',    unit:'ms',  color:'var(--airtime)', dec:1, range:[0,100],     multiDefault:false},
   esc_setpoint_pct: {label:'ESC Setpoint', unit:'%', color:'var(--escset)',  dec:1, range:[0,100], multiDefault:false},
   esc_live_pct:     {label:'ESC Live',     unit:'%', color:'var(--esclive)', dec:1, range:[0,100], multiDefault:true},
   esc_ramp_pct:     {label:'ESC Ramp',     unit:'%', color:'var(--escramp)', dec:1, range:[0,100], multiDefault:false},

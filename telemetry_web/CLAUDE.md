@@ -354,6 +354,10 @@ Per explicit request ("make the efficiency graph on mobile larger"). The generic
 
 ---
 
+## Current State (V4.2 — `airtime_ms`'s chart-seeding range widened, matching firmware's BW125 switch)
+
+- **`METRICS.airtime_ms.range` widened `[0,50]` → `[0,100]`** — the firmware moved from SF7/BW500 (~21ms typical airtime) to SF7/BW125 (~85ms typical) for range, see `greenpower_sender/CLAUDE.md`'s V4.5 entry. This is purely a chart y-axis SEEDING hint (see the "Chart axes are pre-filled" rule above) — real values outside it still render fine either way, but leaving it at the old `[0,50]` would have made every fresh chart load visibly rescale/lurch once real ~85ms values started arriving, the exact thing that rule exists to avoid.
+
 ## Current State (V4.1 — airtime added to the desktop header too, `#airtime-badge`)
 
 - **Explicit follow-up**: "can i move the airtime to the top bar on desktop" — new `#airtime-badge` (`TX X.Xms`) in the header, right after the signal meter, desktop-only (same reasoning as `#signal-meter`: no room on a phone header, and the Link page already carries this value full-time on both platforms — nothing was removed from there). Unlike `#signal-badge`, this badge's color is fixed (`var(--airtime)`, matching `METRICS.airtime_ms`'s own color), not score-banded — a measured on-air time doesn't have a "good/bad" judgment the way link quality does, it's purely informational.

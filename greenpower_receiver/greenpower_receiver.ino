@@ -9,22 +9,25 @@
 //  directly, or have another program parse it off the serial port.
 //
 //  LoRa RX: SX1262  NSS=8 RST=12 DIO1=14 BUSY=13  SPI SCK=9 MISO=11 MOSI=10
-//           Same RF settings as the sender (915 MHz, SF7, BW500, sync
+//           Same RF settings as the sender (915 MHz, SF7, BW125, sync
 //           0xF3) — see config.h, which must stay in sync with the
-//           sender's copy. Latency now prioritized over range, per a
-//           direct request: SF7 (lowest value proven safe on this exact
-//           hardware — SF10/SF12 both hung this board's radio.begin()
-//           at BW125, see CLAUDE.md's ⚠️ rules for that history) + BW500
-//           (raised from 125 for shorter symbol duration/less airtime, at
-//           direct cost of range/sensitivity — the explicitly authorized
-//           tradeoff). Packet itself was later compressed 73→42 bytes
-//           (fixed-point instead of float, see config.h), plus implicit-
-//           header mode + a trimmed 6-symbol preamble (both must match the
-//           sender's copy exactly). ~21ms time-on-air per packet now — a
-//           real, hardware-measured value (see airtime_ms_x10 in config.h),
-//           not just a computed estimate — down
-//           from ~36ms right after the SF7/BW500 switch and ~6.9s at the
-//           prior SF12/BW62.5 range attempt.
+//           sender's copy. History: latency was prioritized over range
+//           first (SF7 — lowest value proven safe on this exact hardware,
+//           SF10/SF12 both hung this board's radio.begin() at BW125, see
+//           CLAUDE.md's ⚠️ rules — + BW500, the explicitly authorized
+//           range-for-latency trade). Packet was then compressed
+//           73→42→44 bytes (fixed-point instead of float, implicit header,
+//           trimmed preamble, then a real measured-airtime field added
+//           back — see config.h), which freed up enough of the 200ms
+//           update budget that BW went back DOWN to 125 for real range —
+//           per a direct follow-up request, using the slack the
+//           compression work created rather than accepting either less
+//           range or a slower update rate. SF stayed at 7 throughout —
+//           BW125 is this project's ORIGINAL setting, not a new gamble.
+//           ~85ms time-on-air per packet now — a real, hardware-measured
+//           value (see airtime_ms_x10 in config.h), not just a computed
+//           estimate — still comfortably under the 200ms update interval,
+//           down from the ~6.9s at the SF12/BW62.5 range attempt.
 //
 //  Serial protocol for downstream tooling (e.g. receiver_agent):
 //    • Boot prints one line containing DEVICE_ID once — lets a host script
@@ -140,7 +143,7 @@ void setup() {
     SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
     int loraState = radio.begin(
         LORA_FREQ_MHZ,        // 915.0 MHz
-        500.0,                // bandwidth kHz — raised from 125 for latency (shorter symbol duration = less airtime), at direct cost of range/sensitivity; see this file's own header comment for the full history
+        125.0,                // bandwidth kHz — back down from 500 for RANGE (narrower bandwidth = better receiver sensitivity); MUST match the sender's copy exactly or packets won't decode — see this file's own header comment for the full history
         7,                    // spreading factor — SF7, the lowest value already proven safe on this exact hardware; MUST match the sender's copy exactly or packets won't decode (see config.h's own "must stay in sync" rule)
         5,                    // coding rate 4/5
         LORA_SYNC_WORD,       // 0xF3
@@ -169,7 +172,7 @@ void setup() {
             Serial.printf("[WARN] startReceive() failed  code=%d\n", rxState);
         } else {
             loraReady = true;
-            Serial.printf("[OK]   SX1262  915 MHz  SF7  BW500  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
+            Serial.printf("[OK]   SX1262  915 MHz  SF7  BW125  22dBm  implicit-hdr  preamble=%u  listening...\n", LORA_PREAMBLE_SYMBOLS);
         }
     }
 

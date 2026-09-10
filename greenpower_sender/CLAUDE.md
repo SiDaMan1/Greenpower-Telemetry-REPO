@@ -197,6 +197,14 @@ Follow-up to the `epoch_time` addition above: once the packet had grown to 98 by
 
 ---
 
+## Current State (V4.5 — bandwidth back to 125kHz for RANGE, using slack the compression passes created — SF unchanged)
+
+- **Explicit follow-up request: "increase range without increasing airtime and how often it sends packets... I want it to update every 200ms still."** The honest physics answer: TX power is already maxed (22dBm), so real range only comes from bandwidth/spreading-factor trades — but this project's own compression work (V4.2/V4.3/V4.4 below) had, by this point, shrunk SF7/BW500's airtime to ~21ms, using barely 10% of the 200ms update budget. The fix was spending that unused ~180ms of slack, not finding a free lunch that doesn't exist.
+- **`radio.begin()`'s bandwidth changed 500.0 → 125.0.** SF stayed at 7 (unchanged) — this is NOT the same risk category as trying SF9/SF10/SF12; **BW125 is literally this project's ORIGINAL setting**, from before the whole latency-optimization thread ever started, so it's proven not to hang on this hardware. Only the packet underneath it is different now (much smaller, thanks to the compression passes), which is why it's affordable again.
+- **New time-on-air ≈ 85ms** (was ~21ms at BW500) — still comfortably under the 200ms `LORA_TX_INTERVAL_MS`, with ~115ms of margin. **"How often it sends" is completely unchanged** — `LORA_TX_INTERVAL_MS` stayed at 200ms; only how long each individual transmission takes changed, not the cadence between them.
+- **Other options considered and NOT taken**, documented for the record: SF7/BW250 (smaller range gain, ~43ms, even more margin — a safer/smaller step) and SF9/BW250 (bigger gain, ~140ms, still fits under 200ms, but SF9 has never been tested on this exact board — SF10/SF12 hung it before at BW125, unknown whether SF9 would too). User picked BW125 as the best proven-safe/gain tradeoff.
+- **Not yet reflashed/verified on real hardware.**
+
 ## Current State (V4.4 — real, MEASURED airtime added to the packet: `airtime_ms_x10`, 42→44 bytes)
 
 - **Explicit follow-up request: "is there no way you can actually measure the lora time on air"** — every airtime figure up to this point (this file's own comments, the dashboard's old `computeLoraAirtimeMs()`) was a computed Semtech-formula estimate, never a real hardware measurement. Answer: yes, and it's now implemented. Given the choice between "verify the estimate once via serial" (free) and "stream the real measured value to the dashboard live" (costs ~2 bytes/packet), the user chose to stream it live.
