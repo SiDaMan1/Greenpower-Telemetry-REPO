@@ -84,7 +84,7 @@
     --accent:#6366f1; --accent2:#0ea5e9; --accent3:#10b981; --danger:#f43f5e;
     --speed:#fb7185; --battv:#7dd3fc; --motorv:#93c5fd; --current:#fcd34d; --temp:#e2e8f0;
     --mrpm:#c4b5fd; --wrpm:#a78bfa;
-    --roll:#5eead4; --pitch:#2dd4bf; --yaw:#99f6e4;
+    --pitch:#2dd4bf;
     --accel:#fda4af; --lateral:#fca5a5; --vertical:#fdba74;
     --rssi:#cbd5e1; --snr:#94a3b8; --gps:#cbd5e1;
     --escset:#fde047; --esclive:#fcd34d; --escramp:#fbbf24; --escmode:#fef08a;
@@ -163,6 +163,7 @@
   .title-text { font-family:'Space Grotesk',sans-serif; font-size:clamp(14px,2.2vw,18px); font-weight:700; letter-spacing:.2px;
     background:linear-gradient(90deg,var(--accent),var(--accent2));
     -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  .title-text-short { display:none; }   /* shown instead of -full on mobile — see the mobile media block */
   #header-right { display:flex; align-items:center; gap:12px; flex-shrink:0; }
   #conn-status { display:flex; align-items:center; font-family:'Share Tech Mono',monospace; font-size:11px;
     padding:5px 10px; border-radius:999px; background:rgba(255,255,255,.03); border:1px solid var(--border); }
@@ -171,14 +172,73 @@
   #conn-dot.stale { background:var(--warn); animation:pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
   #server-time { font-family:'Share Tech Mono',monospace; font-size:12px; color:var(--muted); }
-  #age-badge {
+  #age-badge, #signal-badge {
     font-family:'Share Tech Mono',monospace; font-size:10px; padding:4px 9px;
     border-radius:999px; border:1px solid var(--border); color:var(--muted);
     white-space:nowrap; background:rgba(255,255,255,.02);
   }
+  /* signal-badge's color rides on top of the shared badge look above —
+     see updateSignalBadge()'s own comment for the 0-10 score/color bands. */
+  #signal-badge.sig-good { color:var(--accent3); border-color:var(--accent3); }
+  #signal-badge.sig-warn { color:var(--warn); border-color:var(--warn); }
+  #signal-badge.sig-bad  { color:var(--danger); border-color:var(--danger); }
+  /* Packet-loss warning icon — shown next to the SIG number (both the
+     header badge and the Link tab's mobile row) whenever a seq gap was
+     detected recently (see PACKET_LOSS_HOLD_MS/updateSignalBadge()).
+     display:none by default, .show turns it on — same pattern as every
+     other toggle-visibility element in this file (.install-fab etc). */
+  .packet-loss-icon { display:none; color:var(--danger); flex-shrink:0; }
+  .packet-loss-icon.show { display:inline-flex; }
+  .packet-loss-icon .icon { width:13px; height:13px; }
+  /* Signal-strength meter — a small gradient bar reused in two places
+     (desktop header, mobile Link tab — see updateSignalMeterEl()).
+     The fill's gradient is pinned to a FIXED background-size matching the
+     track's own fixed width, not "100%" (which would rescale to the
+     fill's own shrinking width and always show the same red→green blend
+     regardless of score) — so as the fill narrows toward 0, only the RED
+     end of the gradient is ever visible, and only at 10/10 does the fill
+     reach all the way to pure green. That's what makes the bar's color
+     itself, not just its length, actually track the score. `transition:
+     width` is what makes it animate smoothly as the score changes rather
+     than snapping — same easing token (`--ease`) already used for every
+     other subtle motion in this file (card borders, chart hides, etc).
+     The track's own box-shadow (sig-good/warn/bad, same score bands and
+     class names signal-badge already uses) adds a soft matching glow so
+     the meter and the text badge always visually agree at a glance. */
+  .sig-meter {
+    position:relative; width:64px; height:8px; border-radius:999px;
+    overflow:hidden; background:rgba(255,255,255,.08); border:1px solid var(--border);
+    flex-shrink:0; transition:box-shadow .4s var(--ease);
+  }
+  .sig-meter.sig-good { box-shadow:0 0 7px -1px var(--accent3); }
+  .sig-meter.sig-warn { box-shadow:0 0 7px -1px var(--warn); }
+  .sig-meter.sig-bad  { box-shadow:0 0 7px -1px var(--danger); }
+  .sig-meter-fill {
+    height:100%; width:0%; border-radius:999px;
+    background:linear-gradient(to right, #ef4444, #facc15, #22c55e);
+    background-size:64px 100%;
+    transition:width .5s var(--ease);
+  }
+  /* Link tab's mobile-only row — same meter, plus a label/value pair laid
+     out like a small standalone card. Hidden by default (desktop shows
+     the header version instead, see the mobile media query below for
+     both halves of this swap). */
+  .link-signal-row {
+    display:none; align-items:center; gap:12px; padding:11px 14px;
+    background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
+    margin-bottom:10px;
+  }
+  .link-signal-label {
+    font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase;
+    color:var(--muted); flex-shrink:0;
+  }
+  .link-signal-value {
+    font-family:'Share Tech Mono',monospace; font-size:13px; font-weight:600;
+    color:var(--text); margin-left:auto; flex-shrink:0;
+  }
   /* Test mode: feeds fake, plausible telemetry through the exact same
      render path as a real packet (applyState/pushHistory/applyHistory) at
-     the same 5Hz cadence, so the whole UI — numbers, charts, GPS fix,
+     the same 4Hz cadence, so the whole UI — numbers, charts, GPS fix,
      ESC mode/state — can be exercised for visual/UI work without the car,
      receiver, or receiver_agent running at all. Off by default; a bright
      amber accent when on so it's unmistakable this isn't real data. */
@@ -215,6 +275,7 @@
   .btn:active { transform:scale(.96); }
   .btn-accent { color:var(--accent2); border-color:rgba(14,165,233,.3); }
   .btn-good { color:var(--accent3); border-color:rgba(16,185,129,.3); }
+  .btn-danger { color:var(--danger); border-color:rgba(239,68,68,.35); }
   .btn-sm { padding:5px 10px; font-size:11px; border-radius:6px; }
   .btn:active, .tab:active { transform:scale(.95); }
 
@@ -707,6 +768,28 @@
        right above it. Flat and opaque removes both problems at once. */
     #header { background:#0b0c11; padding:0 12px; height:50px; }
     #server-time { display:none; }
+    /* Shorter title on mobile — see this element's own HTML comment for why
+       (frees up the width the delay badge below needs to fit safely). */
+    .title-text-full { display:none; }
+    .title-text-short { display:inline; }
+    /* The live-delay badge ("Xms ago") — shown on mobile now, not hidden.
+       Tightened (smaller font/padding than desktop's) specifically so it
+       comfortably fits next to the LIVE/OFFLINE pill even on a narrow
+       phone header, now that the shortened title above has made room. */
+    #age-badge, #signal-badge { font-size:9px; padding:3px 7px; }
+    /* Desktop-only, per explicit request — mobile's header has no room for
+       a meter alongside the shortened title/badges (see the whole "make
+       it show delay on mobile" thread earlier in this file's history for
+       just how tight that space already is); the same meter appears on
+       the Link tab instead, see .link-signal-row below. */
+    #signal-meter { display:none; }
+    /* #packet-loss-icon.show (ID+class) beats the base .packet-loss-icon.show
+       (class-only) rule by specificity regardless of source order — needed
+       since JS toggles the SAME .show class on both the header and mobile
+       instances; this is what keeps the header one off on mobile even
+       while packet loss is actively being shown on the Link tab instead. */
+    #packet-loss-icon.show { display:none; }
+    .link-signal-row { display:flex; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
@@ -783,7 +866,14 @@
     }
   }
   @media (max-width: 480px) {
-    #age-badge { display:none; }
+    /* Shrunk further rather than hidden (as this used to do) — the delay
+       badge is exactly the thing a follow-up request asked to make sure
+       showed on mobile; a real phone in portrait is usually well under
+       480px wide, so hiding it here meant it was invisible on almost
+       every real phone despite "working" on wider mobile/tablet widths.
+       "--ms" (4 chars) is the longest content it ever shows besides the
+       real reading, so this still has real headroom at this size. */
+    #age-badge, #signal-badge { font-size:8px; padding:3px 5px; }
     .dedicated-big-card { gap:14px; padding:14px 16px; }
   }
 
@@ -1410,7 +1500,20 @@
 <body>
 <div id="app">
   <div id="header">
-    <div id="title"><span class="title-icon icon" data-icon="zap"></span><span class="title-text">Greenpower Telemetry</span></div>
+    <!-- Two title strings, one shown at a time via CSS (not JS) — "Greenpower
+         Telemetry" is too wide to keep alongside the delay badge (#age-badge,
+         see its own mobile rule) on a real phone header without risking
+         overlap/clipping (no text-overflow/ellipsis is set here, and the
+         header has no overflow:hidden of its own). ".title-text-short"
+         reuses manifest.json's own existing short_name ("GP Telemetry") —
+         not a new piece of branding, just reapplying the name already
+         chosen for the exact same "not enough room" reason at install
+         time. -->
+    <div id="title">
+      <span class="title-icon icon" data-icon="zap"></span>
+      <span class="title-text title-text-full">Greenpower Telemetry</span>
+      <span class="title-text title-text-short">GP Telemetry</span>
+    </div>
     <div id="header-right">
       <!-- GreenpowerAgentSetup.msi is a pre-built WiX installer living
            right in this app's own public/ folder — replaced an EARLIER
@@ -1446,6 +1549,11 @@
       </button>
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
+      <span id="signal-badge" title="LoRa link quality, 0 (no signal) to 10 (best this link can read) — derived from RSSI+SNR, see updateSignalBadge()">SIG --/10</span>
+      <span class="packet-loss-icon" id="packet-loss-icon" title="Dropping packets — a gap in the sequence number was detected recently. The link is still alive (new packets are still arriving), just not lossless right now."><span class="icon" data-icon="alert-triangle"></span></span>
+      <div class="sig-meter" id="signal-meter" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the badge next to it. Desktop only; see the Link tab on mobile.">
+        <div class="sig-meter-fill" id="signal-meter-fill"></div>
+      </div>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
       <span id="server-time">--:--:--</span>
     </div>
@@ -1648,6 +1756,24 @@
     </div>
   </div>
 
+  <!-- Delete Session confirmation — reuses the same .confirm-modal pattern
+       as the clear-data/download-agent/exit-app confirmations above.
+       Destructive/irreversible (permanently deletes the session and every
+       telemetry point in it, server-side), hence a real confirm step
+       rather than firing straight from the Sessions table's Delete button.
+       Which session id is pending is tracked in JS (pendingDeleteSessionId),
+       not baked into this markup — one modal instance, reused for whichever
+       row's Delete button was last clicked. -->
+  <div class="confirm-modal-backdrop" id="delete-session-confirm-backdrop"></div>
+  <div class="confirm-modal" id="delete-session-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-confirm-title">
+    <div class="confirm-modal-title" id="delete-session-confirm-title">Delete This Session?</div>
+    <div class="confirm-modal-body">This permanently deletes session <strong id="delete-session-confirm-id">#--</strong> and every telemetry point recorded in it. This cannot be undone.</div>
+    <div class="confirm-modal-actions">
+      <button class="btn btn-sm" id="delete-session-confirm-cancel">Cancel</button>
+      <button class="btn btn-sm btn-danger" id="delete-session-confirm-go">Delete</button>
+    </div>
+  </div>
+
   <!-- Landscape lock overlay — pure CSS (see its own rule for why: the
        actual orientation lock lives in manifest.json + a best-effort
        screen.orientation.lock() call, neither of which reaches every
@@ -1688,9 +1814,7 @@
           <div class="stat-card" data-ov-key="temp_f" style="--card-color:var(--temp)"><div class="stat-label">Temp</div><div class="stat-value" id="ov-temp_f">--</div><div class="stat-unit">°F</div></div>
           <div class="stat-card" data-ov-key="motor_rpm" style="--card-color:var(--mrpm)"><div class="stat-label">Motor RPM</div><div class="stat-value" id="ov-motor_rpm">--</div><div class="stat-unit">RPM</div></div>
           <div class="stat-card" data-ov-key="wheel_rpm" style="--card-color:var(--wrpm)"><div class="stat-label">Wheel RPM</div><div class="stat-value" id="ov-wheel_rpm">--</div><div class="stat-unit">RPM</div></div>
-          <div class="stat-card" data-ov-key="roll_deg" style="--card-color:var(--roll)"><div class="stat-label">Roll</div><div class="stat-value" id="ov-roll_deg">--</div><div class="stat-unit">°</div></div>
           <div class="stat-card" data-ov-key="pitch_deg" style="--card-color:var(--pitch)"><div class="stat-label">Pitch</div><div class="stat-value" id="ov-pitch_deg">--</div><div class="stat-unit">°</div></div>
-          <div class="stat-card" data-ov-key="yaw_deg" style="--card-color:var(--yaw)"><div class="stat-label">Yaw</div><div class="stat-value" id="ov-yaw_deg">--</div><div class="stat-unit">°</div></div>
           <!-- GPS is the one deliberate exception — it's not a single short
                number, it's two lines (lat + lon) via `white-space:pre-line`
                (see .stat-value.tiny's own CSS), which genuinely doesn't fit
@@ -1821,16 +1945,8 @@
     <div id="page-imu" class="page">
       <div class="range-toggle-row" data-range-slot></div>
       <div class="section-heading">Orientation</div>
-      <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Roll</div><div class="dedicated-value size-sm" id="big-roll_deg" style="color:var(--roll)">--</div><div class="dedicated-unit">°</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value size-sm" id="big-pitch_deg" style="color:var(--pitch)">--</div><div class="dedicated-unit">°</div></div></div>
-        <div class="dedicated-big-card"><div><div class="dedicated-label">Yaw</div><div class="dedicated-value size-sm" id="big-yaw_deg" style="color:var(--yaw)">--</div><div class="dedicated-unit">°</div></div></div>
-      </div>
-      <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;min-height:220px">
-        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-roll_deg"></canvas></div></div>
-        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-pitch_deg"></canvas></div></div>
-        <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-yaw_deg"></canvas></div></div>
-      </div>
+      <div class="dedicated-big-card"><div><div class="dedicated-label">Pitch</div><div class="dedicated-value" id="big-pitch_deg" style="color:var(--pitch)">--</div><div class="dedicated-unit">°</div></div></div>
+      <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-pitch_deg"></canvas></div></div>
       <div class="section-heading">G-Force</div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Accel</div><div class="dedicated-value size-sm" id="big-accel_g" style="color:var(--accel)">--</div><div class="dedicated-unit">G</div></div></div>
@@ -1884,6 +2000,18 @@
     </div>
 
     <div id="page-link" class="page">
+      <!-- Mobile-only home for the signal-strength meter — desktop shows
+           this in the header instead (#signal-meter), per explicit
+           request; .link-signal-row is display:none by default and only
+           turned on inside the max-width:860px media query. -->
+      <div class="link-signal-row" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the header's SIG badge on desktop.">
+        <span class="link-signal-label">Signal</span>
+        <div class="sig-meter" id="signal-meter-mobile">
+          <div class="sig-meter-fill" id="signal-meter-fill-mobile"></div>
+        </div>
+        <span class="link-signal-value" id="signal-meter-value-mobile">--/10</span>
+        <span class="packet-loss-icon" id="packet-loss-icon-mobile" title="Dropping packets — a gap in the sequence number was detected recently. The link is still alive (new packets are still arriving), just not lossless right now."><span class="icon" data-icon="alert-triangle"></span></span>
+      </div>
       <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">RSSI</div><div class="dedicated-value" id="big-rssi" style="color:var(--rssi)">--</div><div class="dedicated-unit">dBm</div></div></div>
@@ -1892,6 +2020,13 @@
       <div class="chart-row" style="grid-template-columns:1fr 1fr">
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-rssi"></canvas></div></div>
         <div class="chart-card"><div class="chart-canvas-wrap"><canvas id="chart-snr"></canvas></div></div>
+      </div>
+      <!-- A lone card, not wrapped in .big-row — same pattern this file
+           already uses for single-card dedicated sections (Speed,
+           Temperature). Was paired with an Airtime card here; that field
+           was removed entirely per explicit request, leaving this alone. -->
+      <div class="dedicated-big-card" style="margin-top:12px" title="Derived from RSSI+SNR — 0 means no signal (offline), 10 means as strong/clean a link as this radio can plausibly read. See signalScore() in index.html for the exact scoring.">
+        <div><div class="dedicated-label">Signal</div><div class="dedicated-value" id="big-sig-score">--</div><div class="dedicated-unit">score</div></div>
       </div>
     </div>
 
@@ -2073,12 +2208,15 @@ const METRICS = {
   batt_volt:  {label:'Battery',    unit:'V',   color:'var(--battv)',   dec:2, range:[18,27],    multiDefault:true},
   motor_volt: {label:'Motor Volt', unit:'V',   color:'var(--motorv)',  dec:2, range:[0,30],      multiDefault:false},
   current_a:  {label:'Current',    unit:'A',   color:'var(--current)', dec:2, range:[0,100],    multiDefault:true},
-  temp_f:     {label:'Temp',       unit:'°F',  color:'var(--temp)',    dec:1, range:[32,150],   multiDefault:false},
+  // dec:0, not 1 — the firmware only sends whole-degree resolution now
+  // (int8 temp_f, see greenpower_sender/config.h's V4.9 pass), so a
+  // trailing ".0" here would imply precision that isn't actually there.
+  temp_f:     {label:'Temp',       unit:'°F',  color:'var(--temp)',    dec:0, range:[32,150],   multiDefault:false},
   motor_rpm:  {label:'Motor RPM',  unit:'RPM', color:'var(--mrpm)',    dec:0, range:[0,3000],   multiDefault:true},
   wheel_rpm:  {label:'Wheel RPM',  unit:'RPM', color:'var(--wrpm)',    dec:0, range:[0,1000],   multiDefault:false},
-  roll_deg:   {label:'Roll',       unit:'°',   color:'var(--roll)',    dec:1, range:[-45,45],   multiDefault:false},
-  pitch_deg:  {label:'Pitch',      unit:'°',   color:'var(--pitch)',   dec:1, range:[-45,45],   multiDefault:false},
-  yaw_deg:    {label:'Yaw',        unit:'°',   color:'var(--yaw)',     dec:1, range:[-180,180], multiDefault:false},
+  // dec:0, not 1 — same reasoning as temp_f above (int8 pitch_deg now,
+  // whole-degree resolution only).
+  pitch_deg:  {label:'Pitch',      unit:'°',   color:'var(--pitch)',   dec:0, range:[-45,45],   multiDefault:false},
   accel_g:    {label:'Accel',      unit:'G',   color:'var(--accel)',   dec:3, range:[-3,3],     multiDefault:false},
   lateral_g:  {label:'Lateral',    unit:'G',   color:'var(--lateral)', dec:3, range:[-3,3],     multiDefault:false},
   vertical_g: {label:'Vertical',   unit:'G',   color:'var(--vertical)',dec:3, range:[-2,4],     multiDefault:false},
@@ -2209,6 +2347,7 @@ const ICONS = {
   check:        `<svg ${ICON_ATTRS}><polyline points="20 6 9 17 4 12"/></svg>`,
   'chevron-up':   `<svg ${ICON_ATTRS}><polyline points="18 15 12 9 6 15"/></svg>`,
   'chevron-down': `<svg ${ICON_ATTRS}><polyline points="6 9 12 15 18 9"/></svg>`,
+  'alert-triangle': `<svg ${ICON_ATTRS}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
 };
 function applyIcons(root=document) {
   root.querySelectorAll('[data-icon]').forEach(el => {
@@ -2521,7 +2660,7 @@ statsBarToggle.addEventListener('click', () => setStatsBarCollapsed(!statsBar.cl
 // ── OVERVIEW CHART VISIBILITY (hide/show + persisted) ────────────────────────
 // Lets the user declutter the Overview page by hiding mini-charts they don't
 // care about right now. Purely a display toggle — hidden charts keep updating
-// in the background (cheap for 8 line charts at 5 Hz) so they're instantly
+// in the background (cheap for 8 line charts at 4 Hz) so they're instantly
 // current again the moment they're re-shown, no "catching up" delay.
 const OV_VIS_KEY = 'gp_overview_chart_visibility';
 let ovVisible = {};
@@ -3212,24 +3351,33 @@ document.getElementById('download-confirm-go').addEventListener('click', hideDow
 // mechanism that closes any other installed WebAPK. If no second press
 // comes in time, the timer re-arms the guard so a later stray tap doesn't
 // unexpectedly land one gesture away from exiting.
-window.history.pushState({ gpExitGuard:true }, '');
-const EXIT_REARM_MS = 2500;
-let exitRearmTimer = null;
-function showExitToast() {
-  const toast = document.getElementById('exit-toast');
-  toast.classList.add('show');
-  clearTimeout(showExitToast._hideTimer);
-  showExitToast._hideTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+// Mobile-only (IS_MOBILE) — desktop has a real, expected browser back
+// button with its own normal history behavior; this whole guard/toast is
+// specifically a WebAPK-exit workaround for a case that doesn't exist on
+// desktop, and previously fired there too (a real bug — a desktop user
+// pressing their browser's own back button got an irrelevant "Press back
+// again to exit" toast, and a phantom re-pushed history entry, for no
+// reason).
+if (IS_MOBILE) {
+  window.history.pushState({ gpExitGuard:true }, '');
+  const EXIT_REARM_MS = 2500;
+  let exitRearmTimer = null;
+  const showExitToast = () => {
+    const toast = document.getElementById('exit-toast');
+    toast.classList.add('show');
+    clearTimeout(showExitToast._hideTimer);
+    showExitToast._hideTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+  };
+  window.addEventListener('popstate', () => {
+    showExitToast();
+    clearTimeout(exitRearmTimer);
+    // window.history, NOT bare `history` — this script already has a
+    // top-level `const history = {}` (the live-chart data buffer, see
+    // CLAUDE.md), which shadows the global History object for any bare
+    // `history` reference anywhere in this same script.
+    exitRearmTimer = setTimeout(() => { window.history.pushState({ gpExitGuard:true }, ''); }, EXIT_REARM_MS);
+  });
 }
-window.addEventListener('popstate', () => {
-  showExitToast();
-  clearTimeout(exitRearmTimer);
-  // window.history, NOT bare `history` — this script already has a
-  // top-level `const history = {}` (the live-chart data buffer, see
-  // CLAUDE.md), which shadows the global History object for any bare
-  // `history` reference anywhere in this same script.
-  exitRearmTimer = setTimeout(() => { window.history.pushState({ gpExitGuard:true }, ''); }, EXIT_REARM_MS);
-});
 
 // ── CLEAR WEBSITE DATA ───────────────────────────────────────────────────────
 // Wipes every locally-persisted preference this page has ever written
@@ -3272,6 +3420,50 @@ document.getElementById('settings-clear-data-btn').addEventListener('click', sho
 document.getElementById('clear-data-confirm-cancel').addEventListener('click', hideClearDataConfirm);
 document.getElementById('clear-data-confirm-backdrop').addEventListener('click', hideClearDataConfirm);
 document.getElementById('clear-data-confirm-go').addEventListener('click', clearAllWebsiteData);
+
+// ── Delete Session confirmation — one modal instance, reused for whichever
+// row's Delete button was last clicked (pendingDeleteSessionId tracks it,
+// same "one modal, dynamic target" approach as viewSession() below reusing
+// one set of session-chart canvases for whichever session was opened). ──
+let pendingDeleteSessionId = null;
+function showDeleteSessionConfirm(id) {
+  pendingDeleteSessionId = id;
+  setText('delete-session-confirm-id', `#${id}`);
+  document.getElementById('delete-session-confirm-backdrop').classList.add('show');
+  document.getElementById('delete-session-confirm-modal').classList.add('show');
+}
+function hideDeleteSessionConfirm() {
+  pendingDeleteSessionId = null;
+  document.getElementById('delete-session-confirm-backdrop').classList.remove('show');
+  document.getElementById('delete-session-confirm-modal').classList.remove('show');
+}
+async function deleteSessionConfirmed() {
+  if (pendingDeleteSessionId == null) return;
+  const id = pendingDeleteSessionId;
+  const goBtn = document.getElementById('delete-session-confirm-go');
+  goBtn.disabled = true;
+  goBtn.textContent = 'Deleting…';
+  try {
+    const res = await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+    if (!res.ok && res.status !== 204) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    hideDeleteSessionConfirm();
+    loadSessions();   // refresh the table — the deleted row simply won't be in the response anymore
+  } catch (e) {
+    console.warn('deleteSessionConfirmed error:', e);
+    // Left the modal open with the button re-enabled below rather than
+    // silently closing on failure — a failed delete should be obvious,
+    // not look like it quietly succeeded.
+  } finally {
+    goBtn.disabled = false;
+    goBtn.textContent = 'Delete';
+  }
+}
+document.getElementById('delete-session-confirm-cancel').addEventListener('click', hideDeleteSessionConfirm);
+document.getElementById('delete-session-confirm-backdrop').addEventListener('click', hideDeleteSessionConfirm);
+document.getElementById('delete-session-confirm-go').addEventListener('click', deleteSessionConfirmed);
 
 // One-time cookie clear tied to THIS update specifically (the new
 // password-gated onboarding flow below) — per explicit request, every
@@ -3539,6 +3731,7 @@ async function loadSessions() {
         <td style="text-align:right;white-space:nowrap">
           <button class="btn btn-sm btn-accent" onclick="viewSession(${s.id})">View</button>
           <a class="btn btn-sm btn-good" href="/api/sessions/${s.id}/export.csv">CSV</a>
+          <button class="btn btn-sm btn-danger" onclick="showDeleteSessionConfirm(${s.id})">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -3631,12 +3824,53 @@ function renderSessionLapSummary(scopeLabel, rowsSubset, lap) {
     : `${scopeLabel}: ${rowsSubset.length} packets · ${sessionLapsInfo.totalDistanceMi.toFixed(2)} mi · top ${sessionLapsInfo.totalTopSpeedMph.toFixed(1)} mph · ${sessionLapsInfo.totalWh.toFixed(1)} Wh${sessionLapsInfo.totalWhPerMile != null ? ` (${sessionLapsInfo.totalWhPerMile.toFixed(0)} Wh/mi)` : ''}`;
 }
 
+// A long session at 4Hz racks up thousands of points fast (an hour ≈
+// 14,400) — plotting every one of them made these charts genuinely laggy
+// to render/hover/pan, the real bug behind "graphs like amps are laggy"
+// on the Sessions tab. SESSION_CHART_MAX_POINTS caps what actually gets
+// drawn; decimateSessionRows() below thins a session down to that cap
+// PER METRIC before charting. This only affects the on-screen chart —
+// the full-resolution data is untouched in `sessionRowsFull` and in the
+// CSV export (`session-view-export`), so nothing is lost, only not all
+// drawn at once.
+const SESSION_CHART_MAX_POINTS = 1500;
+
+// Min/max bucket decimation, not a naive "every Nth point" stride — a
+// stride can silently skip a real spike entirely (a brief current surge,
+// a speed peak) if it happens to land between sampled indices. Splits
+// `rows` into up to `maxPoints/2` chronological buckets and keeps BOTH
+// the min and max sample per bucket for the given key, so any real
+// extremum survives the thinning. Returns `rows` unchanged when there's
+// nothing to decimate.
+function decimateSessionRows(rows, key, maxPoints) {
+  if (rows.length <= maxPoints) return rows;
+  const bucketCount = Math.max(1, Math.floor(maxPoints / 2));
+  const bucketSize = rows.length / bucketCount;
+  const out = [];
+  for (let b = 0; b < bucketCount; b++) {
+    const start = Math.floor(b * bucketSize);
+    const end = Math.min(rows.length, Math.floor((b + 1) * bucketSize));
+    if (end <= start) continue;
+    let minRow = null, maxRow = null, minVal = Infinity, maxVal = -Infinity;
+    for (let i = start; i < end; i++) {
+      const v = rows[i].data[key];
+      if (typeof v !== 'number') continue;
+      if (v < minVal) { minVal = v; minRow = rows[i]; }
+      if (v > maxVal) { maxVal = v; maxRow = rows[i]; }
+    }
+    if (!minRow && !maxRow) { out.push(rows[start]); continue; } // no numeric data this bucket — keep one placeholder so the time axis doesn't gap
+    out.push(minRow);
+    if (maxRow && maxRow !== minRow) out.push(maxRow);
+  }
+  out.sort((a, b) => a.received_at - b.received_at); // min/max within a bucket can land in either order chronologically
+  return out;
+}
+
 // Extracted out of viewSession() itself so it can be called again, scoped
 // to just one lap's row slice, when the lap <select> below changes — was
 // previously inline in viewSession() and only ever ran once per session
 // open.
 function renderSessionCharts(rows) {
-  const labels = rows.map(r => fmtTimeNoSeconds(r.received_at));
   SESSION_CHART_KEYS.forEach(k => {
     const canvasId = 'session-chart-'+k;
     if (sessionCharts[k]) { try { sessionCharts[k].destroy(); } catch(e) {} }
@@ -3644,7 +3878,9 @@ function renderSessionCharts(rows) {
     if (!ctx) return;
     const metric = METRICS[k];
     const color = resolveColor(metric ? metric.color : 'var(--accent2)');
-    const data = rows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
+    const chartRows = decimateSessionRows(rows, k, SESSION_CHART_MAX_POINTS);
+    const labels = chartRows.map(r => fmtTimeNoSeconds(r.received_at));
+    const data = chartRows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
     sessionCharts[k] = attachTouchTooltipAutoHide(new Chart(ctx, {
       type:'line',
       data:{ labels, datasets:[{ label:k, data, borderColor:color, backgroundColor:color+'1c', fill:true, borderWidth:1.5, pointRadius:0, tension:0.3, borderJoinStyle:'round', borderCapStyle:'round' }] },
@@ -4141,6 +4377,15 @@ let lastSeq = null;
 const rawLines = [];
 const MAX_RAW_LINES = 80;
 
+// ── SIGNAL BADGE: packet-loss + connection-liveness state ────────────────
+// See updateSignalBadge()'s own comment for the full 0/1/normal-score
+// state machine these three feed. All three are updated from poll()'s
+// existing seq-dedupe block — no separate polling path.
+let lastPacketAt = 0;       // Date.now() of the last genuinely NEW packet (new seq) — 0 means "never seen one"
+let packetLossUntil = 0;    // Date.now() timestamp; while now < this, a recent seq gap is still being shown
+const PACKET_LOSS_HOLD_MS = 3000;  // how long the dropped-packet icon/forced-1 state lingers after the last detected gap — long enough to actually be seen, short enough to clear once the link's genuinely clean again
+const SIGNAL_ZERO_AFTER_MS = 1000; // per explicit request — the badge only forces to 0 after this long with NO new packet at all, not on the existing 2000ms STALE_MS the LIVE/OFFLINE pill uses
+
 function gpsValid(flags) { return !!(flags & 0x01); }
 function imuValid(flags) { return !!(flags & 0x02); }
 function escValid(flags) { return !!(flags & 0x08); }   // PKT_FLAG_ESC_VALID — bit 2 (0x04) is current-sensor valid, not ESC
@@ -4169,7 +4414,19 @@ function applyState(d, online) {
     setValueText('rl-hdop', fv(d.hdop,1));
     setValueText('rl-speed', fv(d.speed_mph,1));
 
+    // NOT extended to also show the 0-10 score inline — this card's text
+    // length was already checked (see CLAUDE.md) to just barely fit at the
+    // shared stat-value font size; the full signalScore() breakdown lives
+    // on the dedicated Link page instead (big-sig-score card, below).
     setValueText('ov-link', (d.rssi!=null && d.snr!=null) ? `${Math.round(d.rssi)}dBm / ${fv(d.snr,1)}dB` : '--');
+    if (d.rssi!=null && d.snr!=null) {
+      const sig = signalScore(d.rssi, d.snr);
+      setValueText('big-sig-score', `${sig}/10`);
+      setStyle('big-sig-score', 'color', signalScoreColorVar(sig));
+    } else {
+      setValueText('big-sig-score', '--');
+      setStyle('big-sig-score', 'color', 'var(--muted)');
+    }
     setValueText('ov-seq', d.seq!=null ? d.seq : 0);
 
     // ESC mode/state are strings, not chartable numbers — handled separately
@@ -4181,12 +4438,14 @@ function applyState(d, online) {
     setStyle('esc-mode',  'color', escOk ? 'var(--escmode)' : 'var(--muted)');
     setStyle('esc-state', 'color', escOk ? 'var(--escmode)' : 'var(--muted)');
 
-    // age-badge is NOT touched here — updateConnStatus() owns it exclusively
-    // (real "Xms ago" latency, or "NO SIGNAL"). This function used to also
-    // set it to a bare 'LIVE'/'NO SIGNAL' on every call, which ran after
-    // updateConnStatus() in poll() and clobbered the real latency value —
-    // the net effect was "LIVE" showing twice at once (here and in
-    // #conn-text) with the actual age-badge latency reading never visible.
+    // age-badge/signal-badge are NOT touched here — updateConnStatus() owns
+    // both exclusively (real "Xms ago"/"NO SIGNAL" freshness, and the 0-10
+    // signalScore() badge — see its own comment). This function used to
+    // also set age-badge to a bare 'LIVE'/'NO SIGNAL' on every call, which
+    // ran after updateConnStatus() in poll() and clobbered the real
+    // latency value — the net effect was "LIVE" showing twice at once
+    // (here and in #conn-text) with the actual age-badge reading never
+    // visible.
   } catch(e) { console.warn('applyState error:', e); }
 }
 
@@ -4235,7 +4494,7 @@ function pushHistory(d) {
   // Evict anything older than the hard retention ceiling — this is the
   // outer bound on the whole buffer, independent of whatever range is
   // currently SELECTED for display (see RANGE_OPTIONS above). Normally
-  // evicts 0-1 entries per call (one point pushed at a time at ~5Hz); the
+  // evicts 0-1 entries per call (one point pushed at a time at ~4Hz); the
   // splice cost only becomes noticeable right as a long-open tab first
   // crosses HISTORY_HARD_CAP_MS, not on a steady-state basis.
   const cutoff = t - HISTORY_HARD_CAP_MS;
@@ -4248,7 +4507,7 @@ function pushHistory(d) {
   renderEfficiencyLive();
 }
 
-// Hour:minute only — no seconds. Chart x-axis labels at 5 Hz would otherwise
+// Hour:minute only — no seconds. Chart x-axis labels at 4 Hz would otherwise
 // show the same handful of seconds values wrapping over and over across the
 // visible window, which reads as noisy clutter rather than useful context;
 // dropping seconds here (raw-log timestamps keep them — those genuinely
@@ -4337,22 +4596,147 @@ function pushRawLine(d) {
   if (el) { el.textContent = rawLines.join('\n'); el.scrollTop = el.scrollHeight; }
 }
 
+// ── LORA SIGNAL QUALITY (0-10) ───────────────────────────────────────────
+// Derived from rssi+snr (both already in every packet's JSON — see
+// greenpower_receiver's "JSON:" line), not a raw METRICS field — same
+// "computed, not packet-native" pattern this file already uses for power_w
+// (see CLAUDE.md's "Overview page's desktop mini-chart grid" rule).
+// 0 = no signal at all (offline, or before the very first packet ever).
+// 10 = as strong/clean a link as this radio can plausibly read.
+// Takes the WORSE of an RSSI-based score and an SNR-based score, not their
+// average — a link that's strong in raw RSSI but sitting right at the SNR
+// noise floor (heavy nearby interference) is still a weak link overall,
+// and one with clean SNR but very low absolute RSSI (very far away, near
+// this project's SF7/BW500 sensitivity limit) is too. Either weakness
+// alone should pull the combined score down, not get averaged away by the
+// other being fine.
+function clampToRange(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function signalScore(rssi, snr) {
+  if (rssi == null || snr == null) return 0;
+  // RSSI: -126dBm (this radio's real SF7/BW62.5 sensitivity floor,
+  //       estimated — see below) -> 0
+  //       -70dBm  (as good as this actual hardware gets, from a REAL
+  //       close-range measurement)                                -> 10
+  // The floor was a generic -110dBm guess until this pass — replaced with
+  // an estimate of the ACTUAL SX1262 sensitivity floor at this radio's
+  // current settings, derived from Semtech's own published SF7/BW125
+  // spec (-123dBm) via the standard LoRa link-budget relation
+  // (sensitivity = -174dBm/Hz thermal floor + 10·log10(BW) + receiver
+  // noise figure + required SNR for the spreading factor) — NOT a
+  // directly-published number for BW62.5 specifically, since Semtech
+  // doesn't tabulate every SF/BW combination, just the one calibration
+  // point this estimate is built from. Recompute this if SF or BW ever
+  // change again (BW125's real floor is ~-123dBm, BW500's is ~-117dBm).
+  // The -70dBm ceiling stays a real measurement (see below) — revisit if
+  // a stronger real reading ever shows up.
+  const rssiScore = clampToRange((rssi - -126) / (-70 - -126) * 10, 0, 10);
+  // SNR: -7.5dB (SF7's REAL required-SNR floor per Semtech's spec — not
+  //       a generic guess like the -20dB this used to be) -> 0
+  //       15dB (very clean signal, well above the noise floor)    -> 10
+  // The -20dB floor this had before was a guess that turned out to be
+  // ~12.5dB too pessimistic — SF7 actually starts failing around -7.5dB,
+  // not -20dB (that's closer to SF12's real floor). Required SNR drops
+  // ~2.5dB per SF step (SF8≈-10, SF9≈-12.5, ... SF12≈-20) — if SF ever
+  // changes, recompute this floor: -7.5 - 2.5×(newSF-7). The 15dB
+  // ceiling is unaffected by SF/BW — SX126x can report up to ~+19.5dB in
+  // ideal conditions, 15dB is a realistic "excellent" cutoff short of
+  // chasing that theoretical max.
+  const snrScore = clampToRange((snr - -7.5) / (15 - -7.5) * 10, 0, 10);
+  return Math.round(Math.min(rssiScore, snrScore));
+}
+// Same score bands drive both the header badge's color class and the
+// dedicated Link page's readout (see applyState's rssi/snr handling) —
+// good/warn/bad thresholds picked so "warn" genuinely means "watch this,"
+// not just "not perfect."
+function signalScoreClass(score) {
+  return score >= 7 ? 'sig-good' : score >= 4 ? 'sig-warn' : 'sig-bad';
+}
+function signalScoreColorVar(score) {
+  const cls = signalScoreClass(score);
+  return cls === 'sig-good' ? 'var(--accent3)' : cls === 'sig-warn' ? 'var(--warn)' : 'var(--danger)';
+}
+// The SIG number is NOT always a fresh signalScore(rssi,snr) computation —
+// three distinct states, per explicit request:
+//   1. FORCED 0 — no genuinely NEW packet (new seq) in over
+//      SIGNAL_ZERO_AFTER_MS (1000ms). This is deliberately a SEPARATE,
+//      stricter timer from server.js's own STALE_MS (2000ms, what the
+//      LIVE/OFFLINE pill uses) — the two can legitimately disagree for up
+//      to a second (still "LIVE" by the pill's looser threshold, already
+//      "0" on the SIG badge) and that's intentional, not a bug to unify.
+//   2. FORCED 1 + packet-loss icon shown — a NEW packet just arrived (so
+//      the connection is genuinely still alive, case 1 doesn't apply),
+//      but a gap was detected in the last PACKET_LOSS_HOLD_MS (3000ms) —
+//      poll()'s seq-dedupe block is what actually detects the gap and
+//      sets packetLossUntil; this function only reads that state. A weak
+//      link that's still delivering *some* packets reads as "1", not
+//      whatever RSSI/SNR happen to say — dropping packets at all is worse
+//      news than any non-zero RSSI/SNR combination would suggest.
+//   3. Normal — neither of the above — a real signalScore(rssi,snr).
+function updateSignalBadge(d) {
+  const now = Date.now();
+  const noRecentPacket = lastPacketAt === 0 || (now - lastPacketAt) > SIGNAL_ZERO_AFTER_MS;
+  const droppingPackets = !noRecentPacket && now < packetLossUntil;
+  let score;
+  if (noRecentPacket) score = 0;
+  else if (droppingPackets) score = 1;
+  else score = d ? signalScore(d.rssi, d.snr) : 0;
+
+  const el = document.getElementById('signal-badge');
+  if (el) {
+    el.textContent = `SIG ${score}/10`;
+    el.classList.remove('sig-good','sig-warn','sig-bad');
+    el.classList.add(signalScoreClass(score));
+  }
+  setClass('packet-loss-icon', 'show', droppingPackets);
+  setClass('packet-loss-icon-mobile', 'show', droppingPackets);
+  // Desktop header meter + mobile Link-tab meter — same score, same
+  // update, two DOM targets (one is always display:none depending on
+  // viewport width, see the shared .sig-meter/.link-signal-row CSS).
+  updateSignalMeterEl('signal-meter', 'signal-meter-fill', null, score);
+  updateSignalMeterEl('signal-meter-mobile', 'signal-meter-fill-mobile', 'signal-meter-value-mobile', score);
+}
+// meterId's fill width (0-100%, CSS-transitioned — see .sig-meter-fill's
+// own comment for why the gradient itself, not just the width, tracks the
+// score) and its sig-good/warn/bad glow class, shared by every .sig-meter
+// instance on the page. valueId is optional — the header meter has no
+// separate text readout (the badge right next to it already shows one),
+// the Link-tab meter does.
+function updateSignalMeterEl(meterId, fillId, valueId, score) {
+  const meter = document.getElementById(meterId);
+  const fill = document.getElementById(fillId);
+  if (!meter || !fill) return;
+  fill.style.width = (score * 10) + '%';
+  meter.classList.remove('sig-good','sig-warn','sig-bad');
+  meter.classList.add(signalScoreClass(score));
+  if (valueId) setText(valueId, `${score}/10`);
+}
+
 // ── CONNECTION STATUS ────────────────────────────────────────────────────────
-function updateConnStatus(online, ageMs) {
+function updateConnStatus(online, ageMs, data) {
   setClass('conn-dot','live', !!online);
   setClass('conn-dot','stale', !online);
   setText('conn-text', online ? 'LIVE' : 'OFFLINE');
   if (ageMs != null) setText('age-badge', online ? `${ageMs}ms ago` : 'NO SIGNAL');
+  // signal-badge is owned here too, same reasoning as age-badge (see
+  // applyState's own comment). Passed `data` directly now, NOT gated on
+  // `online` the way this used to be — updateSignalBadge() has its own,
+  // stricter (1000ms vs STALE_MS's 2000ms) liveness check now via
+  // lastPacketAt, so double-gating here would just be redundant; when the
+  // server-side `online` flag does go false, lastPacketAt is already well
+  // past its own threshold too (server staleness always implies client
+  // staleness here), so the two checks can't actually disagree in a way
+  // that matters.
+  updateSignalBadge(data);
 }
 
 setInterval(() => setText('server-time', new Date().toLocaleTimeString()), 1000);
 
-// ── POLL /api/latest (5 Hz, matching the sender's transmit rate) ────────────
+// ── POLL /api/latest (4 Hz / 250ms, matching the sender's transmit rate — was 5Hz/200ms) ────────────
 async function poll() {
   try {
     const res = await fetch('/api/latest', { cache:'no-store' });
     const { online, ageMs, data } = await res.json();
-    updateConnStatus(online, ageMs);
+    updateConnStatus(online, ageMs, data);
     if (!data) return;
 
     applyState(data, online);
@@ -4361,6 +4745,17 @@ async function poll() {
     // (dedupe by seq) — otherwise polling faster than data arrives would
     // plot the same value repeatedly as if it were fresh samples.
     if (data.seq !== undefined && data.seq !== lastSeq) {
+      // Packet-loss / connection-liveness tracking for the SIG badge — see
+      // updateSignalBadge()'s own comment for the full state machine this
+      // feeds. A gap (new seq more than +1 past the last one) means one or
+      // more packets were dropped since then, but the link is still alive
+      // — a genuinely NEW seq just arrived — which is exactly the
+      // "dropping packets but keeping a connection" case that forces the
+      // badge to 1/10 + the warning icon, distinct from a real disconnect.
+      if (lastSeq !== null && data.seq > lastSeq + 1) {
+        packetLossUntil = Date.now() + PACKET_LOSS_HOLD_MS;
+      }
+      lastPacketAt = Date.now();
       lastSeq = data.seq;
       pushHistory(data);
       applyHistory();
@@ -4390,7 +4785,7 @@ async function poll() {
 applyHistory();
 
 // ── TEST MODE (fake data for UI testing, no car/receiver required) ──────────
-// Generates a plausible packet every 200ms (same cadence as the real poll)
+// Generates a plausible packet every 250ms (same cadence as the real poll)
 // and pushes it through the exact same applyState/pushHistory/applyHistory/
 // pushRawLine functions a real packet would go through — so every chart,
 // stat card, GPS fix indicator, and ESC mode/state exercises real rendering
@@ -4480,7 +4875,15 @@ function genTestPacket() {
 
 function testModeTick() {
   const d = genTestPacket();
-  updateConnStatus(true, 0);
+  // Mirrors poll()'s own lastPacketAt bookkeeping — Test Mode has its own
+  // separate packet-injection path (doesn't go through poll()'s seq-dedupe
+  // block at all), and updateSignalBadge()'s liveness check needs this
+  // updated every tick or the SIG badge would incorrectly force to 0 the
+  // entire time Test Mode is on. genTestPacket()'s testSeq always
+  // increments by exactly 1, so there's no gap to simulate here — Test
+  // Mode intentionally doesn't exercise the packet-loss/icon path.
+  lastPacketAt = Date.now();
+  updateConnStatus(true, 0, d);
   applyState(d, true);
   pushHistory(d);
   applyHistory();
@@ -4504,7 +4907,7 @@ function setTestMode(on) {
   if (settingsToggle) settingsToggle.checked = on;
   if (testModeTimer) { clearInterval(testModeTimer); testModeTimer = null; }
   if (on) {
-    testModeTimer = setInterval(testModeTick, 200);
+    testModeTimer = setInterval(testModeTick, 250);   // matches the real poll's 250ms cadence — see its own comment
     testModeTick();
   } else {
     // Hand back to the real poll loop immediately rather than waiting for
@@ -4655,9 +5058,7 @@ const OV_MOBILE_ITEMS = [
   { key:'temp_f',     label:'Temp',       color:'var(--temp)' },
   { key:'motor_rpm',  label:'Motor RPM',  color:'var(--mrpm)' },
   { key:'wheel_rpm',  label:'Wheel RPM',  color:'var(--wrpm)' },
-  { key:'roll_deg',   label:'Roll',       color:'var(--roll)' },
   { key:'pitch_deg',  label:'Pitch',      color:'var(--pitch)' },
-  { key:'yaw_deg',    label:'Yaw',        color:'var(--yaw)' },
   { key:'gps',        label:'GPS',        color:'var(--gps)' },
   { key:'link',       label:'Link',       color:'var(--rssi)' },
   { key:'seq',        label:'Packet #',   color:'#64748b' },
@@ -4724,7 +5125,10 @@ applyOvMobileVisibility();
 renderOvMobileList();
 
 poll();
-setInterval(() => { if (!testModeActive) poll(); }, 200);
+// 200ms (5Hz) → 250ms (4Hz), matching the firmware's own cadence change
+// (SENSOR_INTERVAL_MS/LORA_TX_INTERVAL_MS in greenpower_sender.ino, per
+// explicit request to trade update rate for real LoRa range margin).
+setInterval(() => { if (!testModeActive) poll(); }, 250);
 </script>
 </body>
 </html>

@@ -171,6 +171,51 @@ app.get('/api/sessions', async (req, res) => {
     }
 });
 
+// Delete a session and all its points — per explicit request, a real
+// destructive action exposed to the dashboard. Deliberately public/no-auth,
+// same reasoning as every other session endpoint above ("nothing in a
+// telemetry session is sensitive enough to gate behind the API key") — the
+// UI's own confirmation modal (see index.html) is the actual safety net
+// against ACCIDENTAL deletion, not server-side auth; this matches the
+// honest security posture this whole app already has (see the onboarding
+// password's own "UI speed-bump, not real access control" note in
+// CLAUDE.md) rather than pretending a new endpoint should be held to a
+// stricter standard than every read endpoint already sitting next to it.
+// telemetry_points has no ON DELETE CASCADE on its session_id foreign key
+// (the schema up top never declared one), so points are deleted explicitly
+// first, in a transaction — if either delete fails, both roll back rather
+// than leaving orphaned points or a session with no points silently gone.
+app.delete('/api/sessions/:id', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const id = req.params.id;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM telemetry_points WHERE session_id = $1', [id]);
+        const result = await client.query('DELETE FROM sessions WHERE id = $1', [id]);
+        await client.query('COMMIT');
+        if (result.rowCount === 0) {
+            return res.status(404).json({ error: 'session not found' });
+        }
+        // If the session just deleted was the currently-active one (e.g.
+        // someone deletes an in-progress session while the car's still
+        // transmitting), reset currentSessionId so the next packet starts
+        // a genuinely new session row instead of trying to insert into a
+        // session id that no longer exists (which would fail the
+        // telemetry_points foreign key constraint until the normal
+        // SESSION_GAP_MS timeout eventually forced a new session anyway).
+        if (String(currentSessionId) === String(id)) {
+            currentSessionId = null;
+        }
+        res.status(204).end();
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
+    }
+});
+
 app.get('/api/sessions/:id/points', async (req, res) => {
     if (!pool) return res.status(503).json({ error: 'database not configured' });
     try {
@@ -194,7 +239,7 @@ const CSV_COLUMNS = [
     'received_at', 'seq', 'rssi', 'snr', 'flags',
     'speed_mph', 'latitude', 'longitude', 'hdop', 'satellites',
     'temp_f', 'batt_volt', 'motor_volt', 'current_a',
-    'roll_deg', 'pitch_deg', 'yaw_deg', 'accel_g', 'lateral_g', 'vertical_g',
+    'pitch_deg', 'accel_g', 'lateral_g', 'vertical_g',
     'motor_rpm', 'wheel_rpm',
     'esc_valid', 'esc_mode', 'esc_state', 'esc_setpoint_pct', 'esc_live_pct', 'esc_ramp_pct',
 ];

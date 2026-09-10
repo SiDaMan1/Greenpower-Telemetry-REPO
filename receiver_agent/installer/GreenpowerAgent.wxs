@@ -46,7 +46,7 @@
   <Product Id="*"
            Name="Greenpower Receiver Agent"
            Language="1033"
-           Version="1.5.2.0"
+           Version="1.5.7.0"
            Manufacturer="Greenpower"
            UpgradeCode="1cf7948c-d8f6-410f-a05b-0b14f255a3f6">
 
@@ -166,12 +166,37 @@
         <File Id="FILE_config_example_json" Source="..\config.example.json" />
         <File Id="FILE_agent_launcher_vbs" Source="agent-launcher.vbs" />
       </Component>
-      <!-- Separate component, NeverOverwrite — a re-install/upgrade must
-           never clobber a config a user has already customized, mirroring
-           setup.bat's own "leave it as-is if config.json already exists"
-           behavior (and the equivalent onlyifdoesntexist flag in the Inno
-           Setup installer). -->
-      <Component Id="AgentConfig" Guid="d4b8f3e2-9a6c-4e1d-8b5a-7c3f2e9d6a1b" NeverOverwrite="yes">
+      <!-- ⚠️ REAL, CONFIRMED bug: NeverOverwrite="yes" here silently
+           deleted config.json on a real auto-update, taking down the
+           user's actually-running agent — found and fixed the same day
+           it shipped (1.5.3.0), via a live report: "it said it will
+           restart and update automatically but it just closed and never
+           reopened... nothing happens" when relaunched.
+           Root cause, confirmed by reading the freshly-broken install's
+           own agent.log: the new agent.js started fine, but immediately
+           hit "[ERROR] Missing websiteUrl/apiKey" and exited (1) —
+           config.json was simply gone from the install folder after the
+           upgrade. NeverOverwrite tells Windows Installer "if this
+           component's file already exists on disk, don't touch it" —
+           the ORIGINAL intent (see the comment this replaced) was to
+           protect a hand-edited config from being clobbered by a
+           reinstall, mirroring setup.bat's own "leave it alone if it
+           already exists" behavior. But this project's config.json is
+           NOT actually hand-edited per machine — it's the one real,
+           committed file every install/update ships identically (see
+           receiver_agent/CLAUDE.md's own config.json rule) — so that
+           protection was solving a problem this project doesn't have,
+           while creating a real one: combined with how MajorUpgrade
+           sequences removing the OLD product's files against installing
+           the NEW product's files, NeverOverwrite's "already exists,
+           skip" logic ended up skipping the write at exactly the point
+           in that sequence where the file wasn't actually present yet —
+           net result, upgraded installs lose config.json outright.
+           Fixed by simply removing NeverOverwrite — config.json is now
+           installed like every other tracked file, unconditionally
+           reinstalled from the package on every upgrade, which is
+           correct given it's always the same shipped content anyway. -->
+      <Component Id="AgentConfig" Guid="d4b8f3e2-9a6c-4e1d-8b5a-7c3f2e9d6a1b">
         <RegistryValue Root="HKCU" Key="Software\Greenpower\ReceiverAgent" Name="ConfigInstalled" Type="integer" Value="1" KeyPath="yes" />
         <File Id="FILE_config_json" Source="..\config.json" />
       </Component>

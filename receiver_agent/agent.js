@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.5.2.0';
+const AGENT_VERSION = '1.5.7.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -261,7 +261,7 @@ const SCAN_MS     = 2000;    // how often to check for newly plugged-in ports
 // to land and get answered after that. 6000ms gives real headroom.
 const IDENTIFY_TIMEOUT_MS = 6000;
 const NOTIFY_TIMEOUT_S    = 20;   // how long the accept/decline prompt stays up
-const UPDATE_CHECK_MS     = 6 * 60 * 60 * 1000;   // check every 6h — frequent enough to reach people quickly, rare enough not to matter for bandwidth/load
+const UPDATE_CHECK_MS     = 60 * 60 * 1000;   // check every 1h (was 6h) — per explicit request, prioritizing reaching people quickly (e.g. after a bad update like 1.5.3.0's) over the small extra bandwidth/load
 const GUI_PORT             = 47821;   // arbitrary fixed high port, loopback-only — see startGuiServer()
 
 // Ports we've already looked at (identified as Greenpower / not / still
@@ -353,7 +353,13 @@ try {
 function openNativeGuiWindow() {
     const ps1Path = path.join(os.tmpdir(), 'greenpower-agent-gui.ps1');
     try {
-        fs.writeFileSync(ps1Path, guiWindowPs1());
+        // Leading UTF-8 BOM is deliberate — without one, Windows PowerShell
+        // 5.1 reads a .ps1 file's own literal text using the system's ANSI
+        // codepage, not UTF-8, so any non-ASCII character written directly
+        // into guiWindowPs1()'s script text (not just data it fetches at
+        // runtime) would risk the same kind of mojibake the log view had.
+        // The BOM makes PowerShell detect UTF-8 correctly regardless.
+        fs.writeFileSync(ps1Path, '\uFEFF' + guiWindowPs1(), 'utf8');
     } catch (e) {
         log(`[WARN] Couldn't write GUI window script: ${e.message}`);
         return;
@@ -755,9 +761,12 @@ fso.DeleteFile WScript.ScriptFullName, True
     return vbsPath;
 }
 
-// First check a short while after startup (not instantly — let the agent
-// settle into its normal boot sequence first), then on a steady interval.
-setTimeout(() => checkForUpdate(false), 15000);
+// Checks immediately on boot (was a 15s-after-startup delay — per explicit
+// request, "check on boot"), then every UPDATE_CHECK_MS thereafter. A
+// too-early network hiccup right at boot isn't a real risk here: a failed
+// fetch is already caught and logged as [WARN] (see checkForUpdate()'s own
+// try/catch), not fatal — it just quietly waits for the next hourly tick.
+checkForUpdate(false);
 setInterval(() => checkForUpdate(false), UPDATE_CHECK_MS);
 
 
@@ -981,82 +990,474 @@ function triggerUninstall(onHandedOff) {
 // duplicates agent state directly.
 function guiWindowPs1() {
     return `
+# ── DPI + visual-styles bootstrap — MUST run before any Form/control is
+# created ────────────────────────────────────────────────────────────
+# Real, confirmed root cause of "everything looks pixelated/blurry":
+# TWO separate things a normal C# WinForms app's Main() always does
+# automatically (via Application.EnableVisualStyles()/an app manifest)
+# that a Form hosted directly from a PowerShell script never got:
+#   1. No DPI-awareness declaration at all — Windows silently renders
+#      an unaware app at 96 DPI into an offscreen bitmap, then STRETCHES
+#      that bitmap to fit an actual scaled display (100% is rare on a
+#      modern laptop; 125%/150% is typical) — this is exactly what a
+#      blurry/pixelated (as opposed to just "small") UI looks like.
+#   2. No Application.EnableVisualStyles() call — without it, every
+#      control (buttons especially) renders with the classic unthemed
+#      Windows 2000-era GDI look (flat, aliased, blocky) instead of the
+#      current theme's smoother visual style. This alone independently
+#      contributes to looking dated, on top of the DPI issue.
+# SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) is the modern
+# (Windows 10 1703+) fix for #1; it must be set before the first window
+# handle is created, which is why this whole block sits above even the
+# Add-Type -AssemblyName System.Windows.Forms line's actual usage.
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing @"
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+public class NativeDpi {
+    [DllImport("user32.dll")]
+    public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+}
+public class NativeDwm {
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+}
+public class NativeCursor {
+    [DllImport("user32.dll")]
+    public static extern IntPtr LoadCursor(IntPtr hInstance, int lpCursorName);
+}
+// ⚠️ REAL bug, reported directly: the hand-cursor fix on buttons didn't
+// carry over to the "GUI available at ..." link inside the log — because
+// RichTextBox's OWN built-in URL-hover cursor is set internally by its
+// native WndProc handling of WM_SETCURSOR, not by anything settable from
+// managed code's Cursor property. Overriding it requires intercepting
+// that exact message ourselves, which requires a real subclass — there's
+// no property/event on plain RichTextBox that reaches this.
+public class HandCursorRichTextBox : RichTextBox {
+    // Set once from the PowerShell side to the SAME real system hand
+    // cursor handle the buttons use, so link and button hover cursors
+    // are visually identical, not two different fixes.
+    public static IntPtr HandCursorHandle = IntPtr.Zero;
+    [DllImport("user32.dll")]
+    static extern IntPtr SetCursor(IntPtr hCursor);
+    protected override void WndProc(ref Message m) {
+        const int WM_SETCURSOR = 0x0020;
+        if (m.Msg == WM_SETCURSOR && HandCursorHandle != IntPtr.Zero) {
+            Point pos = PointToClient(Cursor.Position);
+            int idx = GetCharIndexFromPosition(pos);
+            if (idx >= 0 && idx < TextLength) {
+                // Peek the character's formatting without visibly
+                // disturbing the real selection — save/restore around a
+                // 1-char Select(), the only way WinForms' RichTextBox
+                // exposes per-character formatting. DetectUrls marks a
+                // detected link with Underline formatting, which normal
+                // log text never has, making it a reliable "is this a
+                // link" check without re-implementing URL detection.
+                int savedStart = SelectionStart, savedLength = SelectionLength;
+                Select(idx, 1);
+                bool isLink = SelectionFont != null && SelectionFont.Underline;
+                Select(savedStart, savedLength);
+                if (isLink) {
+                    SetCursor(HandCursorHandle);
+                    m.Result = (IntPtr)1;
+                    return;
+                }
+            }
+        }
+        base.WndProc(ref m);
+    }
+}
+"@
+# DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == -4. Wrapped in try/catch —
+# this API doesn't exist pre-Windows 10 1703, and failing to set it should
+# degrade to the old blurry-but-working behavior, never crash the GUI.
+try { [NativeDpi]::SetProcessDpiAwarenessContext([IntPtr]::new(-4)) | Out-Null } catch {}
+[System.Windows.Forms.Application]::EnableVisualStyles()
+[System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
+
+# ⚠️ REAL bug, reported directly: "the tiny hand when hovering over
+# buttons... needs to be normal sized." [System.Windows.Forms.Cursors]::Hand
+# is NOT the real OS pointer — it's a small, fixed-resolution cursor
+# bitmap baked into System.Windows.Forms.dll itself, authored for 96 DPI,
+# that does NOT participate in the DPI-aware cursor scaling Windows
+# applies to its own native/system cursors. On a scaled display (this
+# machine measures 200%) it renders visibly smaller than the plain arrow
+# cursor sitting right next to it, which is the real OS cursor and DOES
+# scale correctly. Fixed by loading the actual system hand cursor
+# directly via user32's LoadCursor(NULL, IDC_HAND) instead of using the
+# WinForms-bundled one — this is a real native OS cursor handle, so it
+# scales exactly like the arrow cursor does. Falls back to the old
+# (small but functional) Cursors.Hand if LoadCursor ever fails for any
+# reason, rather than leaving buttons with no hand cursor at all.
+try {
+    $IDC_HAND = 32649
+    $realHandCursor = New-Object System.Windows.Forms.Cursor([NativeCursor]::LoadCursor([IntPtr]::Zero, $IDC_HAND))
+} catch {
+    $realHandCursor = [System.Windows.Forms.Cursors]::Hand
+}
+# Same real cursor handle, handed to HandCursorRichTextBox's own
+# WM_SETCURSOR override (see its class comment above) so the log's link
+# hover matches the buttons' hover exactly, not a second separate fix.
+[HandCursorRichTextBox]::HandCursorHandle = $realHandCursor.Handle
 
 $apiBase = "http://127.0.0.1:${GUI_PORT}"
 
+# ── Windows 11-ish palette ──────────────────────────────────────────
+# Plain neutrals + one accent, matching the modern Settings-app look
+# (light "Mica" gray page, white cards, a single blue accent) rather
+# than the flat all-white/all-default-gray dialog this window used to
+# be. Kept as named variables, not scattered literals, so the whole
+# look can be re-tuned from one place.
+$colorBg      = [System.Drawing.Color]::FromArgb(243, 243, 243)
+$colorCard    = [System.Drawing.Color]::White
+$colorBorder  = [System.Drawing.Color]::FromArgb(229, 229, 229)
+$colorText    = [System.Drawing.Color]::FromArgb(32, 32, 32)
+$colorSubtext = [System.Drawing.Color]::FromArgb(96, 96, 96)
+$colorAccent  = [System.Drawing.Color]::FromArgb(0, 103, 192)
+$colorAccentHover = [System.Drawing.Color]::FromArgb(16, 119, 209)
+$colorAccentDown  = [System.Drawing.Color]::FromArgb(0, 89, 165)
+$colorGood    = [System.Drawing.Color]::FromArgb(16, 124, 16)
+$colorWarn    = [System.Drawing.Color]::FromArgb(157, 93, 0)
+$colorBad     = [System.Drawing.Color]::FromArgb(196, 43, 28)
+$colorBadBg   = [System.Drawing.Color]::FromArgb(253, 236, 234)
+$colorBadBgHover = [System.Drawing.Color]::FromArgb(250, 219, 216)
+$colorMuted   = [System.Drawing.Color]::FromArgb(120, 120, 120)
+
+# Fonts — "Segoe UI Variable" is the real Windows 11 system font (Settings,
+# Notepad, every restyled inbox app); "Segoe UI" (Windows 10-era) is the
+# fallback. .NET's Font constructor substitutes gracefully on its own if
+# a named family isn't installed (older Windows builds), so no separate
+# availability check/try-catch is needed here — worst case on an old
+# machine it silently lands on the same Segoe UI as before.
+$fontDisplay = New-Object System.Drawing.Font("Segoe UI Variable Display", 15, [System.Drawing.FontStyle]::Bold)
+$fontHeading = New-Object System.Drawing.Font("Segoe UI Variable Text", 11, [System.Drawing.FontStyle]::Bold)
+$fontBody    = New-Object System.Drawing.Font("Segoe UI Variable Text", 9.5)
+$fontSmall   = New-Object System.Drawing.Font("Segoe UI Variable Small", 9)
+$fontMono    = New-Object System.Drawing.Font("Cascadia Mono", 9.5)
+
+# WinForms has no native border-radius — this is the standard way to
+# fake one: clip a control to a rounded-rectangle Region. Used on the
+# status card and both buttons below instead of the sharp 90s-dialog
+# rectangles this window used to have. Radius bumped 6-8px -> 10-12px
+# this pass for a visibly softer, more Windows-11 (vs. Windows-8-tile)
+# feel per follow-up feedback.
+# Shared by Set-RoundedRegion (the clip) and the Uninstall button's own
+# hand-drawn border (see below) — both need the EXACT same geometry, or
+# a border drawn to plain rectangle bounds visibly clashes with a
+# region clipped to rounded corners (see that button's own comment).
+function Get-RoundedPath($w, $h, $radius) {
+    $d = $radius * 2
+    if ($w -lt $d) { $d = $w }
+    if ($h -lt $d) { $d = $h }
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddArc(0, 0, $d, $d, 180, 90)
+    $path.AddArc($w - $d, 0, $d, $d, 270, 90)
+    $path.AddArc($w - $d, $h - $d, $d, $d, 0, 90)
+    $path.AddArc(0, $h - $d, $d, $d, 90, 90)
+    $path.CloseFigure()
+    return $path
+}
+function Set-RoundedRegion($ctrl, $radius) {
+    $ctrl.Region = New-Object System.Drawing.Region((Get-RoundedPath $ctrl.Width $ctrl.Height $radius))
+}
+
+# Fetches JSON over loopback HTTP and decodes it as UTF-8 explicitly.
+# NOT Invoke-RestMethod: its fallback text-encoding when a response
+# doesn't pin one down is ambiguous and version/locale-dependent, and
+# that ambiguity is exactly what was turning this agent's real "-"
+# (em dash) characters in agent.log into garbled "a-circumflex"-style
+# text in this window — the log content itself was always correct
+# UTF-8, only how this window decoded it wasn't. WebClient with an
+# explicit Encoding removes that ambiguity outright.
+function Invoke-JsonUtf8($uri) {
+    $wc = New-Object System.Net.WebClient
+    $wc.Encoding = [System.Text.Encoding]::UTF8
+    $raw = $wc.DownloadString($uri)
+    return $raw | ConvertFrom-Json
+}
+
+# Shortens a log line's own leading ISO-8601 timestamp to a short local
+# time for DISPLAY only — per explicit request ("the date/time is a
+# little long"). agent.log itself keeps the full ISO timestamp
+# unchanged (still needed there for real diagnosis/sorting — see
+# CLAUDE.md's log() rule); this only reformats what this window shows.
+function Format-LogLine($line) {
+    if ($line -match '^\\[([0-9T:.\\-]+Z)\\](.*)$') {
+        try {
+            $dt = [DateTime]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            return "[" + $dt.ToLocalTime().ToString("h:mm:ss tt") + "]" + $Matches[2]
+        } catch { return $line }
+    }
+    return $line
+}
+
+# ⚠️ REAL bug, found via FOUR separate live screenshot rounds against a
+# real 200%-scaled display, not reasoned about in the abstract — every
+# one of WinForms' own built-in auto-scaling mechanisms turned out to
+# be unreliable here, so this window computes and applies DPI scaling
+# itself instead of trusting any of them:
+#   1. No AutoScale property set at all -> tiny, blurry (the original
+#      bug this whole pass exists to fix) — SetProcessDpiAwarenessContext
+#      alone stops the OS's blurry bitmap-stretch, but does nothing to
+#      grow the hardcoded pixel Location/Size values to compensate, so
+#      text renders crisp but boxes stay tiny.
+#   2. AutoScaleMode = Dpi (no explicit AutoScaleDimensions) -> content
+#      rendered shifted/clipped (confirmed via screenshot).
+#   3. AutoScaleMode = None -> labels/cards overlapped (confirmed via
+#      screenshot, and independently by the user's own screenshot of
+#      the exact same bug).
+#   4. AutoScaleDimensions=(96,96) + AutoScaleMode=Dpi (the textbook
+#      WinForms-designer-generated combination) + an explicit
+#      PerformAutoScale() call after every control was added -> STILL
+#      only the Form's own outer Size scaled; every child control
+#      stayed at its original tiny size (confirmed via screenshot:
+#      correctly-sized window, all content still crammed tiny in one
+#      corner). This is a known rough edge of .NET Framework WinForms'
+#      (not .NET/.NET-Core's newer WinForms) AutoScale machinery when
+#      combined with true Per-Monitor-V2 process DPI awareness — the
+#      two were never really designed to cooperate, and PowerShell 5.1
+#      hosts the older .NET Framework CLR, not the improved modern one.
+# The actual, reliable fix: don't use AutoScale at all. Measure the
+# REAL current DPI ourselves (Graphics.DpiX against the desktop),
+# compute a plain scale factor against a 96-DPI design baseline, and
+# multiply every hardcoded pixel Location/Size by it directly via the
+# S()/Pt()/Sz() helpers below. Font point sizes are NOT scaled this way
+# — GDI already renders point-sized fonts at the correct physical size
+# once the process is genuinely DPI-aware, confirmed by every one of
+# the screenshots above already showing correctly large, crisp text.
+$measureGfx = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+$dpiScale = $measureGfx.DpiX / 96.0
+$measureGfx.Dispose()
+function S([int]$n) { return [int]([math]::Round($n * $dpiScale)) }
+function Pt([int]$x, [int]$y) { return New-Object System.Drawing.Point((S $x), (S $y)) }
+function Sz([int]$w, [int]$h) { return New-Object System.Drawing.Size((S $w), (S $h)) }
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Greenpower Receiver Agent"
-$form.Size = New-Object System.Drawing.Size(560, 600)
+$form.Size = Sz 640 700
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
+$form.BackColor = $colorBg
+$form.Font = $fontBody
+$form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::None
 $form.Icon = [System.Drawing.SystemIcons]::Application
 
-$y = 15
+# Best-effort Mica backdrop + rounded window corners — the two most
+# visually distinctive Windows 11 chrome details. Windows 11 only
+# (22621+); wrapped in try/catch since DwmSetWindowAttribute simply
+# fails (not throws, but caught defensively anyway) for an unknown
+# attribute on older Windows — the window still looks correct without
+# it, just without this one extra polish layer. Safe to force the
+# handle into existence here now — with AutoScale off entirely, there's
+# no implicit scale-pass timing left to disturb.
+try {
+    $hwnd = $form.Handle
+    $DWMWA_WINDOW_CORNER_PREFERENCE = 33; $cornerPref = 2   # DWMWCP_ROUND
+    [NativeDwm]::DwmSetWindowAttribute($hwnd, $DWMWA_WINDOW_CORNER_PREFERENCE, [ref]$cornerPref, 4) | Out-Null
+    $DWMWA_SYSTEMBACKDROP_TYPE = 38; $backdropType = 2      # DWMSBT_MAINWINDOW (Mica)
+    [NativeDwm]::DwmSetWindowAttribute($hwnd, $DWMWA_SYSTEMBACKDROP_TYPE, [ref]$backdropType, 4) | Out-Null
+} catch {}
+
+$lblTitle = New-Object System.Windows.Forms.Label
+$lblTitle.Location = Pt 24 20
+$lblTitle.Size = Sz 560 32
+$lblTitle.Text = "Greenpower Receiver Agent"
+$lblTitle.Font = $fontDisplay
+$lblTitle.ForeColor = $colorText
+$form.Controls.Add($lblTitle)
+
 $lblVersion = New-Object System.Windows.Forms.Label
-$lblVersion.Location = New-Object System.Drawing.Point(15, $y)
-$lblVersion.Size = New-Object System.Drawing.Size(520, 20)
-$lblVersion.Text = "Version: (loading...)"
+$lblVersion.Location = Pt 24 54
+$lblVersion.Size = Sz 560 18
+$lblVersion.Text = "Version (loading...)"
+$lblVersion.Font = $fontSmall
+$lblVersion.ForeColor = $colorSubtext
 $form.Controls.Add($lblVersion)
 
-$y += 24
+# ── Status card ───────────────────────────────────────────────────
+$card = New-Object System.Windows.Forms.Panel
+$card.Location = Pt 24 86
+$card.Size = Sz 576 128
+$card.BackColor = $colorCard
+$form.Controls.Add($card)
+Set-RoundedRegion $card (S 10)
+
 $lblForwarding = New-Object System.Windows.Forms.Label
-$lblForwarding.Location = New-Object System.Drawing.Point(15, $y)
-$lblForwarding.Size = New-Object System.Drawing.Size(520, 20)
-$lblForwarding.Text = "Forwarding: (loading...)"
-$form.Controls.Add($lblForwarding)
+$lblForwarding.Location = Pt 20 16
+$lblForwarding.Size = Sz 536 24
+$lblForwarding.Text = "Not connected"
+$lblForwarding.Font = $fontHeading
+$lblForwarding.ForeColor = $colorMuted
+$card.Controls.Add($lblForwarding)
 
-$y += 24
+$sep = New-Object System.Windows.Forms.Panel
+$sep.Location = Pt 20 48
+$sep.Size = Sz 536 1
+$sep.BackColor = $colorBorder
+$card.Controls.Add($sep)
+
 $lblTarget = New-Object System.Windows.Forms.Label
-$lblTarget.Location = New-Object System.Drawing.Point(15, $y)
-$lblTarget.Size = New-Object System.Drawing.Size(520, 20)
-$lblTarget.Text = "Dashboard target: (loading...)"
-$form.Controls.Add($lblTarget)
+$lblTarget.Location = Pt 20 60
+$lblTarget.Size = Sz 536 20
+$lblTarget.Text = "Dashboard: (loading...)"
+$lblTarget.Font = $fontBody
+$lblTarget.ForeColor = $colorText
+$card.Controls.Add($lblTarget)
 
-$y += 24
 $lblUpdate = New-Object System.Windows.Forms.Label
-$lblUpdate.Location = New-Object System.Drawing.Point(15, $y)
-$lblUpdate.Size = New-Object System.Drawing.Size(520, 20)
+$lblUpdate.Location = Pt 20 86
+$lblUpdate.Size = Sz 536 20
 $lblUpdate.Text = "Update status: (loading...)"
-$form.Controls.Add($lblUpdate)
+$lblUpdate.Font = $fontBody
+$lblUpdate.ForeColor = $colorText
+$card.Controls.Add($lblUpdate)
 
-$y += 30
+# ── Log ───────────────────────────────────────────────────────────
+# "(latest 150 lines)" removed from the label per explicit request —
+# unnecessary detail; the log still only ever holds the latest 150
+# lines underneath (readLogTail(150) on the agent side, unchanged),
+# just not called out in the UI anymore.
 $lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Location = New-Object System.Drawing.Point(15, $y)
-$lblLog.Size = New-Object System.Drawing.Size(520, 18)
-$lblLog.Text = "Log (latest 150 lines):"
+$lblLog.Location = Pt 24 226
+$lblLog.Size = Sz 300 20
+$lblLog.Text = "Activity log"
+$lblLog.Font = $fontHeading
+$lblLog.ForeColor = $colorText
 $form.Controls.Add($lblLog)
 
-$y += 20
-$txtLog = New-Object System.Windows.Forms.TextBox
-$txtLog.Multiline = $true
-$txtLog.ScrollBars = "Vertical"
-$txtLog.ReadOnly = $true
-$txtLog.WordWrap = $false
-$txtLog.Location = New-Object System.Drawing.Point(15, $y)
-$txtLog.Size = New-Object System.Drawing.Size(520, 340)
-$txtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
-$txtLog.BackColor = [System.Drawing.Color]::White
-$form.Controls.Add($txtLog)
+# Copies the last 50 lines to the clipboard — per explicit request, so
+# a user can paste recent activity into a support message without
+# having to manually select/scroll inside the log box (selecting text
+# there and Ctrl+C already worked, since ReadOnly only blocks editing,
+# not selection — this is purely a one-click convenience on top of
+# that, not a fix for a missing capability). Deliberately the last 50,
+# not the full possible 150 — recent activity is almost always what's
+# actually relevant to a support conversation, and a shorter paste is
+# easier for someone else to read through.
+# Borderless, same reasoning as the Uninstall button's own fix above —
+# a FlatAppearance border traces the button's original RECTANGULAR
+# bounds and visibly clashes with Set-RoundedRegion's rounded clip
+# (confirmed here too: with the border on, the rounding was barely
+# perceptible against the white background). White-on-light-gray
+# already gives enough contrast against the page background without
+# needing a border at all.
+$btnCopyLog = New-Object System.Windows.Forms.Button
+$btnCopyLog.Text = "Copy"
+$btnCopyLog.Location = Pt 500 220
+$btnCopyLog.Size = Sz 100 26
+$btnCopyLog.FlatStyle = "Flat"
+$btnCopyLog.FlatAppearance.BorderSize = 0
+$btnCopyLog.FlatAppearance.MouseOverBackColor = $colorBg
+$btnCopyLog.BackColor = [System.Drawing.Color]::White
+$btnCopyLog.ForeColor = $colorText
+$btnCopyLog.Font = $fontSmall
+$btnCopyLog.Cursor = $realHandCursor
+# One shared, reused Timer for the "Copied!" revert — not a fresh Timer
+# per click — same reuse idiom this project's own dashboard JS already
+# uses for a revert-after-delay (see telemetry_web's showExitToast).
+$copyResetTimer = New-Object System.Windows.Forms.Timer
+$copyResetTimer.Interval = 1500
+$copyResetTimer.Add_Tick({ $btnCopyLog.Text = "Copy"; $copyResetTimer.Stop() })
+$btnCopyLog.Add_Click({
+    $recent = $lastLogLines | Select-Object -Last 50
+    $text = ($recent | ForEach-Object { Format-LogLine $_ }) -join "\`r\`n"
+    try {
+        [System.Windows.Forms.Clipboard]::SetText($text)
+        $btnCopyLog.Text = "Copied!"
+        $copyResetTimer.Stop()
+        $copyResetTimer.Start()
+    } catch {}
+})
+$form.Controls.Add($btnCopyLog)
+Set-RoundedRegion $btnCopyLog (S 6)
 
-$y += 350
+# HandCursorRichTextBox (see class comment above), not a plain
+# RichTextBox — the only way to color individual lines by log level
+# (see Add-LogLine below) without hand-rolling a custom-drawn list, AND
+# the only way to get a correctly-sized hover cursor over its
+# auto-detected links. This is also what actually fixes the "buggy
+# looking" garbled characters report: Invoke-JsonUtf8 above decodes
+# the log text correctly before it ever reaches this control.
+$rtbLog = New-Object HandCursorRichTextBox
+$rtbLog.Location = Pt 24 250
+$rtbLog.Size = Sz 576 318
+$rtbLog.ReadOnly = $true
+$rtbLog.WordWrap = $false
+$rtbLog.ScrollBars = "Both"
+$rtbLog.BorderStyle = "FixedSingle"
+$rtbLog.BackColor = [System.Drawing.Color]::White
+# HideSelection defaults to true on every TextBoxBase-derived control —
+# a selection is visually hidden (grayed out to invisible against a
+# white background) the instant focus moves anywhere else, e.g. to the
+# Copy button right next to this box. That reads exactly like "my
+# highlight got removed" even independent of the rebuild-preservation
+# fix in Refresh-Status below, so both are needed together.
+$rtbLog.HideSelection = $false
+$rtbLog.Font = $fontMono
+# ⚠️ REAL bug, reported directly: "when I click on links you need to
+# make it so they open." DetectUrls (on by default) only ever
+# auto-FORMATS a detected URL (blue, underlined) — RichTextBox never
+# opens anything on click by itself; that requires handling
+# LinkClicked explicitly, which this control never did until now.
+$rtbLog.Add_LinkClicked({
+    param($sender, $e)
+    try { Start-Process $e.LinkText } catch {}
+})
+$form.Controls.Add($rtbLog)
+
+# ── Buttons ───────────────────────────────────────────────────────
+# Hover/pressed FlatAppearance colors added this pass — a real Windows
+# 11 button visibly reacts to the pointer; a flat, static-colored
+# button (the previous version) is part of what read as "not fully
+# modern" even with rounded corners.
 $btnUpdate = New-Object System.Windows.Forms.Button
-$btnUpdate.Text = "Check for Updates Now"
-$btnUpdate.Location = New-Object System.Drawing.Point(15, $y)
-$btnUpdate.Size = New-Object System.Drawing.Size(190, 30)
+$btnUpdate.Text = "Check for Updates"
+$btnUpdate.Location = Pt 24 592
+$btnUpdate.Size = Sz 210 38
+$btnUpdate.FlatStyle = "Flat"
+$btnUpdate.FlatAppearance.BorderSize = 0
+$btnUpdate.FlatAppearance.MouseOverBackColor = $colorAccentHover
+$btnUpdate.FlatAppearance.MouseDownBackColor = $colorAccentDown
+$btnUpdate.BackColor = $colorAccent
+$btnUpdate.ForeColor = [System.Drawing.Color]::White
+$btnUpdate.Font = $fontBody
+$btnUpdate.Cursor = $realHandCursor
 $btnUpdate.Add_Click({
     $lblUpdate.Text = "Update status: checking..."
     try { Invoke-RestMethod -Uri "$apiBase/api/check-update" -Method Post -TimeoutSec 5 | Out-Null } catch {}
 })
 $form.Controls.Add($btnUpdate)
+Set-RoundedRegion $btnUpdate (S 8)
 
+# ⚠️ REAL bug, reported directly: "the uninstall button has a weird
+# line around it with cutoff corners." Root cause: FlatAppearance's
+# BorderSize/BorderColor draws a plain RECTANGULAR outline around the
+# button's original bounds, but Set-RoundedRegion (below) clips the
+# button to a ROUNDED-rectangle Region — the two don't compose: the
+# straight-edged border gets clipped unevenly by the rounded region,
+# reading exactly as "a weird line with cutoff corners." Rather than
+# hand-draw a custom border that exactly traces the rounded clip path
+# (fragile — a 1px pen stroke drawn ON a region's own boundary tends to
+# get half-clipped too, producing a faint/uneven line of its own), this
+# button is now borderless, matching the primary button's clean flat
+# style, differentiated by a light red-tinted fill instead of an
+# outline — a common, simpler "danger/secondary" treatment that has no
+# border to clash with the rounded clip in the first place.
 $btnUninstall = New-Object System.Windows.Forms.Button
 $btnUninstall.Text = "Uninstall"
-$btnUninstall.Location = New-Object System.Drawing.Point(360, $y)
-$btnUninstall.Size = New-Object System.Drawing.Size(175, 30)
-$btnUninstall.ForeColor = [System.Drawing.Color]::DarkRed
+$btnUninstall.Location = Pt 394 592
+$btnUninstall.Size = Sz 206 38
+$btnUninstall.FlatStyle = "Flat"
+$btnUninstall.FlatAppearance.BorderSize = 0
+$btnUninstall.FlatAppearance.MouseOverBackColor = $colorBadBgHover
+$btnUninstall.BackColor = $colorBadBg
+$btnUninstall.ForeColor = $colorBad
+$btnUninstall.Font = $fontBody
+$btnUninstall.Cursor = $realHandCursor
 $btnUninstall.Add_Click({
     $result = [System.Windows.Forms.MessageBox]::Show(
         "This will completely remove the Greenpower Receiver Agent from this computer, including all files and settings. Continue?",
@@ -1072,21 +1473,46 @@ $btnUninstall.Add_Click({
     }
 })
 $form.Controls.Add($btnUninstall)
+Set-RoundedRegion $btnUninstall (S 8)
+
+# Appends one line to the log with a color picked from its [LEVEL]
+# tag — turns the log from a flat wall of text into something
+# scannable at a glance (errors jump out red, a found receiver jumps
+# out green), the same way a real log viewer would. Timestamp shortened
+# via Format-LogLine before display (see its own comment above).
+function Add-LogLine($line) {
+    $color = $colorText
+    if ($line -match '\\[ERROR\\]') { $color = $colorBad }
+    elseif ($line -match '\\[WARN\\]') { $color = $colorWarn }
+    elseif ($line -match '\\[FOUND\\]') { $color = $colorGood }
+    elseif ($line -match '\\[OK\\]') { $color = $colorGood }
+    elseif ($line -match '\\[DEBUG\\]') { $color = $colorAccent }
+    $rtbLog.SelectionStart = $rtbLog.TextLength
+    $rtbLog.SelectionLength = 0
+    $rtbLog.SelectionColor = $color
+    $rtbLog.AppendText((Format-LogLine $line) + "\`r\`n")
+}
+
+$lastLogText = ""
+$lastLogLines = @()   # raw (unformatted) lines from the last successful /api/log fetch — what the Copy button pulls its last-50 from
 
 function Refresh-Status {
     try {
-        $status = Invoke-RestMethod -Uri "$apiBase/api/status" -TimeoutSec 3
-        $lblVersion.Text = "Version: " + $status.version
+        $status = Invoke-JsonUtf8("$apiBase/api/status")
+        $lblVersion.Text = "Version " + $status.version
         if ($status.forwarding.active) {
             if ($status.forwarding.confirmed) {
-                $lblForwarding.Text = "Forwarding: Yes - " + $status.forwarding.port
+                $lblForwarding.Text = "Connected - forwarding via " + $status.forwarding.port
+                $lblForwarding.ForeColor = $colorGood
             } else {
-                $lblForwarding.Text = "Forwarding: Connecting... - " + $status.forwarding.port
+                $lblForwarding.Text = "Connecting... (" + $status.forwarding.port + ")"
+                $lblForwarding.ForeColor = $colorWarn
             }
         } else {
-            $lblForwarding.Text = "Forwarding: No"
+            $lblForwarding.Text = "Not connected"
+            $lblForwarding.ForeColor = $colorMuted
         }
-        $lblTarget.Text = "Dashboard target: " + $status.websiteUrl
+        $lblTarget.Text = "Dashboard: " + $status.websiteUrl
         $u = $status.update
         if ($u.installing) {
             $lblUpdate.Text = "Update status: installing update..."
@@ -1100,16 +1526,56 @@ function Refresh-Status {
             $lblUpdate.Text = "Update status: not checked yet"
         }
     } catch {
-        $lblVersion.Text = "Version: (agent not responding)"
+        $lblVersion.Text = "Version (agent not responding)"
     }
     try {
-        $logResp = Invoke-RestMethod -Uri "$apiBase/api/log" -TimeoutSec 3
-        $newText = [string]::Join("\`r\`n", $logResp.lines)
-        if ($txtLog.Text -ne $newText) {
-            $wasAtBottom = ($txtLog.SelectionStart -ge $txtLog.Text.Length - 1)
-            $txtLog.Text = $newText
-            $txtLog.SelectionStart = $txtLog.Text.Length
-            $txtLog.ScrollToCaret()
+        $logResp = Invoke-JsonUtf8("$apiBase/api/log")
+        $newText = [string]::Join("\`n", $logResp.lines)
+        # ⚠️ REAL bug, confirmed two ways: (1) reported directly — "the
+        # copy button does not copy the last 50 activity lines"; (2)
+        # reported separately — "[selecting] text in the log is buggy,
+        # it updates and removes any highlight." Same root cause for
+        # both: a plain lastLogText/lastLogLines ASSIGNMENT made INSIDE
+        # this function creates a new variable scoped to THIS FUNCTION
+        # CALL ONLY — PowerShell assignment never writes through to an
+        # outer/script-scope variable of the same name unless told to.
+        # So the script-scope lastLogLines the Copy button reads was
+        # never actually being updated (always empty), AND the
+        # not-equal comparison below was comparing against a
+        # script-scope lastLogText value that likewise never changed
+        # from its initial empty string — meaning it was ALWAYS true,
+        # and the log box was being torn down and fully rebuilt on
+        # literally EVERY 3-second tick regardless of whether anything
+        # actually changed, wiping out any in-progress text selection
+        # every single time. The script: scope modifier below makes
+        # both assignments actually persist where they need to.
+        if ($newText -ne $script:lastLogText) {
+            $script:lastLogText = $newText
+            $script:lastLogLines = $logResp.lines
+            # Preserve the user's selection/scroll position across a
+            # real rebuild instead of always yanking to the bottom —
+            # per the same report above. If there's an active selection
+            # (the user is trying to read/copy something), restore that
+            # exact range afterward instead of touching scroll at all.
+            # If there's no selection and the caret was already at the
+            # very end (the normal "just watching it scroll" case),
+            # keep auto-following to the bottom as before. Otherwise
+            # (caret parked elsewhere, no selection — e.g. mid-scroll
+            # reading older lines) leave the view alone.
+            $savedStart = $rtbLog.SelectionStart
+            $savedLength = $rtbLog.SelectionLength
+            $wasAtBottom = ($savedLength -eq 0) -and ($savedStart -ge $rtbLog.TextLength - 1)
+            $rtbLog.Clear()
+            foreach ($line in $logResp.lines) { Add-LogLine $line }
+            if ($savedLength -gt 0) {
+                $maxStart = [Math]::Max(0, $rtbLog.TextLength - 1)
+                $restoredStart = [Math]::Min($savedStart, $maxStart)
+                $restoredLength = [Math]::Min($savedLength, $rtbLog.TextLength - $restoredStart)
+                $rtbLog.Select($restoredStart, $restoredLength)
+            } elseif ($wasAtBottom) {
+                $rtbLog.SelectionStart = $rtbLog.TextLength
+                $rtbLog.ScrollToCaret()
+            }
         }
     } catch {}
 }
@@ -1209,17 +1675,26 @@ function startGuiServer() {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(guiPageHtml());
         } else if (req.method === 'GET' && req.url === '/api/status') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            // charset=utf-8 explicit here (and on every JSON route below) —
+            // see guiWindowPs1()'s Invoke-JsonUtf8() comment for why: this
+            // agent's log lines contain real non-ASCII characters (an em
+            // dash, "—"), and PowerShell's Invoke-RestMethod has an
+            // ambiguous fallback text-encoding when a response doesn't pin
+            // one down — that's what was turning them into "â" in the GUI.
+            // This header alone isn't the fix (the GUI decodes explicitly
+            // now regardless), but it's the correct, spec-compliant thing
+            // to send either way.
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ version: AGENT_VERSION, websiteUrl: WEBSITE_URL, ...guiState }));
         } else if (req.method === 'GET' && req.url === '/api/log') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ lines: readLogTail(150) }));
         } else if (req.method === 'POST' && req.url === '/api/check-update') {
             checkForUpdate(true);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true }));
         } else if (req.method === 'POST' && req.url === '/api/uninstall') {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true }));
             triggerUninstall();
         } else {
