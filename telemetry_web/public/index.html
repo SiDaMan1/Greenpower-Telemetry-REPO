@@ -172,18 +172,22 @@
   #conn-dot.stale { background:var(--warn); animation:pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
   #server-time { font-family:'Share Tech Mono',monospace; font-size:12px; color:var(--muted); }
-  #age-badge, #signal-badge {
+  #age-badge, #signal-badge, #airtime-badge {
     font-family:'Share Tech Mono',monospace; font-size:10px; padding:4px 9px;
     border-radius:999px; border:1px solid var(--border); color:var(--muted);
     white-space:nowrap; background:rgba(255,255,255,.02);
   }
+  /* airtime-badge's color is fixed (--airtime), not score-banded like
+     signal-badge — a real, measured on-air time doesn't have a good/bad
+     judgment the way link quality does, it's just informational. */
+  #airtime-badge { color:var(--airtime); border-color:var(--airtime); }
   /* signal-badge's color rides on top of the shared badge look above —
      see updateSignalBadge()'s own comment for the 0-10 score/color bands. */
   #signal-badge.sig-good { color:var(--accent3); border-color:var(--accent3); }
   #signal-badge.sig-warn { color:var(--warn); border-color:var(--warn); }
   #signal-badge.sig-bad  { color:var(--danger); border-color:var(--danger); }
   /* Signal-strength meter — a small gradient bar reused in two places
-     (desktop header, mobile Efficiency tab — see updateSignalMeterEl()).
+     (desktop header, mobile Link tab — see updateSignalMeterEl()).
      The fill's gradient is pinned to a FIXED background-size matching the
      track's own fixed width, not "100%" (which would rescale to the
      fill's own shrinking width and always show the same red→green blend
@@ -211,20 +215,20 @@
     background-size:64px 100%;
     transition:width .5s var(--ease);
   }
-  /* Efficiency tab's mobile-only row — same meter, plus a label/value pair
-     laid out like a small standalone card. Hidden by default (desktop
-     shows the header version instead, see the mobile media query below
-     for both halves of this swap). */
-  .efficiency-signal-row {
+  /* Link tab's mobile-only row — same meter, plus a label/value pair laid
+     out like a small standalone card. Hidden by default (desktop shows
+     the header version instead, see the mobile media query below for
+     both halves of this swap). */
+  .link-signal-row {
     display:none; align-items:center; gap:12px; padding:11px 14px;
     background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm);
     margin-bottom:10px;
   }
-  .efficiency-signal-label {
+  .link-signal-label {
     font-size:11px; font-weight:600; letter-spacing:1.4px; text-transform:uppercase;
     color:var(--muted); flex-shrink:0;
   }
-  .efficiency-signal-value {
+  .link-signal-value {
     font-family:'Share Tech Mono',monospace; font-size:13px; font-weight:600;
     color:var(--text); margin-left:auto; flex-shrink:0;
   }
@@ -771,10 +775,12 @@
     /* Desktop-only, per explicit request — mobile's header has no room for
        a meter alongside the shortened title/badges (see the whole "make
        it show delay on mobile" thread earlier in this file's history for
-       just how tight that space already is); the same meter appears in
-       the Efficiency tab instead, see .efficiency-signal-row below. */
-    #signal-meter { display:none; }
-    .efficiency-signal-row { display:flex; }
+       just how tight that space already is); the same meter appears on
+       the Link tab instead, see .link-signal-row below. airtime-badge is
+       desktop-only for the identical reason — the Link page (both
+       platforms) already carries this value full-time. */
+    #signal-meter, #airtime-badge { display:none; }
+    .link-signal-row { display:flex; }
     /* Desktop-only — the mobile nav bar/sheet is the mobile equivalent of
        "somewhere to find this", and header real estate is much tighter on
        a phone; not worth a permanent header button there. */
@@ -1535,9 +1541,13 @@
       <button id="test-mode-btn" class="btn btn-sm" title="Toggle sample data for UI testing (no real car needed)">TEST</button>
       <span id="age-badge">-- ms</span>
       <span id="signal-badge" title="LoRa link quality, 0 (no signal) to 10 (best this link can read) — derived from RSSI+SNR, see updateSignalBadge()">SIG --/10</span>
-      <div class="sig-meter" id="signal-meter" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the badge next to it. Desktop only; see the Efficiency tab on mobile.">
+      <div class="sig-meter" id="signal-meter" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the badge next to it. Desktop only; see the Link tab on mobile.">
         <div class="sig-meter-fill" id="signal-meter-fill"></div>
       </div>
+      <!-- Desktop only, per explicit request — same "no room on a phone
+           header" reasoning as signal-meter above; the Link page (both
+           platforms) is still where this value lives full-time. -->
+      <span id="airtime-badge" title="Real, hardware-measured LoRa time-on-air of the previous transmission — see the Link page for the full breakdown. Desktop only.">TX --ms</span>
       <span id="conn-status"><span id="conn-dot"></span><span id="conn-text">CONNECTING</span></span>
       <span id="server-time">--:--:--</span>
     </div>
@@ -1858,17 +1868,6 @@
          trip total, not independent per-card state. -->
     <div id="page-efficiency" class="page">
       <div class="section-heading">Efficiency <button id="efficiency-reset-btn" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Reset Trip</button></div>
-      <!-- Mobile-only home for the signal-strength meter — desktop shows
-           this in the header instead (#signal-meter), per explicit
-           request; .efficiency-signal-row is display:none by default and
-           only turned on inside the max-width:860px media query. -->
-      <div class="efficiency-signal-row" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the header's SIG badge on desktop.">
-        <span class="efficiency-signal-label">Signal</span>
-        <div class="sig-meter" id="signal-meter-mobile">
-          <div class="sig-meter-fill" id="signal-meter-fill-mobile"></div>
-        </div>
-        <span class="efficiency-signal-value" id="signal-meter-value-mobile">--/10</span>
-      </div>
       <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">Consumed</div><div class="dedicated-value size-md" id="eff-consumed-wh" style="color:var(--current)">--</div><div class="dedicated-unit">WH</div></div></div>
@@ -1977,6 +1976,17 @@
     </div>
 
     <div id="page-link" class="page">
+      <!-- Mobile-only home for the signal-strength meter — desktop shows
+           this in the header instead (#signal-meter), per explicit
+           request; .link-signal-row is display:none by default and only
+           turned on inside the max-width:860px media query. -->
+      <div class="link-signal-row" title="Signal strength meter — fills and shifts red→yellow→green with the same 0-10 score as the header's SIG badge on desktop.">
+        <span class="link-signal-label">Signal</span>
+        <div class="sig-meter" id="signal-meter-mobile">
+          <div class="sig-meter-fill" id="signal-meter-fill-mobile"></div>
+        </div>
+        <span class="link-signal-value" id="signal-meter-value-mobile">--/10</span>
+      </div>
       <div class="range-toggle-row" data-range-slot></div>
       <div class="big-row" style="grid-template-columns:1fr 1fr">
         <div class="dedicated-big-card"><div><div class="dedicated-label">RSSI</div><div class="dedicated-value" id="big-rssi" style="color:var(--rssi)">--</div><div class="dedicated-unit">dBm</div></div></div>
@@ -4303,6 +4313,13 @@ function applyState(d, online) {
     }
     setValueText('ov-seq', d.seq!=null ? d.seq : 0);
 
+    // Header badge — desktop only (see #airtime-badge's own CSS rule),
+    // same real measured value the Link page's big-airtime_ms card shows
+    // (that one's driven by the generic METRICS loop above; this is a
+    // second, hand-written target for the same field, same reasoning as
+    // ov-link/big-sig-score just above).
+    setText('airtime-badge', d.airtime_ms!=null ? `TX ${fv(d.airtime_ms,1)}ms` : 'TX --ms');
+
     // ESC mode/state are strings, not chartable numbers — handled separately
     // from the METRICS-driven loop above, same reason GPS fix gets special
     // treatment instead of living in METRICS.
@@ -4488,11 +4505,27 @@ function clampToRange(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function signalScore(rssi, snr) {
   if (rssi == null || snr == null) return 0;
   // RSSI: -110dBm (near this radio's SF7/BW500 sensitivity floor) -> 0
-  //       -50dBm  (strong, close range)                           -> 10
-  const rssiScore = clampToRange((rssi - -110) / (-50 - -110) * 10, 0, 10);
+  //       -70dBm  (as good as this actual hardware gets)          -> 10
+  // The -70dBm ceiling is calibrated from a REAL measurement, not a
+  // generic guess — the original -50dBm ceiling was theoretical and left
+  // the score stuck around 5-6/10 even with the two radios placed right
+  // next to each other (confirmed: -76dBm/+12.8dB measured that way
+  // scored 5.7/10 under the old -50dBm ceiling). -70dBm gives that exact
+  // real reading a little headroom below a true 10/10 rather than pinning
+  // the score at 10 for the one data point it was calibrated against —
+  // revisit this ceiling if a stronger real reading ever shows up (e.g.
+  // at a few feet of clear-line-of-sight separation rather than the
+  // antennas touching, which can actually read WORSE due to near-field
+  // coupling/front-end desense between two closely-packed antennas).
+  const rssiScore = clampToRange((rssi - -110) / (-70 - -110) * 10, 0, 10);
   // SNR: -20dB (borderline demodulation, packet barely decodable) -> 0
-  //       10dB (clean signal, well above the noise floor)         -> 10
-  const snrScore = clampToRange((snr - -20) / (10 - -20) * 10, 0, 10);
+  //       15dB (very clean signal, well above the noise floor)    -> 10
+  // Raised from a 10dB ceiling — that same real close-range measurement
+  // (+12.8dB) already exceeded it, meaning SNR was never actually the
+  // bottleneck; RSSI's ceiling was. SX126x can report up to ~+19.5dB SNR
+  // in ideal conditions, but 15dB is a more realistic "excellent" cutoff
+  // for real-world use than chasing that theoretical max.
+  const snrScore = clampToRange((snr - -20) / (15 - -20) * 10, 0, 10);
   return Math.round(Math.min(rssiScore, snrScore));
 }
 // Same score bands drive both the header badge's color class and the
@@ -4516,7 +4549,7 @@ function updateSignalBadge(d) {
   }
   // Desktop header meter + mobile Efficiency-tab meter — same score, same
   // update, two DOM targets (one is always display:none depending on
-  // viewport width, see the shared .sig-meter/.efficiency-signal-row CSS).
+  // viewport width, see the shared .sig-meter/.link-signal-row CSS).
   updateSignalMeterEl('signal-meter', 'signal-meter-fill', null, score);
   updateSignalMeterEl('signal-meter-mobile', 'signal-meter-fill-mobile', 'signal-meter-value-mobile', score);
 }
