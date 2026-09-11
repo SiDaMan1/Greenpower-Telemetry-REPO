@@ -4578,8 +4578,41 @@ function applySessionViewFilters() {
   renderSessionEscSummary(rows);
 }
 
+// Same spinner as the initial-load backfill (#initial-load-overlay) —
+// reused here rather than a second overlay, since it's the exact same
+// "this is going to take a moment, don't just sit on a stale/blank view"
+// situation. Per explicit request ("add the loading screen if its
+// loading large sessions too like >20mins", then "actually base it off
+// of packets, not mins"): gated on `packet_count` — already sitting in
+// sessionsCache from the table list, no extra fetch needed, checked
+// BEFORE the points request even goes out so the spinner also covers
+// real network latency, not just local rendering time — rather than
+// elapsed time, since packet count is what actually drives the render
+// cost (how many points get pushed through decimateSessionRows()/built
+// into Chart.js datasets), and a session can run long in WALL time while
+// containing very few real packets (a flaky/mostly-dead link), which
+// wouldn't be slow to render at all despite a large duration. 4800 is
+// roughly 20 minutes' worth at the sender's ~4Hz cadence — matching the
+// original ask's scale, just measured the more meaningful way. A session
+// with no known packet count never shows it — no data to justify a
+// spinner over, same reasoning the initial-load backfill only shows for
+// an actual points.length > 300.
+const SESSION_VIEW_SPINNER_PACKETS = 4800;
+function isLargeSession(kind, id) {
+  const row = sessionsCache[kind].find(s => s.id === id);
+  return !!(row && row.packet_count > SESSION_VIEW_SPINNER_PACKETS);
+}
+
 async function viewSession(kind, id) {
   const cfg = SESSION_KIND_CONFIG[kind];
+  const overlay = document.getElementById('initial-load-overlay');
+  const showSpinner = isLargeSession(kind, id);
+  if (showSpinner) {
+    overlay.classList.add('show');
+    // Same real paint-before-blocking-work fix backfillRecentHistory()
+    // needed — see that function's own comment for the full story.
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
   try {
     const res = await fetch(`${cfg.apiBase}/${id}/points`, { cache:'no-store' });
     const rows = await res.json();
@@ -4613,6 +4646,8 @@ async function viewSession(kind, id) {
     renderSessionLapSummary('All laps', rows, null);
   } catch(e) {
     console.warn('viewSession error:', e);
+  } finally {
+    if (showSpinner) overlay.classList.remove('show');
   }
 }
 
