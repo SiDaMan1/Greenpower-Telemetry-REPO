@@ -76,6 +76,40 @@ if (process.env.DATABASE_URL) {
         );
         CREATE INDEX IF NOT EXISTS idx_telemetry_session     ON telemetry_points(session_id);
         CREATE INDEX IF NOT EXISTS idx_telemetry_received_at ON telemetry_points(received_at);
+
+        -- User-assigned display name for a session — NULL until someone
+        -- renames it via PATCH /api/sessions/:id, in which case the UI
+        -- falls back to the existing "SESSION #<id>" label. A rename is
+        -- purely cosmetic, doesn't touch started_at/ended_at/packet_count.
+        ALTER TABLE sessions ADD COLUMN IF NOT EXISTS name TEXT;
+
+        -- Local sessions — telemetry recorded straight to the sender's own
+        -- SD card (see greenpower_sender's initSdCard()/logToSD()), never
+        -- transmitted over LoRa at all. These never touch the live
+        -- /api/telemetry path or the 'sessions' table above — a live
+        -- session is inferred purely from a gap in real-time packet
+        -- arrival (see SESSION_GAP_MS), which doesn't apply to a file
+        -- uploaded well after the fact, all at once. receiver_agent finds
+        -- these by reading a physically-inserted SD card (see its own
+        -- CLAUDE.md) and POSTs each LOG*.CSV file here as one local
+        -- session via POST /api/local-sessions.
+        CREATE TABLE IF NOT EXISTS local_sessions (
+            id           SERIAL PRIMARY KEY,
+            name         TEXT,
+            source_file  TEXT,
+            started_at   TIMESTAMPTZ,
+            ended_at     TIMESTAMPTZ,
+            packet_count INTEGER     NOT NULL DEFAULT 0,
+            uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS local_session_points (
+            id               BIGSERIAL PRIMARY KEY,
+            local_session_id INTEGER     NOT NULL REFERENCES local_sessions(id),
+            received_at      TIMESTAMPTZ NOT NULL,
+            millis_ms        BIGINT,
+            data             JSONB       NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_telemetry_session ON local_session_points(local_session_id);
     `).then(() => {
         console.log('[OK]   Database schema ready');
     }).catch((e) => {
@@ -160,7 +194,7 @@ app.get('/api/sessions', async (req, res) => {
     if (!pool) return res.status(503).json({ error: 'database not configured' });
     try {
         const result = await pool.query(
-            `SELECT id, started_at, ended_at, packet_count
+            `SELECT id, name, started_at, ended_at, packet_count
              FROM sessions
              ORDER BY started_at DESC
              LIMIT 200`
@@ -168,6 +202,55 @@ app.get('/api/sessions', async (req, res) => {
         res.json(result.rows);
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// Rename a session — purely cosmetic, see the `name` column's own comment
+// above the CREATE TABLE up top. Public/no-auth, same reasoning as every
+// other session endpoint on this page. An empty/whitespace-only name is
+// stored as NULL rather than an empty string, so the UI's existing
+// "SESSION #<id>" fallback kicks back in instead of showing a blank title.
+app.patch('/api/sessions/:id', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const name = typeof req.body.name === 'string' ? req.body.name.trim().slice(0, 200) : '';
+    try {
+        const result = await pool.query(
+            'UPDATE sessions SET name = $1 WHERE id = $2 RETURNING id, name',
+            [name || null, req.params.id]
+        );
+        if (result.rowCount === 0) return res.status(404).json({ error: 'session not found' });
+        res.json(result.rows[0]);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Mass delete — the UI's "select sessions, delete selected" flow. Takes an
+// array of ids in the body rather than looping DELETE /api/sessions/:id
+// once per selection client-side, so a 40-session selection is one
+// request/one transaction instead of 40. Same delete-points-then-session
+// logic as the single-session DELETE endpoint below, just batched; also
+// resets currentSessionId the same way if the live session happens to be
+// among the ones deleted.
+app.post('/api/sessions/bulk-delete', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.filter(id => Number.isFinite(Number(id))) : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'ids must be a non-empty array' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM telemetry_points WHERE session_id = ANY($1::int[])', [ids]);
+        const result = await client.query('DELETE FROM sessions WHERE id = ANY($1::int[])', [ids]);
+        await client.query('COMMIT');
+        if (ids.map(String).includes(String(currentSessionId))) {
+            currentSessionId = null;
+        }
+        res.json({ deleted: result.rowCount });
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
     }
 });
 
@@ -263,6 +346,170 @@ app.get('/api/sessions/:id/export.csv', async (req, res) => {
 
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="session-${req.params.id}.csv"`);
+
+        res.write(CSV_COLUMNS.join(',') + '\n');
+        for (const row of result.rows) {
+            const merged = { ...row.data, received_at: row.received_at.toISOString() };
+            res.write(CSV_COLUMNS.map(col => csvEscape(merged[col])).join(',') + '\n');
+        }
+        res.end();
+    } catch (e) {
+        res.status(500).send(e.message);
+    }
+});
+
+// ── Local sessions (uploaded from a vehicle's SD card via receiver_agent) ──
+// See the local_sessions/local_session_points CREATE TABLE comment above
+// for what these are and why they're a separate table from `sessions`.
+// Reuses the SAME CSV_COLUMNS/csvEscape() as live sessions below so the
+// exported file has an identical shape either way — a local session's
+// points just never populate seq/rssi/snr (no LoRa link involved).
+
+// Upload one local session — called by receiver_agent, authenticated the
+// same way live telemetry POSTs are (this genuinely is coming from an
+// external process on someone's laptop, unlike the read/delete/rename
+// endpoints above which only the dashboard's own UI calls).
+app.post('/api/local-sessions', requireApiKey, async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const { name, sourceFile, points } = req.body;
+    if (!Array.isArray(points) || points.length === 0) {
+        return res.status(400).json({ error: 'points must be a non-empty array' });
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const times = points.map(p => new Date(p.receivedAt)).filter(d => !isNaN(d.getTime()));
+        const startedAt = times.length ? new Date(Math.min(...times)) : new Date();
+        const endedAt = times.length ? new Date(Math.max(...times)) : new Date();
+        const sessionResult = await client.query(
+            `INSERT INTO local_sessions (name, source_file, started_at, ended_at, packet_count)
+             VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+            [(name || sourceFile || 'Local session').slice(0, 200), sourceFile || null, startedAt, endedAt, points.length]
+        );
+        const sessionId = sessionResult.rows[0].id;
+
+        // Bulk insert via a single multi-row statement rather than one
+        // INSERT per point — a full session can be thousands of rows, and
+        // this is a single, infrequent upload (not the hot 5Hz live path),
+        // so it's worth batching properly rather than looping awaits.
+        const values = [];
+        const placeholders = [];
+        points.forEach((p, i) => {
+            const base = i * 4;
+            placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4})`);
+            const d = new Date(p.receivedAt);
+            values.push(sessionId, isNaN(d.getTime()) ? new Date() : d, p.millisMs ?? null, p.data || {});
+        });
+        await client.query(
+            `INSERT INTO local_session_points (local_session_id, received_at, millis_ms, data) VALUES ${placeholders.join(',')}`,
+            values
+        );
+        await client.query('COMMIT');
+        res.status(201).json({ id: sessionId, packetCount: points.length });
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/local-sessions', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    try {
+        const result = await pool.query(
+            `SELECT id, name, source_file, started_at, ended_at, packet_count, uploaded_at
+             FROM local_sessions
+             ORDER BY started_at DESC NULLS LAST
+             LIMIT 200`
+        );
+        res.json(result.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.patch('/api/local-sessions/:id', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const name = typeof req.body.name === 'string' ? req.body.name.trim().slice(0, 200) : '';
+    try {
+        const result = await pool.query(
+            'UPDATE local_sessions SET name = $1 WHERE id = $2 RETURNING id, name',
+            [name || null, req.params.id]
+        );
+        if (result.rowCount === 0) return res.status(404).json({ error: 'local session not found' });
+        res.json(result.rows[0]);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/local-sessions/:id', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM local_session_points WHERE local_session_id = $1', [req.params.id]);
+        const result = await client.query('DELETE FROM local_sessions WHERE id = $1', [req.params.id]);
+        await client.query('COMMIT');
+        if (result.rowCount === 0) return res.status(404).json({ error: 'local session not found' });
+        res.status(204).end();
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
+    }
+});
+
+app.post('/api/local-sessions/bulk-delete', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    const ids = Array.isArray(req.body.ids) ? req.body.ids.filter(id => Number.isFinite(Number(id))) : [];
+    if (ids.length === 0) return res.status(400).json({ error: 'ids must be a non-empty array' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM local_session_points WHERE local_session_id = ANY($1::int[])', [ids]);
+        const result = await client.query('DELETE FROM local_sessions WHERE id = ANY($1::int[])', [ids]);
+        await client.query('COMMIT');
+        res.json({ deleted: result.rowCount });
+    } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
+    }
+});
+
+app.get('/api/local-sessions/:id/points', async (req, res) => {
+    if (!pool) return res.status(503).json({ error: 'database not configured' });
+    try {
+        const result = await pool.query(
+            `SELECT received_at, data
+             FROM local_session_points
+             WHERE local_session_id = $1
+             ORDER BY received_at ASC`,
+            [req.params.id]
+        );
+        res.json(result.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/local-sessions/:id/export.csv', async (req, res) => {
+    if (!pool) return res.status(503).send('database not configured');
+    try {
+        const result = await pool.query(
+            `SELECT received_at, data
+             FROM local_session_points
+             WHERE local_session_id = $1
+             ORDER BY received_at ASC`,
+            [req.params.id]
+        );
+
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="local-session-${req.params.id}.csv"`);
 
         res.write(CSV_COLUMNS.join(',') + '\n');
         for (const row of result.rows) {

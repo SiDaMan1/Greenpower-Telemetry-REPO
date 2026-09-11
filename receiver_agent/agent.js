@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.5.9.0';
+const AGENT_VERSION = '1.6.0.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -341,6 +341,88 @@ try {
     log(`[WARN] Could not start tray icon (continuing without one): ${e.message}`);
 }
 
+// ── Tray menu DPI fix ──────────────────────────────────────────────
+// Real, reported bug: the tray icon's right-click menu ("Greenpower Agent
+// — Running" / "Show GUI" / "Stop Agent") renders blurry on a scaled
+// display. The menu is drawn by `systray`'s own bundled Go helper binary
+// (spawned as a separate child process, not this Node process and not any
+// of our own WinForms/PowerShell GUI code) — same root cause as every
+// other not-DPI-aware-by-default Win32 UI already fixed elsewhere in this
+// project (see the native GUI's own DPI rule in CLAUDE.md): a process with
+// no DPI-awareness manifest gets rendered at 96 DPI by Windows and then
+// bitmap-stretched to fit a scaled display, which is exactly what reads as
+// "blurry" rather than just small.
+// We don't own that binary's source (it's a prebuilt Go executable inside
+// the `systray` npm package), so a manifest can't be added to it directly
+// — but Windows' own "Override high DPI scaling behavior: Application"
+// compatibility flag (the same checkbox found under an exe's right-click >
+// Properties > Compatibility tab) can be applied per-executable-path via
+// the HKCU AppCompatFlags\Layers registry key, and that's what this does.
+// `copyDir: true` (set on the SysTray options above) makes the package
+// copy its helper binary out of node_modules before actually running it —
+// this file's own code doesn't control exactly where that lands, so every
+// plausible location is checked and flagged, non-fatally, rather than
+// assumed to be any one specific path.
+// NOT verified against the real installed systray binary in this dev
+// environment (node_modules isn't installed in this checkout, so the
+// exact copied-to path couldn't be directly inspected) — and even once
+// applied, Windows only honors this flag for a NEW process launch, so it
+// can't fix the menu on an agent instance already running when this
+// update installs; it takes effect from the next agent restart onward.
+// Worth confirming the tray menu is actually crisp after that.
+function applyHighDpiOverride(exePath) {
+    try {
+        if (!fs.existsSync(exePath)) return false;
+        execFile('reg', [
+            'add', 'HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers',
+            '/v', exePath, '/t', 'REG_SZ', '/d', '~ HIGHDPIAWARE', '/f',
+        ], (err) => {
+            if (err) {
+                log(`[WARN] Couldn't apply tray DPI override to ${exePath}: ${err.message}`);
+            } else {
+                log(`[OK]   Applied HIGHDPIAWARE compatibility override to tray helper: ${exePath}`);
+            }
+        });
+        return true;
+    } catch (e) {
+        log(`[WARN] Tray DPI override attempt failed for ${exePath}: ${e.message}`);
+        return false;
+    }
+}
+
+function fixTraySystrayDpiAwareness() {
+    try {
+        let systrayPkgDir = null;
+        try { systrayPkgDir = path.dirname(require.resolve('systray/package.json')); } catch (e) { /* not resolvable this way — candidates below still get checked */ }
+        const candidates = [];
+        if (systrayPkgDir) {
+            candidates.push(
+                path.join(systrayPkgDir, 'traybird', 'tray_windows_release.exe'),
+                path.join(systrayPkgDir, 'traybird', 'tray_windows_debug.exe'),
+            );
+        }
+        candidates.push(
+            path.join(os.tmpdir(), 'tray_windows_release.exe'),
+            path.join(os.tmpdir(), 'systray', 'tray_windows_release.exe'),
+        );
+        let foundAny = false;
+        for (const c of candidates) {
+            if (applyHighDpiOverride(c)) foundAny = true;
+        }
+        if (!foundAny) {
+            log('[WARN] Tray DPI fix: none of the expected systray helper binary paths exist yet — will not retry; the tray menu may still render blurry.');
+        }
+    } catch (e) {
+        log(`[WARN] Tray DPI fix setup failed: ${e.message}`);
+    }
+}
+// The helper binary is copied out and spawned asynchronously by the
+// SysTray package itself — give that a moment to land on disk before
+// checking for it, rather than checking immediately (which would always
+// find nothing, since `new SysTray(...)` above returns before its own
+// internal copy/spawn has necessarily finished).
+setTimeout(fixTraySystrayDpiAwareness, 2000);
+
 // Opens a genuine native Win32 window (WinForms), not a browser tab — a
 // direct ask, not just a style choice. No GUI-toolkit dependency added for
 // this (no Electron/nw.js — a heavy addition this project's existing
@@ -401,6 +483,196 @@ function openNativeGuiWindow() {
 
 setInterval(scanPorts, SCAN_MS);
 scanPorts();
+
+// ── SD card local session upload ────────────────────────────────────
+// greenpower_sender keeps its own local CSV backup on an SD card (see its
+// own initSdCard()/logToSD() — LOG001.CSV, LOG002.CSV, ... written to the
+// card's root; column list documented there). That card lives on the
+// VEHICLE, not this laptop — the only way its data ever reaches this
+// agent is by physically pulling the card and reading it through a card
+// reader plugged into THIS machine, at which point Windows mounts it as
+// an ordinary drive letter. sdScanTick() below polls every mounted drive
+// letter for that filename pattern and, on finding one not already
+// uploaded, parses it and POSTs it to telemetry_web's /api/local-sessions
+// endpoint as a "local session" — kept entirely separate server-side from
+// the live-telemetry-derived `sessions` table (see server.js).
+// Deliberately no user prompt before uploading, unlike the live-USB-
+// receiver forwarding flow above — that flow asks first because it's
+// live, ongoing telemetry from whichever machine/vehicle happens to be
+// plugged in; this is a one-shot upload of an already-finished, clearly
+// historical file, and matches this app's already-established posture
+// that session data isn't sensitive enough to gate (see telemetry_web's
+// own rules on why /api/sessions has no auth).
+const SD_SCAN_MS = 15000;
+const SD_RETRY_MS = 5 * 60 * 1000;   // don't retry a failing upload every 15s forever — an offline dashboard shouldn't spam agent.log
+const SD_STATE_PATH = path.join(__dirname, 'uploaded-logs.json');
+const SD_LOG_NAME_RE = /^LOG\d{3}\.CSV$/i;
+
+let sdUploadedState = {};   // fingerprint -> true, persisted across agent restarts
+try {
+    if (fs.existsSync(SD_STATE_PATH)) sdUploadedState = JSON.parse(fs.readFileSync(SD_STATE_PATH, 'utf8'));
+} catch (e) {
+    log(`[WARN] Couldn't read uploaded-logs.json (starting fresh — any already-uploaded file will just get re-uploaded once, harmlessly): ${e.message}`);
+}
+function saveSdUploadedState() {
+    try { fs.writeFileSync(SD_STATE_PATH, JSON.stringify(sdUploadedState, null, 2)); } catch (e) { /* non-fatal — worst case a successfully-uploaded file gets retried next scan */ }
+}
+const sdLastAttemptMs = new Map();   // fingerprint -> Date.now() of last FAILED attempt, in-memory only (not worth persisting across restarts)
+
+function sdCardCandidateDrives() {
+    const drives = [];
+    // C: is always the OS drive on every machine this runs on — skip it,
+    // never worth scanning and avoids a slow, pointless full-drive check.
+    for (let code = 'D'.charCodeAt(0); code <= 'Z'.charCodeAt(0); code++) {
+        const root = `${String.fromCharCode(code)}:\\`;
+        try {
+            if (fs.existsSync(root)) drives.push(root);
+        } catch (e) { /* inaccessible drive (e.g. empty card-reader slot) — skip silently, this is normal */ }
+    }
+    return drives;
+}
+
+function parseSdCsv(text) {
+    const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const header = lines[0].split(',').map(h => h.trim());
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const cells = lines[i].split(',');
+        if (cells.length !== header.length) continue;   // a truncated/corrupt last line (e.g. power cut mid-write) — skip it rather than fail the whole file
+        const row = {};
+        header.forEach((key, idx) => { row[key] = cells[idx]; });
+        rows.push(row);
+    }
+    return rows;
+}
+
+// Converts one parsed CSV row (all string values) into the same field
+// names telemetry_web already uses for live sessions where the two
+// overlap (see CSV_COLUMNS/METRICS in telemetry_web) — this local log
+// never had rssi/snr/seq (no LoRa link involved; it's the sender's own
+// direct SD write), so those simply aren't present, same as any other
+// point missing a field.
+function sdRowToData(row) {
+    const num = (v) => (v === undefined || v === '' ? null : Number(v));
+    return {
+        flags: num(row.flags),
+        speed_mph: num(row.speed_mph),
+        latitude: num(row.latitude),
+        longitude: num(row.longitude),
+        hdop: num(row.hdop),
+        satellites: num(row.satellites),
+        temp_f: num(row.temp_f),
+        batt_volt: num(row.batt_volt),
+        motor_volt: num(row.motor_volt),
+        current_a: num(row.current_a),
+        pitch_deg: num(row.pitch_deg),
+        accel_g: num(row.accel_g),
+        lateral_g: num(row.lateral_g),
+        vertical_g: num(row.vertical_g),
+        motor_rpm: num(row.motor_rpm),
+        wheel_rpm: num(row.wheel_rpm),
+        esc_mode: row.esc_mode,
+        esc_state: row.esc_state,
+        esc_setpoint_pct: num(row.esc_setpoint_pct),
+        esc_live_pct: num(row.esc_live_pct),
+        esc_ramp_pct: num(row.esc_ramp_pct),
+    };
+}
+
+async function uploadSdLogFile(filePath, fingerprint) {
+    let text, mtimeMs;
+    try {
+        text = fs.readFileSync(filePath, 'utf8');
+        mtimeMs = fs.statSync(filePath).mtimeMs;
+    } catch (e) {
+        log(`[WARN] Couldn't read SD log ${filePath}: ${e.message}`);
+        return;
+    }
+
+    const rows = parseSdCsv(text);
+    if (rows.length === 0) {
+        log(`[WARN] SD log ${filePath} has no usable rows — skipping (won't retry).`);
+        sdUploadedState[fingerprint] = true;   // don't keep retrying an empty/corrupt file forever
+        saveSdUploadedState();
+        return;
+    }
+
+    // The RTC may never have been detected/set — getRtcTimestamp() (see
+    // greenpower_sender.ino) writes "NO_RTC" for every row when that's the
+    // case, meaning real wall-clock time isn't available for ANY row in
+    // this file. Fall back to anchoring the LAST row to this file's own
+    // filesystem modified time (a reasonable proxy for "when logging
+    // stopped," assuming the card is read reasonably soon after being
+    // pulled) and walking every earlier row backward by its real
+    // millis_ms delta from that last row — this keeps the session's
+    // INTERNAL relative timing exactly correct even when the absolute
+    // time is only an estimate.
+    const hasRealTimestamps = !!(rows[0].timestamp && rows[0].timestamp !== 'NO_RTC');
+    const lastMillis = Number(rows[rows.length - 1].millis_ms);
+
+    const points = rows.map(row => {
+        let receivedAt = null;
+        if (hasRealTimestamps && row.timestamp && row.timestamp !== 'NO_RTC') {
+            const d = new Date(row.timestamp);
+            if (!isNaN(d.getTime())) receivedAt = d.toISOString();
+        }
+        if (!receivedAt) {
+            const deltaMs = lastMillis - Number(row.millis_ms);
+            receivedAt = new Date(mtimeMs - (Number.isFinite(deltaMs) ? deltaMs : 0)).toISOString();
+        }
+        return { receivedAt, millisMs: Number(row.millis_ms) || null, data: sdRowToData(row) };
+    });
+
+    const name = path.basename(filePath);
+    try {
+        const res = await fetch(`${DASHBOARD_ORIGIN}/api/local-sessions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${API_KEY}` },
+            body: JSON.stringify({ name, sourceFile: name, points }),
+        });
+        if (!res.ok) {
+            log(`[WARN] Uploading SD log ${name} failed: HTTP ${res.status}`);
+            sdLastAttemptMs.set(fingerprint, Date.now());
+            return;
+        }
+        log(`[OK]   Uploaded local session from SD card: ${name} (${points.length} points)`);
+        sdUploadedState[fingerprint] = true;
+        saveSdUploadedState();
+    } catch (e) {
+        log(`[WARN] Uploading SD log ${name} failed: ${e.message}`);
+        sdLastAttemptMs.set(fingerprint, Date.now());
+    }
+}
+
+function sdScanTick() {
+    if (!DASHBOARD_ORIGIN) return;   // can't derive an API origin from WEBSITE_URL — nothing to upload to
+    for (const root of sdCardCandidateDrives()) {
+        let entries;
+        try {
+            entries = fs.readdirSync(root);
+        } catch (e) { continue; }   // card-reader slot present but empty/unreadable — normal, not an error
+
+        for (const entry of entries) {
+            if (!SD_LOG_NAME_RE.test(entry)) continue;
+            const filePath = path.join(root, entry);
+            let sizeBytes;
+            try { sizeBytes = fs.statSync(filePath).size; } catch (e) { continue; }
+            // Fingerprint includes size so a log file that's still actively
+            // growing (e.g. the card was read while still plugged into a
+            // powered sender — unusual, but not impossible) naturally gets
+            // re-uploaded once it's done growing, rather than being
+            // permanently marked "already uploaded" from a partial read.
+            const fingerprint = `${entry}:${sizeBytes}`;
+            if (sdUploadedState[fingerprint]) continue;
+            const lastAttempt = sdLastAttemptMs.get(fingerprint);
+            if (lastAttempt && Date.now() - lastAttempt < SD_RETRY_MS) continue;
+            uploadSdLogFile(filePath, fingerprint);
+        }
+    }
+}
+setInterval(sdScanTick, SD_SCAN_MS);
+sdScanTick();
 
 async function scanPorts() {
     let ports;

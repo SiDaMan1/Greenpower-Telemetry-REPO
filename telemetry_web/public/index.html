@@ -1758,19 +1758,39 @@
 
   <!-- Delete Session confirmation — reuses the same .confirm-modal pattern
        as the clear-data/download-agent/exit-app confirmations above.
-       Destructive/irreversible (permanently deletes the session and every
-       telemetry point in it, server-side), hence a real confirm step
-       rather than firing straight from the Sessions table's Delete button.
-       Which session id is pending is tracked in JS (pendingDeleteSessionId),
-       not baked into this markup — one modal instance, reused for whichever
-       row's Delete button was last clicked. -->
+       Destructive/irreversible (permanently deletes the session(s) and
+       every telemetry point in them, server-side), hence a real confirm
+       step rather than firing straight from a Delete/Delete Selected
+       button. Handles BOTH a single-row delete and the mass "Delete
+       Selected" action, and both Session History and Local Sessions —
+       one modal instance, reused for whichever was last triggered
+       (pendingDelete in the script below tracks {kind, ids}), with its
+       title/body text filled in dynamically rather than baked into this
+       markup. -->
   <div class="confirm-modal-backdrop" id="delete-session-confirm-backdrop"></div>
   <div class="confirm-modal" id="delete-session-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-session-confirm-title">
     <div class="confirm-modal-title" id="delete-session-confirm-title">Delete This Session?</div>
-    <div class="confirm-modal-body">This permanently deletes session <strong id="delete-session-confirm-id">#--</strong> and every telemetry point recorded in it. This cannot be undone.</div>
+    <div class="confirm-modal-body" id="delete-session-confirm-body">This permanently deletes session <strong id="delete-session-confirm-id">#--</strong> and every telemetry point recorded in it. This cannot be undone.</div>
     <div class="confirm-modal-actions">
       <button class="btn btn-sm" id="delete-session-confirm-cancel">Cancel</button>
       <button class="btn btn-sm btn-danger" id="delete-session-confirm-go">Delete</button>
+    </div>
+  </div>
+
+  <!-- Rename Session — a tiny single-field prompt, same .confirm-modal
+       shell as everything else on this page rather than a native
+       prompt(), so it matches this app's existing modal styling. One
+       instance, reused for whichever row's Rename button was last
+       clicked (pendingRename tracks {kind, id}). -->
+  <div class="confirm-modal-backdrop" id="rename-session-confirm-backdrop"></div>
+  <div class="confirm-modal" id="rename-session-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="rename-session-confirm-title">
+    <div class="confirm-modal-title" id="rename-session-confirm-title">Rename Session</div>
+    <div class="confirm-modal-body">
+      <input type="text" id="rename-session-input" class="settings-input" style="width:100%" maxlength="200" placeholder="Session name">
+    </div>
+    <div class="confirm-modal-actions">
+      <button class="btn btn-sm" id="rename-session-confirm-cancel">Cancel</button>
+      <button class="btn btn-sm btn-accent" id="rename-session-confirm-go">Save</button>
     </div>
   </div>
 
@@ -2037,32 +2057,85 @@
     </div>
 
     <div id="page-sessions" class="page">
-      <div class="section-heading">Session History <button id="sessions-refresh" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Refresh</button></div>
+      <div id="sessions-list-wrap" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:26px">
 
-      <div id="sessions-list-wrap" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:10px">
-        <div id="sessions-table-wrap">
-          <table id="sessions-table">
-            <thead>
-              <tr>
-                <th>Session</th>
-                <th>Started</th>
-                <th>Duration</th>
-                <th>Packets</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="sessions-tbody"></tbody>
-          </table>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div class="section-heading">
+            Session History
+            <div style="display:flex;gap:8px">
+              <button id="sessions-delete-selected" class="btn btn-sm btn-danger" disabled><span class="icon" data-icon="trash"></span>Delete Selected (<span id="sessions-selected-count">0</span>)</button>
+              <button id="sessions-refresh" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Refresh</button>
+            </div>
+          </div>
+          <div id="sessions-table-wrap">
+            <table id="sessions-table">
+              <thead>
+                <tr>
+                  <th style="width:30px"><input type="checkbox" id="sessions-select-all" aria-label="Select all sessions"></th>
+                  <th>Session</th>
+                  <th>Started</th>
+                  <th>Duration</th>
+                  <th>Packets</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="sessions-tbody"></tbody>
+            </table>
+          </div>
+          <div id="sessions-empty" style="display:none;padding:24px;color:var(--muted);text-align:center">
+            No sessions recorded yet. Sessions are created automatically once a receiver starts forwarding data — this also requires a database to be configured (see README.md).
+          </div>
+          <div id="sessions-disabled" style="display:none;padding:24px;color:var(--warn);text-align:center">
+            Session history is unavailable — no database is configured for this deployment (DATABASE_URL not set).
+          </div>
         </div>
-        <div id="sessions-empty" style="display:none;padding:24px;color:var(--muted);text-align:center">
-          No sessions recorded yet. Sessions are created automatically once a receiver starts forwarding data — this also requires a database to be configured (see README.md).
+
+        <!-- Local Sessions — telemetry read straight off a vehicle's SD
+             card (see greenpower_sender's own local logging) rather than
+             inferred from the live LoRa link. Uploaded automatically by
+             receiver_agent when that card is read through a card reader
+             on whatever machine it's running on (see its own CLAUDE.md) —
+             there's no live connection between the card and this
+             dashboard, so these only ever appear after such an upload.
+             Renders through the exact same viewSession()/table-rendering
+             code as Session History above, just pointed at
+             /api/local-sessions instead of /api/sessions — see
+             SESSION_KIND_CONFIG in the script below. -->
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div class="section-heading">
+            Local Sessions (SD Card)
+            <div style="display:flex;gap:8px">
+              <button id="local-sessions-delete-selected" class="btn btn-sm btn-danger" disabled><span class="icon" data-icon="trash"></span>Delete Selected (<span id="local-sessions-selected-count">0</span>)</button>
+              <button id="local-sessions-refresh" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Refresh</button>
+            </div>
+          </div>
+          <div class="settings-card-hint">Uploaded automatically when a vehicle's SD card is read through a card reader on a machine running the receiver agent — these never touch the live LoRa link.</div>
+          <div id="local-sessions-table-wrap">
+            <table id="local-sessions-table" class="data-table">
+              <thead>
+                <tr>
+                  <th style="width:30px"><input type="checkbox" id="local-sessions-select-all" aria-label="Select all local sessions"></th>
+                  <th>File</th>
+                  <th>Recorded</th>
+                  <th>Duration</th>
+                  <th>Packets</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="local-sessions-tbody"></tbody>
+            </table>
+          </div>
+          <div id="local-sessions-empty" style="display:none;padding:24px;color:var(--muted);text-align:center">
+            No local sessions uploaded yet. Plug a vehicle's SD card into a laptop running the receiver agent to have it read and uploaded automatically.
+          </div>
+          <div id="local-sessions-disabled" style="display:none;padding:24px;color:var(--warn);text-align:center">
+            Local session storage is unavailable — no database is configured for this deployment (DATABASE_URL not set).
+          </div>
         </div>
-        <div id="sessions-disabled" style="display:none;padding:24px;color:var(--warn);text-align:center">
-          Session history is unavailable — no database is configured for this deployment (DATABASE_URL not set).
-        </div>
+
       </div>
 
-      <div id="session-view" style="display:none;flex-direction:column;gap:12px;flex:1;min-height:0">
+      <div id="session-view" style="display:none;flex-direction:column;gap:12px;flex:1;min-height:0;overflow-y:auto">
         <div class="section-heading">
           <span id="session-view-title"></span>
           <div style="display:flex;gap:8px">
@@ -2087,14 +2160,30 @@
           <div id="session-lap-summary" class="settings-card-hint"></div>
         </div>
 
-        <div class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0">
-          <div class="chart-card"><div class="mini-chart-label">SPEED (MPH)</div><div class="chart-canvas-wrap"><canvas id="session-chart-speed_mph"></canvas></div></div>
-          <div class="chart-card"><div class="mini-chart-label">BATTERY (V)</div><div class="chart-canvas-wrap"><canvas id="session-chart-batt_volt"></canvas></div></div>
-          <div class="chart-card"><div class="mini-chart-label">CURRENT (A)</div><div class="chart-canvas-wrap"><canvas id="session-chart-current_a"></canvas></div></div>
-          <div class="chart-card"><div class="mini-chart-label">MOTOR RPM</div><div class="chart-canvas-wrap"><canvas id="session-chart-motor_rpm"></canvas></div></div>
-          <div class="chart-card"><div class="mini-chart-label">WHEEL RPM</div><div class="chart-canvas-wrap"><canvas id="session-chart-wheel_rpm"></canvas></div></div>
-          <div class="chart-card"><div class="mini-chart-label">ESC LIVE (%)</div><div class="chart-canvas-wrap"><canvas id="session-chart-esc_live_pct"></canvas></div></div>
+        <!-- Raceline + ESC status are hidden unless this specific
+             session actually has that data (see renderSessionGpsMap()/
+             renderSessionEscSummary()) — a session with no GPS fix ever
+             or no ESC link connected simply won't show these, same as a
+             metric chart with no numeric samples anywhere in the session
+             (see sessionAvailableMetricKeys()). -->
+        <div id="session-map-card" class="chart-card" style="display:none;flex-shrink:0;height:280px">
+          <div class="mini-chart-label">RACELINE</div>
+          <div id="session-map" style="width:100%;height:calc(100% - 22px);border-radius:var(--radius);overflow:hidden;isolation:isolate"></div>
         </div>
+        <div id="session-esc-card" class="settings-card" style="display:none;flex-shrink:0">
+          <div class="settings-card-title">ESC STATUS (LAST KNOWN THIS SESSION)</div>
+          <div class="settings-card-hint" id="session-esc-summary"></div>
+        </div>
+
+        <!-- Populated entirely by JS (renderSessionCharts()) — one
+             chart-card per METRICS key that actually has at least one
+             real numeric sample somewhere in this session, so a session
+             recorded before the ESC link existed (say) doesn't show three
+             permanently-empty ESC charts. This is what makes a session
+             view show "everything available," not a fixed 6-metric
+             subset — see this file's own CLAUDE.md for why the old fixed
+             SESSION_CHART_KEYS list was replaced. -->
+        <div id="session-charts-grid" class="chart-row" style="grid-template-columns:1fr 1fr 1fr;flex:1;min-height:0"></div>
       </div>
     </div>
 
@@ -3422,35 +3511,56 @@ document.getElementById('clear-data-confirm-backdrop').addEventListener('click',
 document.getElementById('clear-data-confirm-go').addEventListener('click', clearAllWebsiteData);
 
 // ── Delete Session confirmation — one modal instance, reused for whichever
-// row's Delete button was last clicked (pendingDeleteSessionId tracks it,
-// same "one modal, dynamic target" approach as viewSession() below reusing
-// one set of session-chart canvases for whichever session was opened). ──
-let pendingDeleteSessionId = null;
-function showDeleteSessionConfirm(id) {
-  pendingDeleteSessionId = id;
-  setText('delete-session-confirm-id', `#${id}`);
+// row's Delete button (single id) OR a "Delete Selected" button (many ids)
+// was last clicked, across BOTH Session History and Local Sessions —
+// pendingDelete tracks {kind:'server'|'local', ids:[...]}. SESSION_KIND_CONFIG
+// (declared in the SESSIONS section below) maps 'kind' to the right API
+// base path and refresh function, so this modal doesn't need to know
+// anything about the two tables beyond that shared shape. ──
+let pendingDelete = null;
+function showDeleteSessionConfirm(kind, ids) {
+  pendingDelete = { kind, ids };
+  const body = document.getElementById('delete-session-confirm-body');
+  if (ids.length === 1) {
+    body.innerHTML = `This permanently deletes session <strong>#${ids[0]}</strong> and every telemetry point recorded in it. This cannot be undone.`;
+  } else {
+    body.innerHTML = `This permanently deletes <strong>${ids.length} selected sessions</strong> and every telemetry point recorded in them. This cannot be undone.`;
+  }
   document.getElementById('delete-session-confirm-backdrop').classList.add('show');
   document.getElementById('delete-session-confirm-modal').classList.add('show');
 }
 function hideDeleteSessionConfirm() {
-  pendingDeleteSessionId = null;
+  pendingDelete = null;
   document.getElementById('delete-session-confirm-backdrop').classList.remove('show');
   document.getElementById('delete-session-confirm-modal').classList.remove('show');
 }
 async function deleteSessionConfirmed() {
-  if (pendingDeleteSessionId == null) return;
-  const id = pendingDeleteSessionId;
+  if (!pendingDelete) return;
+  const { kind, ids } = pendingDelete;
+  const cfg = SESSION_KIND_CONFIG[kind];
   const goBtn = document.getElementById('delete-session-confirm-go');
   goBtn.disabled = true;
   goBtn.textContent = 'Deleting…';
   try {
-    const res = await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
-    if (!res.ok && res.status !== 204) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error || `HTTP ${res.status}`);
+    if (ids.length === 1) {
+      const res = await fetch(`${cfg.apiBase}/${ids[0]}`, { method: 'DELETE' });
+      if (!res.ok && res.status !== 204) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `HTTP ${res.status}`);
+      }
+    } else {
+      const res = await fetch(`${cfg.apiBase}/bulk-delete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `HTTP ${res.status}`);
+      }
     }
     hideDeleteSessionConfirm();
-    loadSessions();   // refresh the table — the deleted row simply won't be in the response anymore
+    cfg.selected.clear();
+    cfg.reload();   // refresh the table — deleted rows simply won't be in the response anymore
   } catch (e) {
     console.warn('deleteSessionConfirmed error:', e);
     // Left the modal open with the button re-enabled below rather than
@@ -3464,6 +3574,53 @@ async function deleteSessionConfirmed() {
 document.getElementById('delete-session-confirm-cancel').addEventListener('click', hideDeleteSessionConfirm);
 document.getElementById('delete-session-confirm-backdrop').addEventListener('click', hideDeleteSessionConfirm);
 document.getElementById('delete-session-confirm-go').addEventListener('click', deleteSessionConfirmed);
+
+// ── Rename Session — same "one modal, dynamic target" shape as delete
+// above (pendingRename tracks {kind, id}). PATCH /api/sessions/:id or
+// /api/local-sessions/:id, per SESSION_KIND_CONFIG. ──
+let pendingRename = null;
+function showRenameSessionConfirm(kind, id, currentName) {
+  pendingRename = { kind, id };
+  const input = document.getElementById('rename-session-input');
+  input.value = currentName || '';
+  document.getElementById('rename-session-confirm-backdrop').classList.add('show');
+  document.getElementById('rename-session-confirm-modal').classList.add('show');
+  input.focus();
+  input.select();
+}
+function hideRenameSessionConfirm() {
+  pendingRename = null;
+  document.getElementById('rename-session-confirm-backdrop').classList.remove('show');
+  document.getElementById('rename-session-confirm-modal').classList.remove('show');
+}
+async function renameSessionConfirmed() {
+  if (!pendingRename) return;
+  const { kind, id } = pendingRename;
+  const cfg = SESSION_KIND_CONFIG[kind];
+  const name = document.getElementById('rename-session-input').value;
+  const goBtn = document.getElementById('rename-session-confirm-go');
+  goBtn.disabled = true;
+  try {
+    const res = await fetch(`${cfg.apiBase}/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || `HTTP ${res.status}`);
+    }
+    hideRenameSessionConfirm();
+    cfg.reload();
+  } catch (e) {
+    console.warn('renameSessionConfirmed error:', e);
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+document.getElementById('rename-session-confirm-cancel').addEventListener('click', hideRenameSessionConfirm);
+document.getElementById('rename-session-confirm-backdrop').addEventListener('click', hideRenameSessionConfirm);
+document.getElementById('rename-session-confirm-go').addEventListener('click', renameSessionConfirmed);
+document.getElementById('rename-session-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') renameSessionConfirmed(); });
 
 // One-time cookie clear tied to THIS update specifically (the new
 // password-gated onboarding flow below) — per explicit request, every
@@ -3685,8 +3842,35 @@ if (!onboardingComplete()) {
 // it's fetched once when the tab is opened / refresh is clicked, and the
 // per-session charts are built once from the full dataset, not updated
 // incrementally. This is historical data, it doesn't change underneath you.
-const SESSION_CHART_KEYS = ['speed_mph','batt_volt','current_a','motor_rpm','wheel_rpm','esc_live_pct'];
-let sessionCharts = {};   // built lazily, destroyed/rebuilt each time a session is viewed
+//
+// Two independent tables share almost all of this code: Session History
+// (live-telemetry-derived, `sessions`/`telemetry_points` server-side) and
+// Local Sessions (uploaded from a vehicle's SD card by receiver_agent,
+// `local_sessions`/`local_session_points` server-side — see server.js's
+// own comment on why these are separate tables). SESSION_KIND_CONFIG is
+// the single place that maps which table ('server'/'local') to which API
+// base path, DOM ids, and selection Set — every function below that needs
+// to know "which table" takes a `kind` argument and looks it up here,
+// rather than duplicating loadSessions()/viewSession()/etc. once per table.
+let sessionCharts = {};   // built lazily by renderSessionCharts(), one entry per METRICS key currently shown, destroyed/rebuilt each time a session is viewed
+let sessionsCache = { server: [], local: [] };   // last-loaded rows per kind, so "select all"/checkbox-count logic doesn't need to re-fetch
+
+const SESSION_KIND_CONFIG = {
+  server: {
+    apiBase: '/api/sessions',
+    tbody: 'sessions-tbody', empty: 'sessions-empty', disabled: 'sessions-disabled',
+    selectAll: 'sessions-select-all', deleteBtn: 'sessions-delete-selected', countEl: 'sessions-selected-count',
+    selected: new Set(),
+    reload: () => loadSessionsTable('server'),
+  },
+  local: {
+    apiBase: '/api/local-sessions',
+    tbody: 'local-sessions-tbody', empty: 'local-sessions-empty', disabled: 'local-sessions-disabled',
+    selectAll: 'local-sessions-select-all', deleteBtn: 'local-sessions-delete-selected', countEl: 'local-sessions-selected-count',
+    selected: new Set(),
+    reload: () => loadSessionsTable('local'),
+  },
+};
 
 function fmtDuration(ms) {
   if (ms < 0) ms = 0;
@@ -3695,50 +3879,109 @@ function fmtDuration(ms) {
   return h>0 ? `${h}h ${m}m ${sec}s` : m>0 ? `${m}m ${sec}s` : `${sec}s`;
 }
 
-async function loadSessions() {
-  const tbody = document.getElementById('sessions-tbody');
-  const empty = document.getElementById('sessions-empty');
-  const disabled = document.getElementById('sessions-disabled');
+// Updates the "Delete Selected (N)" button's enabled state/count and the
+// header checkbox's checked/indeterminate state for one table — called
+// after every checkbox change and every reload.
+function updateSessionSelectionUi(kind) {
+  const cfg = SESSION_KIND_CONFIG[kind];
+  const rows = sessionsCache[kind];
+  const n = cfg.selected.size;
+  setText(cfg.countEl, String(n));
+  const delBtn = document.getElementById(cfg.deleteBtn);
+  if (delBtn) delBtn.disabled = n === 0;
+  const selectAll = document.getElementById(cfg.selectAll);
+  if (selectAll) {
+    selectAll.checked = rows.length > 0 && n === rows.length;
+    selectAll.indeterminate = n > 0 && n < rows.length;
+  }
+}
+
+function toggleSessionSelected(kind, id, checked) {
+  const cfg = SESSION_KIND_CONFIG[kind];
+  if (checked) cfg.selected.add(id); else cfg.selected.delete(id);
+  updateSessionSelectionUi(kind);
+}
+
+async function loadSessionsTable(kind) {
+  const cfg = SESSION_KIND_CONFIG[kind];
+  const tbody = document.getElementById(cfg.tbody);
+  const empty = document.getElementById(cfg.empty);
+  const disabled = document.getElementById(cfg.disabled);
   if (!tbody) return;
 
   try {
-    const res = await fetch('/api/sessions', { cache:'no-store' });
+    const res = await fetch(cfg.apiBase, { cache:'no-store' });
     if (res.status === 503) {
       tbody.innerHTML = '';
       empty.style.display = 'none';
       disabled.style.display = 'block';
+      sessionsCache[kind] = [];
+      cfg.selected.clear();
+      updateSessionSelectionUi(kind);
       return;
     }
     const sessions = await res.json();
     disabled.style.display = 'none';
+    sessionsCache[kind] = sessions;
+    // Drop any selected id that's no longer in the fresh list (e.g. it was
+    // just deleted, or the current filter/refresh no longer includes it).
+    for (const id of Array.from(cfg.selected)) {
+      if (!sessions.some(s => s.id === id)) cfg.selected.delete(id);
+    }
 
     if (!sessions.length) {
       tbody.innerHTML = '';
       empty.style.display = 'block';
+      updateSessionSelectionUi(kind);
       return;
     }
     empty.style.display = 'none';
 
     tbody.innerHTML = sessions.map(s => {
-      const started = new Date(s.started_at);
-      const ended = new Date(s.ended_at);
-      const dur = fmtDuration(ended - started);
+      const started = s.started_at ? new Date(s.started_at) : null;
+      const ended = s.ended_at ? new Date(s.ended_at) : null;
+      const dur = (started && ended) ? fmtDuration(ended - started) : '--';
+      const checked = cfg.selected.has(s.id) ? 'checked' : '';
+      const titleCell = kind === 'local'
+        ? (s.name || s.source_file || `Local #${s.id}`)
+        : (s.name ? `${s.name} <span style="color:var(--muted)">(#${s.id})</span>` : `#${s.id}`);
+      const startedCell = started ? started.toLocaleString() : (s.uploaded_at ? `Uploaded ${new Date(s.uploaded_at).toLocaleString()}` : '--');
       return `<tr>
-        <td>#${s.id}</td>
-        <td>${started.toLocaleString()}</td>
+        <td><input type="checkbox" ${checked} onchange="toggleSessionSelected('${kind}', ${s.id}, this.checked)" aria-label="Select session ${s.id}"></td>
+        <td>${titleCell}</td>
+        <td>${startedCell}</td>
         <td>${dur}</td>
         <td>${s.packet_count}</td>
         <td style="text-align:right;white-space:nowrap">
-          <button class="btn btn-sm btn-accent" onclick="viewSession(${s.id})">View</button>
-          <a class="btn btn-sm btn-good" href="/api/sessions/${s.id}/export.csv">CSV</a>
-          <button class="btn btn-sm btn-danger" onclick="showDeleteSessionConfirm(${s.id})">Delete</button>
+          <button class="btn btn-sm btn-accent" onclick="viewSession('${kind}', ${s.id})">View</button>
+          <a class="btn btn-sm btn-good" href="${cfg.apiBase}/${s.id}/export.csv">CSV</a>
+          <button class="btn btn-sm" onclick="showRenameSessionConfirm('${kind}', ${s.id}, ${JSON.stringify(s.name || '').replace(/"/g,'&quot;')})">Rename</button>
+          <button class="btn btn-sm btn-danger" onclick="showDeleteSessionConfirm('${kind}', [${s.id}])">Delete</button>
         </td>
       </tr>`;
     }).join('');
+    updateSessionSelectionUi(kind);
   } catch(e) {
-    console.warn('loadSessions error:', e);
+    console.warn(`loadSessionsTable(${kind}) error:`, e);
   }
 }
+function loadSessions() { loadSessionsTable('server'); loadSessionsTable('local'); }
+
+['server','local'].forEach(kind => {
+  const cfg = SESSION_KIND_CONFIG[kind];
+  document.getElementById(cfg.selectAll)?.addEventListener('change', (e) => {
+    const rows = sessionsCache[kind];
+    if (e.target.checked) rows.forEach(s => cfg.selected.add(s.id));
+    else cfg.selected.clear();
+    loadSessionsTable(kind);   // cheapest way to re-render every row's checkbox state in sync
+  });
+  document.getElementById(cfg.deleteBtn)?.addEventListener('click', () => {
+    if (cfg.selected.size === 0) return;
+    showDeleteSessionConfirm(kind, Array.from(cfg.selected));
+  });
+});
+document.getElementById('sessions-refresh').addEventListener('click', () => loadSessionsTable('server'));
+document.getElementById('local-sessions-refresh').addEventListener('click', () => loadSessionsTable('local'));
 
 // ── SESSION LAPS (recomputed on demand, not stored) ──────────────────────────
 // A past session's full point history + the CURRENT geofence/battery
@@ -3866,18 +4109,44 @@ function decimateSessionRows(rows, key, maxPoints) {
   return out;
 }
 
+// Which METRICS keys are actually worth a chart for this session — any
+// key with at least one real numeric sample somewhere in `rows`. This is
+// what makes a session view show "everything available" instead of a
+// fixed 6-metric subset: a session recorded before the ESC link existed
+// (say) simply won't have esc_* keys pass this check, rather than showing
+// three permanently-flat-at-null charts. rssi/snr are METRICS keys too,
+// so a live/server session naturally gets a Link-quality chart here for
+// free — local (SD-card) sessions never have those keys in `data` at all
+// (no LoRa link involved in a direct-to-SD write), so they're just
+// skipped, same as any other genuinely absent field.
+function sessionAvailableMetricKeys(rows) {
+  return Object.keys(METRICS).filter(k => rows.some(r => typeof r.data[k] === 'number'));
+}
+
 // Extracted out of viewSession() itself so it can be called again, scoped
 // to just one lap's row slice, when the lap <select> below changes — was
 // previously inline in viewSession() and only ever ran once per session
-// open.
+// open. Builds the chart-card DOM itself now (see sessionAvailableMetricKeys()
+// above) rather than filling in a fixed set of canvases already in the
+// HTML — the available metric set varies session to session.
 function renderSessionCharts(rows) {
-  SESSION_CHART_KEYS.forEach(k => {
-    const canvasId = 'session-chart-'+k;
-    if (sessionCharts[k]) { try { sessionCharts[k].destroy(); } catch(e) {} }
-    const ctx = document.getElementById(canvasId);
-    if (!ctx) return;
+  const grid = document.getElementById('session-charts-grid');
+  // Chart.js instances aren't garbage-collected just because their canvas
+  // leaves the DOM — every previously-built chart must be destroyed
+  // explicitly before the grid is wiped, or repeated session views leak.
+  Object.values(sessionCharts).forEach(c => { try { c.destroy(); } catch(e) {} });
+  sessionCharts = {};
+  grid.innerHTML = '';
+
+  sessionAvailableMetricKeys(rows).forEach(k => {
     const metric = METRICS[k];
-    const color = resolveColor(metric ? metric.color : 'var(--accent2)');
+    const card = document.createElement('div');
+    card.className = 'chart-card';
+    card.innerHTML = `<div class="mini-chart-label">${metric.label.toUpperCase()} (${metric.unit})</div><div class="chart-canvas-wrap"><canvas></canvas></div>`;
+    grid.appendChild(card);
+
+    const ctx = card.querySelector('canvas');
+    const color = resolveColor(metric.color);
     const chartRows = decimateSessionRows(rows, k, SESSION_CHART_MAX_POINTS);
     const labels = chartRows.map(r => fmtTimeNoSeconds(r.received_at));
     const data = chartRows.map(r => typeof r.data[k] === 'number' ? r.data[k] : null);
@@ -3897,15 +4166,60 @@ function renderSessionCharts(rows) {
   });
 }
 
-async function viewSession(id) {
+// A separate, throwaway Leaflet map instance from the live Raceline tab's
+// gpsMap — this one is destroyed and rebuilt (L.Map.remove()) every time a
+// different session is opened, since Leaflet has no supported "reset to a
+// brand new trail" operation on an existing map instance the way a Chart.js
+// dataset swap does. Hidden entirely (see session-map-card's own display
+// toggle) when this session has fewer than 2 valid GPS fixes — nothing
+// meaningful to draw a line through otherwise.
+let sessionMap = null, sessionMapPolyline = null;
+function renderSessionGpsMap(rows) {
+  const card = document.getElementById('session-map-card');
+  const trail = rows
+    .filter(r => gpsValid(r.data.flags) && typeof r.data.latitude === 'number' && typeof r.data.longitude === 'number')
+    .map(r => [r.data.latitude, r.data.longitude]);
+  if (sessionMap) { try { sessionMap.remove(); } catch(e) {} sessionMap = null; sessionMapPolyline = null; }
+  if (trail.length < 2 || typeof L === 'undefined') { card.style.display = 'none'; return; }
+  card.style.display = 'flex';
   try {
-    const res = await fetch(`/api/sessions/${id}/points`, { cache:'no-store' });
+    const el = document.getElementById('session-map');
+    sessionMap = L.map(el, { zoomControl:true, attributionControl:true });
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19, attribution: 'Tiles &copy; Esri — Esri, Maxar, Earthstar Geographics'
+    }).addTo(sessionMap);
+    sessionMapPolyline = L.polyline(trail, { color:'#0ea5e9', weight:3.5, opacity:.9 }).addTo(sessionMap);
+    sessionMap.fitBounds(sessionMapPolyline.getBounds(), { padding:[30,30], maxZoom:19 });
+  } catch(e) { console.warn('renderSessionGpsMap failed:', e); card.style.display = 'none'; }
+}
+
+// esc_mode/esc_state are plain strings, not METRICS entries (see this
+// file's own rule on why — METRICS assumes every field is a chartable
+// number), so they're summarized as text here rather than charted. Shows
+// the LAST row where the ESC link was actually valid this session, since
+// that's the most representative "what was the ESC doing" snapshot for a
+// session that's over — not worth a full mode/state timeline chart.
+function renderSessionEscSummary(rows) {
+  const card = document.getElementById('session-esc-card');
+  const lastValid = [...rows].reverse().find(r => escValid(r.data.flags));
+  if (!lastValid) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const d = lastValid.data;
+  document.getElementById('session-esc-summary').textContent =
+    `Mode: ${d.esc_mode ?? '--'} · State: ${d.esc_state ?? '--'} · Setpoint ${fv(d.esc_setpoint_pct,1)}% · Live ${fv(d.esc_live_pct,1)}% · Ramp ${fv(d.esc_ramp_pct,1)}%`;
+}
+
+async function viewSession(kind, id) {
+  const cfg = SESSION_KIND_CONFIG[kind];
+  try {
+    const res = await fetch(`${cfg.apiBase}/${id}/points`, { cache:'no-store' });
     const rows = await res.json();
 
     document.getElementById('sessions-list-wrap').style.display = 'none';
     document.getElementById('session-view').style.display = 'flex';
-    document.getElementById('session-view-title').textContent = `SESSION #${id} — ${rows.length} packets`;
-    document.getElementById('session-view-export').href = `/api/sessions/${id}/export.csv`;
+    const label = kind === 'local' ? `LOCAL SESSION #${id}` : `SESSION #${id}`;
+    document.getElementById('session-view-title').textContent = `${label} — ${rows.length} packets`;
+    document.getElementById('session-view-export').href = `${cfg.apiBase}/${id}/export.csv`;
 
     sessionRowsFull = rows;
     sessionLapsInfo = analyzeSessionPoints(rows);
@@ -3922,6 +4236,8 @@ async function viewSession(id) {
     }
 
     renderSessionCharts(rows);
+    renderSessionGpsMap(rows);
+    renderSessionEscSummary(rows);
     renderSessionLapSummary('All laps', rows, null);
   } catch(e) {
     console.warn('viewSession error:', e);
@@ -3932,6 +4248,8 @@ document.getElementById('session-lap-select').addEventListener('change', (e) => 
   const val = e.target.value;
   if (val === 'all') {
     renderSessionCharts(sessionRowsFull);
+    renderSessionGpsMap(sessionRowsFull);
+    renderSessionEscSummary(sessionRowsFull);
     renderSessionLapSummary('All laps', sessionRowsFull, null);
     return;
   }
@@ -3939,13 +4257,15 @@ document.getElementById('session-lap-select').addEventListener('change', (e) => 
   if (!lap) return;
   const subset = sessionRowsFull.slice(lap.startIdx, lap.endIdx + 1);
   renderSessionCharts(subset);
+  renderSessionGpsMap(subset);
+  renderSessionEscSummary(subset);
   renderSessionLapSummary(`Lap ${lap.lap}`, subset, lap);
 });
 
-document.getElementById('sessions-refresh').addEventListener('click', loadSessions);
 document.getElementById('session-view-close').addEventListener('click', () => {
   document.getElementById('session-view').style.display = 'none';
   document.getElementById('sessions-list-wrap').style.display = 'flex';
+  if (sessionMap) { try { sessionMap.remove(); } catch(e) {} sessionMap = null; sessionMapPolyline = null; }
 });
 
 // ── STATE / HISTORY ──────────────────────────────────────────────────────────
