@@ -1359,6 +1359,49 @@
     #pages { padding-left:0; padding-bottom:calc(82px + env(safe-area-inset-bottom)); }
     .settings-mobile-only { display:flex; }
 
+    /* Local Sessions hidden entirely on mobile, per explicit request —
+       see #local-sessions-section's own HTML comment for why (a laptop-
+       side SD-card workflow, not something managed from a phone, and one
+       less thing to scroll past on an already-tall Sessions page).
+       !important is required, not a style choice — the element's own
+       markup sets style="display:flex" inline, and an inline style beats
+       any external selector's specificity regardless of how it's written,
+       short of !important in the stylesheet (same reasoning this file's
+       own .stats-row mobile override above already documents). */
+    #local-sessions-section { display:none !important; }
+
+    /* Session History becomes a stacked card list instead of a
+       horizontally-scrollable table — a 6-column table with 4 action
+       buttons per row doesn't fit a phone width usefully even scrolled.
+       Standard "table row -> card" technique: every table element goes
+       display:block, and each <td>'s own data-label attribute (see
+       loadSessionsTable()'s row template) supplies a label via ::before
+       — an empty data-label (the checkbox/actions cells) renders none. */
+    #sessions-table-wrap { overflow:visible; border-radius:0; }
+    #sessions-table { min-width:0; width:100%; }
+    #sessions-table thead { display:none; }
+    #sessions-table tbody, #sessions-table tr, #sessions-table td { display:block; width:auto; }
+    #sessions-table tr {
+      position:relative; background:var(--panel); border:1px solid var(--border);
+      border-radius:var(--radius-sm); padding:12px 40px 12px 14px; margin-bottom:10px;
+    }
+    #sessions-table tbody tr:hover { background:var(--panel); }   /* desktop's subtle hover tint isn't meaningful on touch */
+    #sessions-table td { border-bottom:none; padding:3px 0; font-size:13px; }
+    #sessions-table td[data-label]:not([data-label=""])::before {
+      content: attr(data-label) ": "; font-weight:600; color:var(--muted); margin-right:2px;
+    }
+    #sessions-table td[data-label="Session"] { font-size:14px; font-weight:600; padding-bottom:6px; }
+    /* The select-checkbox cell is always the first <td> when present
+       (see cfg.selectable) — pinned to the card's top-right corner rather
+       than taking its own full-width row, the same "small control docked
+       to a card corner" pattern .chart-hide-btn already uses elsewhere. */
+    #sessions-table td:first-child:has(input[type="checkbox"]) {
+      position:absolute; top:12px; right:12px; padding:0;
+    }
+    #sessions-table td:last-child {
+      padding-top:10px; text-align:left !important; display:flex; flex-wrap:wrap; gap:6px;
+    }
+
     /* No graphs on mobile Overview — numbers only, per design. The bar's
        collapse toggle only makes sense when there's something below it to
        reveal by hiding it; with the chart grid gone on mobile there's
@@ -2100,21 +2143,32 @@
              Renders through the exact same viewSession()/table-rendering
              code as Session History above, just pointed at
              /api/local-sessions instead of /api/sessions — see
-             SESSION_KIND_CONFIG in the script below. -->
-        <div style="display:flex;flex-direction:column;gap:10px">
+             SESSION_KIND_CONFIG in the script below. Hidden entirely on
+             mobile, per explicit request — see its own @media rule
+             (a small screen already has plenty to scroll through with
+             just Session History, and local sessions are a laptop-side
+             SD-card workflow anyway, not something anyone's expected to
+             manage from a phone). -->
+        <div id="local-sessions-section" style="display:flex;flex-direction:column;gap:10px">
           <div class="section-heading">
             Local Sessions (SD Card)
             <div style="display:flex;gap:8px">
-              <button id="local-sessions-delete-selected" class="btn btn-sm btn-danger" disabled><span class="icon" data-icon="trash"></span>Delete Selected (<span id="local-sessions-selected-count">0</span>)</button>
               <button id="local-sessions-refresh" class="btn btn-sm"><span class="icon" data-icon="refresh"></span>Refresh</button>
             </div>
           </div>
-          <div class="settings-card-hint">Uploaded automatically when a vehicle's SD card is read through a card reader on a machine running the receiver agent — these never touch the live LoRa link.</div>
+          <!-- No delete here, per explicit request — a local session
+               already removes itself automatically the moment its SD
+               card is no longer found on any drive (see receiver_agent's
+               sdScanTick() reconciliation); a manual delete button would
+               just get silently re-created by the very next sync tick
+               while the card is still inserted, which is confusing, not
+               useful. No selection checkboxes either, since bulk-delete
+               was the only thing they were for. -->
+          <div class="settings-card-hint">Uploaded automatically when a vehicle's SD card is read through a card reader on a machine running the receiver agent, and removed automatically once that card is no longer inserted — these never touch the live LoRa link.</div>
           <div id="local-sessions-table-wrap">
             <table id="local-sessions-table" class="data-table">
               <thead>
                 <tr>
-                  <th style="width:30px"><input type="checkbox" id="local-sessions-select-all" aria-label="Select all local sessions"></th>
                   <th>File</th>
                   <th>Recorded</th>
                   <th>Duration</th>
@@ -2174,6 +2228,20 @@
             <select id="session-lap-select" class="settings-input" style="width:auto;min-width:160px"></select>
           </div>
           <div id="session-lap-summary" class="settings-card-hint"></div>
+        </div>
+
+        <!-- Scrub bar — only shown when a fixed Time Range is selected
+             (not "All") AND the session/lap actually spans more than that
+             range, per explicit request ("if i have like 15m selected i
+             can scroll thru the graphs at 15mins at a time"). Dragging
+             this repositions WHICH 15-minute (or whatever range) window
+             of the session the charts/map/ESC card below are showing,
+             rather than always showing only the most recent window. See
+             sessionWindowStartMs/renderSessionWindowSlider() in the
+             script. -->
+        <div id="session-window-row" style="display:none;flex-direction:column;gap:4px;flex-shrink:0">
+          <input type="range" id="session-window-slider" class="oui-slider" style="width:100%">
+          <div id="session-window-label" class="settings-card-hint" style="text-align:center"></div>
         </div>
 
         <!-- Raceline + ESC status are hidden unless this specific
@@ -3878,13 +3946,22 @@ const SESSION_KIND_CONFIG = {
     apiBase: '/api/sessions',
     tbody: 'sessions-tbody', empty: 'sessions-empty', disabled: 'sessions-disabled',
     selectAll: 'sessions-select-all', deleteBtn: 'sessions-delete-selected', countEl: 'sessions-selected-count',
+    selectable: true,
     selected: new Set(),
     reload: () => loadSessionsTable('server'),
   },
   local: {
     apiBase: '/api/local-sessions',
     tbody: 'local-sessions-tbody', empty: 'local-sessions-empty', disabled: 'local-sessions-disabled',
-    selectAll: 'local-sessions-select-all', deleteBtn: 'local-sessions-delete-selected', countEl: 'local-sessions-selected-count',
+    // No selectAll/deleteBtn ids — per explicit request, local sessions
+    // aren't manually deletable at all (see the markup's own comment on
+    // why: a local session already removes itself the moment its SD card
+    // is pulled, so a manual delete would just get re-created by the very
+    // next sync tick while the card's still in). `selectable:false` is
+    // what actually turns off the checkbox column/Delete button below —
+    // every function in this section checks it rather than assuming
+    // every session kind has both.
+    selectable: false,
     selected: new Set(),
     reload: () => loadSessionsTable('local'),
   },
@@ -3902,6 +3979,7 @@ function fmtDuration(ms) {
 // after every checkbox change and every reload.
 function updateSessionSelectionUi(kind) {
   const cfg = SESSION_KIND_CONFIG[kind];
+  if (!cfg.selectable) return;   // no checkboxes/Delete Selected button exist for this kind — nothing to update
   const rows = sessionsCache[kind];
   const n = cfg.selected.size;
   setText(cfg.countEl, String(n));
@@ -3964,17 +4042,23 @@ async function loadSessionsTable(kind) {
         ? (s.name || s.source_file || `Local #${s.id}`)
         : (s.name ? `${s.name} <span style="color:var(--muted)">(#${s.id})</span>` : `#${s.id}`);
       const startedCell = started ? started.toLocaleString() : (s.uploaded_at ? `Uploaded ${new Date(s.uploaded_at).toLocaleString()}` : '--');
+      const checkboxCell = cfg.selectable
+        ? `<td data-label=""><input type="checkbox" ${checked} onchange="toggleSessionSelected('${kind}', ${s.id}, this.checked)" aria-label="Select session ${s.id}"></td>`
+        : '';
+      const deleteBtnHtml = cfg.selectable
+        ? `<button class="btn btn-sm btn-danger" onclick="showDeleteSessionConfirm('${kind}', [${s.id}])">Delete</button>`
+        : '';
       return `<tr>
-        <td><input type="checkbox" ${checked} onchange="toggleSessionSelected('${kind}', ${s.id}, this.checked)" aria-label="Select session ${s.id}"></td>
-        <td>${titleCell}</td>
-        <td>${startedCell}</td>
-        <td>${dur}</td>
-        <td>${s.packet_count}</td>
-        <td style="text-align:right;white-space:nowrap">
+        ${checkboxCell}
+        <td data-label="Session">${titleCell}</td>
+        <td data-label="Started">${startedCell}</td>
+        <td data-label="Duration">${dur}</td>
+        <td data-label="Packets">${s.packet_count}</td>
+        <td data-label="" style="text-align:right;white-space:nowrap">
           <button class="btn btn-sm btn-accent" onclick="viewSession('${kind}', ${s.id})">View</button>
           <a class="btn btn-sm btn-good" href="${cfg.apiBase}/${s.id}/export.csv">CSV</a>
           <button class="btn btn-sm" onclick="showRenameSessionConfirm('${kind}', ${s.id}, ${JSON.stringify(s.name || '').replace(/"/g,'&quot;')})">Rename</button>
-          <button class="btn btn-sm btn-danger" onclick="showDeleteSessionConfirm('${kind}', [${s.id}])">Delete</button>
+          ${deleteBtnHtml}
         </td>
       </tr>`;
     }).join('');
@@ -3983,10 +4067,18 @@ async function loadSessionsTable(kind) {
     console.warn(`loadSessionsTable(${kind}) error:`, e);
   }
 }
-function loadSessions() { loadSessionsTable('server'); loadSessionsTable('local'); }
+// Local Sessions is hidden entirely on mobile (see #local-sessions-section's
+// own @media rule) — skip fetching it there too, not just hiding the
+// result, since there's no point spending a request on a table nobody on
+// that layout can see.
+function loadSessions() {
+  loadSessionsTable('server');
+  if (!IS_MOBILE) loadSessionsTable('local');
+}
 
 ['server','local'].forEach(kind => {
   const cfg = SESSION_KIND_CONFIG[kind];
+  if (!cfg.selectable) return;   // local: no selectAll/deleteBtn elements exist — see SESSION_KIND_CONFIG's own comment
   document.getElementById(cfg.selectAll)?.addEventListener('change', (e) => {
     const rows = sessionsCache[kind];
     if (e.target.checked) rows.forEach(s => cfg.selected.add(s.id));
@@ -4157,8 +4249,8 @@ function saveSessionHiddenKeys() {
 
 // Independent from the live dashboard's RANGE_OPTIONS/currentRangeMs pair
 // (reuses the SAME option list/labels for a consistent look, but its own
-// selected-key/ms state) — see trimRowsByRange() below for how "from end
-// of view" is computed for something that isn't live.
+// selected-key/ms state) — see the session scrub bar section below for
+// how "from end of view" is computed for something that isn't live.
 let sessionRangeKey = 'all';
 let sessionRangeMs = null;
 function renderSessionRangeToggles() {
@@ -4228,16 +4320,93 @@ document.getElementById('session-view').addEventListener('click', (e) => {
   applySessionViewFilters();
 });
 
-// Trims `rows` to the last `rangeMs` milliseconds ending at the LAST row's
-// own timestamp — deliberately "from the end of this view" rather than
-// wall-clock now, since a historical session/lap has no "now" of its own.
-// null (the "All" option) returns `rows` unchanged.
-function trimRowsByRange(rows, rangeMs) {
-  if (rangeMs == null || rows.length === 0) return rows;
-  const lastT = new Date(rows[rows.length - 1].received_at).getTime();
-  const cutoff = lastT - rangeMs;
-  return rows.filter(r => new Date(r.received_at).getTime() >= cutoff);
+// ── Session scrub bar ────────────────────────────────────────────────
+// Per explicit request: with a fixed Time Range selected (say 15M), a
+// long session shouldn't only ever show its LAST 15 minutes — dragging
+// this bar moves which 15-minute window of the session is showing.
+// sessionWindowStartMs is an offset in ms from the start of
+// sessionActiveBaseRows (whichever lap/all is currently selected) to the
+// start of the currently-shown window. Number.MAX_SAFE_INTEGER is used as
+// a "not yet positioned — snap to the most recent window" sentinel,
+// clamped down to the real max by renderSessionWindowSlider() below,
+// rather than trying to precompute the real max in three different call
+// sites (a fresh session open, a range change, a lap change) that don't
+// all have the row count/span handy at the same point. When nothing
+// needs scrubbing (see renderSessionWindowSlider()'s own early return),
+// this reduces to exactly the OLD "last N ms ending at the last row"
+// behavior — a window pinned to maxStart covers the same rows a plain
+// from-the-end trim would have.
+let sessionWindowStartMs = Number.MAX_SAFE_INTEGER;
+
+function sessionRowsSpanMs(rows) {
+  if (rows.length < 2) return 0;
+  return new Date(rows[rows.length - 1].received_at).getTime() - new Date(rows[0].received_at).getTime();
 }
+
+// Absolute-window slice of `rows`, from `startMs` to `startMs + rangeMs`
+// (both offsets from the first row's own timestamp) — used once a fixed
+// range is selected AND the active rows span more than it, so there's an
+// actual window to scrub through.
+function windowRows(rows, startMs, rangeMs) {
+  if (rows.length === 0) return rows;
+  const t0 = new Date(rows[0].received_at).getTime();
+  const winStart = t0 + startMs;
+  const winEnd = winStart + rangeMs;
+  return rows.filter(r => {
+    const t = new Date(r.received_at).getTime();
+    return t >= winStart && t <= winEnd;
+  });
+}
+
+function updateSessionWindowSliderFill(slider) {
+  const pct = slider.max > 0 ? ((slider.value - slider.min) / (slider.max - slider.min)) * 100 : 0;
+  slider.style.setProperty('--fill', pct + '%');
+}
+
+// Shows/hides the scrub bar and (re)computes its min/max/value/label —
+// called every time the active rows, range, or window position change.
+// Returns the row subset the rest of applySessionViewFilters() should
+// actually draw, so callers don't need to duplicate the "is a window
+// even active" branch themselves.
+function renderSessionWindowSlider() {
+  const row = document.getElementById('session-window-row');
+  const slider = document.getElementById('session-window-slider');
+  const label = document.getElementById('session-window-label');
+  const rows = sessionActiveBaseRows;
+  const spanMs = sessionRowsSpanMs(rows);
+
+  if (sessionRangeMs == null || spanMs <= sessionRangeMs) {
+    row.style.display = 'none';
+    return rows;   // "All" selected, or the whole thing already fits — nothing to scrub
+  }
+  row.style.display = 'flex';
+
+  const maxStart = spanMs - sessionRangeMs;
+  sessionWindowStartMs = Math.min(sessionWindowStartMs, maxStart);
+  slider.min = 0;
+  slider.max = maxStart;
+  // ~60 steps across the track feels smooth to drag without being so fine
+  // that adjacent steps round to visually-identical windows; 1s floor so
+  // step never rounds to 0 on a very short excess span.
+  slider.step = Math.max(1000, Math.round(maxStart / 60));
+  slider.value = sessionWindowStartMs;
+  updateSessionWindowSliderFill(slider);
+
+  label.textContent = `${fmtLapTime(sessionWindowStartMs)} – ${fmtLapTime(sessionWindowStartMs + sessionRangeMs)} of ${fmtLapTime(spanMs)}`;
+  return windowRows(rows, sessionWindowStartMs, sessionRangeMs);
+}
+
+// Dragging the slider rebuilds every visible chart on each event — cheap
+// enough at this project's session sizes (SESSION_CHART_MAX_POINTS caps
+// what's actually drawn regardless of window position) that a plain
+// 'input' listener reads as responsive without needing to throttle it.
+document.getElementById('session-window-slider').addEventListener('input', (e) => {
+  sessionWindowStartMs = Number(e.target.value);
+  const rows = renderSessionWindowSlider();
+  renderSessionCharts(rows);
+  renderSessionGpsMap(rows);
+  renderSessionEscSummary(rows);
+});
 
 // Which METRICS keys are actually worth a chart for this (already time-
 // range-trimmed, already hidden-filtered) row set — any key with at least
@@ -4276,6 +4445,13 @@ function renderSessionCharts(rows) {
     card.dataset.metric = k;
     card.style.position = 'relative';
     card.innerHTML = `<button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">${metric.label.toUpperCase()} (${metric.unit})</div><div class="chart-canvas-wrap"><canvas></canvas></div>`;
+    // applyIcons() only fills in [data-icon] spans that exist AT LOAD TIME
+    // (it's called once, near the top of this script) — a card built here,
+    // long after that, needs its own icon spans filled in explicitly, or
+    // the hide button's "x" just stays empty. This is exactly why the
+    // static session-map-card/session-esc-card hide buttons (present in
+    // the HTML from the start) render fine while these dynamic ones didn't.
+    applyIcons(card);
     grid.appendChild(card);
 
     const ctx = card.querySelector('canvas');
@@ -4350,7 +4526,12 @@ function renderSessionEscSummary(rows) {
 // against this without needing to know which lap is selected.
 let sessionActiveBaseRows = [];
 function applySessionViewFilters() {
-  const rows = trimRowsByRange(sessionActiveBaseRows, sessionRangeMs);
+  // renderSessionWindowSlider() does double duty: it shows/positions the
+  // scrub bar AND returns the actual window of rows to draw — either
+  // every active row unchanged ("All", or a fixed range that already
+  // covers the whole thing), or the slider-positioned window when the
+  // active rows span more than the selected range (see its own comment).
+  const rows = renderSessionWindowSlider();
   renderSessionCharts(rows);
   renderSessionGpsMap(rows);
   renderSessionEscSummary(rows);
@@ -4372,6 +4553,7 @@ async function viewSession(kind, id) {
     sessionLapsInfo = analyzeSessionPoints(rows);
     sessionRangeKey = 'all';
     sessionRangeMs = null;
+    sessionWindowStartMs = Number.MAX_SAFE_INTEGER;   // snap to the most recent window if/when a fixed range gets picked
     renderSessionRangeToggles();
 
     const lapsRow = document.getElementById('session-laps-row');
@@ -4394,6 +4576,11 @@ async function viewSession(kind, id) {
 }
 
 document.getElementById('session-lap-select').addEventListener('change', (e) => {
+  // A lap change scopes to an entirely different row range — the scrub
+  // bar's previous position (an offset into the OLD scope) has no
+  // meaningful relationship to the new one, so snap back to "most recent
+  // window" rather than carrying over a now-arbitrary offset.
+  sessionWindowStartMs = Number.MAX_SAFE_INTEGER;
   const val = e.target.value;
   if (val === 'all') {
     sessionActiveBaseRows = sessionRowsFull;
@@ -4420,6 +4607,7 @@ document.addEventListener('click', (e) => {
   if (!opt) return;
   sessionRangeKey = opt.key;
   sessionRangeMs = opt.ms;
+  sessionWindowStartMs = Number.MAX_SAFE_INTEGER;   // a new range picks up at "most recent," not wherever the old range's scrub position happened to be
   renderSessionRangeToggles();
   applySessionViewFilters();
 });
