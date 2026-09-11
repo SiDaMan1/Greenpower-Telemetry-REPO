@@ -207,6 +207,76 @@ app.get('/api/latest', (req, res) => {
     });
 });
 
+// ── Recent-history backfill (public, read-only — same reasoning as
+//    /api/latest) ──────────────────────────────────────────────────────
+// Per explicit request: opening the dashboard on a DIFFERENT device (or a
+// fresh page load on the same one) while the car was actively transmitting
+// within roughly the last hour should show the live charts already caught
+// up to that history, not starting from a blank slate — two devices
+// watching the same live car should show matching charts, not one that's
+// been running for 40 minutes and one that just started drawing.
+// Deliberately queried from the DATABASE (most recent session by
+// ended_at), not the in-memory `currentSessionId` — that variable resets
+// to null on every server restart/redeploy (a normal, frequent Railway
+// event, see this file's own graceful-shutdown rule), but the DB record
+// of "when did the car last actually transmit" survives one just fine.
+const RECENT_BACKFILL_MS = 60 * 60 * 1000;   // "the last hour," per explicit request — not configurable via query param, this is a fixed product decision, not a tunable
+// A bulk "catch this device up to roughly where things are" backfill
+// doesn't need every single sample at 4Hz the way a Session's own
+// detailed view/CSV export does (see decimateSessionRows() in index.html
+// for the finer per-metric min/max approach used there instead) — capping
+// the ROW count here (not per-metric, since every live chart shares ONE
+// historyTimes array across all metrics — see index.html's own history[]/
+// historyTimes comment) keeps both the network payload and the client-
+// side processing/chart-rebuild cost bounded regardless of how long the
+// car's been running. A plain fixed-stride downsample (not min/max
+// bucketing) is the tradeoff made here for that reason — a transient
+// single-sample spike within a decimated-away stretch could be smoothed
+// over in this bulk backfill even though it would still show up in a
+// proper Session view/CSV export of the same time range.
+// ⚠️ Cross-file invariant, easy to break silently: index.html's
+// CHART_GAP_STALE_MS (5000ms) wipes/re-anchors the live chart buffer on
+// any gap that large between two consecutive points — including two
+// backfilled points that only look far apart because decimation dropped
+// everything between them, not because of a real recording gap. At the
+// sender's actual ~4Hz cadence, RECENT_BACKFILL_MS/RECENT_BACKFILL_MAX_POINTS
+// (3,600,000 / 2000) caps the worst-case stride at ~2s of real time
+// between kept points — comfortably under the 5s threshold, so
+// decimation itself never manufactures a spurious gap-wipe. If either
+// this point cap, the backfill window, or the sender's cadence changes
+// meaningfully, re-check that this margin still holds.
+const RECENT_BACKFILL_MAX_POINTS = 2000;
+
+app.get('/api/recent-points', async (req, res) => {
+    if (!pool) return res.json({ points: [] });   // no DB configured — nothing to backfill, not an error; the dashboard just starts fresh same as always
+    try {
+        const sessionResult = await pool.query(
+            'SELECT id, ended_at FROM sessions ORDER BY ended_at DESC LIMIT 1'
+        );
+        if (sessionResult.rowCount === 0) return res.json({ points: [] });
+
+        const { id, ended_at } = sessionResult.rows[0];
+        const ageMs = Date.now() - new Date(ended_at).getTime();
+        if (ageMs > RECENT_BACKFILL_MS) return res.json({ points: [] });   // last activity too long ago to count as "recent" — start fresh, same as before this feature existed
+
+        const cutoff = new Date(Date.now() - RECENT_BACKFILL_MS);
+        const pointsResult = await pool.query(
+            `SELECT received_at, data FROM telemetry_points
+             WHERE session_id = $1 AND received_at >= $2
+             ORDER BY received_at ASC`,
+            [id, cutoff]
+        );
+        let rows = pointsResult.rows;
+        if (rows.length > RECENT_BACKFILL_MAX_POINTS) {
+            const stride = Math.ceil(rows.length / RECENT_BACKFILL_MAX_POINTS);
+            rows = rows.filter((_, i) => i % stride === 0);
+        }
+        res.json({ points: rows });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ── Session history (public reads — same reasoning as /api/latest: nothing
 //    in a telemetry session is sensitive enough to gate behind the API key) ──
 

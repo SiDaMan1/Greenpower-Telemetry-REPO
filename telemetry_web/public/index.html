@@ -1157,6 +1157,35 @@
     .install-fab, .install-popover { display:none !important; }
   }
 
+  /* ── Initial-load backfill spinner ───────────────────────────────────
+     Shown only while backfillRecentHistory() (see <script>) is actively
+     catching the live charts up to real recent data on page load — per
+     explicit request, so switching devices mid-drive doesn't look like
+     the chart just started from nothing. z-index:50, deliberately BELOW
+     the required-update banner's backdrop (59) — if both would ever
+     somehow be relevant at once, the required update should win, not a
+     backfill spinner. Uses a plain blurred dark scrim (not the app's own
+     --bg0 token as a flat fill) since the point is to blur/dim whatever
+     empty chart shells are already sitting underneath, not hide them
+     completely — a brief hint of "something's about to appear here"
+     reads better than a solid opaque cover for something this short. */
+  .initial-load-overlay {
+    position:fixed; inset:0; z-index:50;
+    display:none; align-items:center; justify-content:center; flex-direction:column; gap:14px;
+    background:rgba(10,12,17,.55); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+  }
+  .initial-load-overlay.show { display:flex; }
+  .initial-load-spinner {
+    width:38px; height:38px; border-radius:50%;
+    border:3px solid rgba(255,255,255,.15); border-top-color:var(--accent2);
+    animation:initialLoadSpin .8s linear infinite;
+  }
+  @keyframes initialLoadSpin { to { transform:rotate(360deg); } }
+  .initial-load-text {
+    font-family:'Rajdhani',sans-serif; font-size:12.5px; font-weight:700;
+    letter-spacing:1.4px; color:var(--text); text-transform:uppercase;
+  }
+
   /* ── App update banner (REQUIRED — blocks the app until reloaded) ────
      Shown on BOTH desktop and mobile (unlike the install prompt) — a
      stale build matters regardless of which layout you're using.
@@ -1703,6 +1732,18 @@
       <button class="btn btn-sm btn-accent" id="install-popover-action">Install</button>
       <button class="btn btn-sm" id="install-popover-dismiss">Dismiss</button>
     </div>
+  </div>
+
+  <!-- Initial-load backfill spinner — per explicit request: if the car was
+       transmitting recently (see /api/recent-points, "the last hour"),
+       the live charts get backfilled to match rather than starting blank,
+       and this shows while that catch-up is actually happening. Hidden
+       (and skipped entirely) when there's nothing recent enough to
+       backfill — see backfillRecentHistory() in <script>, which is also
+       what actually shows/hides this rather than any CSS timer. -->
+  <div class="initial-load-overlay" id="initial-load-overlay">
+    <div class="initial-load-spinner"></div>
+    <div class="initial-load-text">Loading recent data…</div>
   </div>
 
   <!-- Onboarding / access gate — first visit only (mobile AND desktop),
@@ -5829,11 +5870,107 @@ function renderOvMobileList() {
 applyOvMobileVisibility();
 renderOvMobileList();
 
-poll();
-// 200ms (5Hz) → 250ms (4Hz), matching the firmware's own cadence change
-// (SENSOR_INTERVAL_MS/LORA_TX_INTERVAL_MS in greenpower_sender.ino, per
-// explicit request to trade update rate for real LoRa range margin).
-setInterval(() => { if (!testModeActive) poll(); }, 250);
+// ── Initial-load history backfill ─────────────────────────────────────
+// Per explicit request: opening the dashboard on a different device (or a
+// fresh page load on the same one) while the car was transmitting within
+// roughly the last hour should show the live charts already caught up to
+// that history, not starting from a blank slate — two devices watching
+// the same live car should show matching charts, not one fully drawn and
+// one that just started. See /api/recent-points (server.js) for the
+// server side of this — a DATABASE-backed query (most recent session's
+// points from the last hour), not anything from this tab's own state,
+// since this needs to work correctly on a tab that just opened.
+// Reuses pushHistory()/onLiveGpsFix() THEMSELVES for every backfilled
+// point (flattened into the exact {..., received_at} shape a live poll()
+// packet already has) rather than duplicating their gap-wipe/lap/
+// efficiency-accumulation logic — this is also what makes "no bridging
+// line across dead time" fall out for free, per explicit request: every
+// point already goes through pushHistory()'s existing CHART_GAP_STALE_MS
+// gap-wipe/re-anchor check (see that function's own comment), the exact
+// same handling a live gap that size would get if it happened while this
+// tab was already open. Every backfilled point can only ever come from
+// ONE session (server-side, bounded by SESSION_GAP_MS), so the largest
+// possible internal gap is under a minute — still checked against the
+// same 5s threshold as everything else, not given a pass for being
+// "historical."
+async function backfillRecentHistory() {
+  const overlay = document.getElementById('initial-load-overlay');
+  try {
+    const res = await fetch('/api/recent-points', { cache:'no-store' });
+    const { points } = await res.json();
+    if (!Array.isArray(points) || points.length === 0) return;   // nothing recent enough — start fresh, exactly like before this feature existed
+
+    // Only worth a visible spinner once there's enough of it that the
+    // loop + chart rebuild below would take a genuinely perceptible
+    // moment — per explicit request ("add a loading icon... if it is
+    // trying to draw a lot of data"), not for every page load regardless
+    // of how little (or nothing) there actually is to catch up on.
+    const showSpinner = points.length > 300;
+    if (showSpinner) {
+      overlay.classList.add('show');
+      // ⚠️ Real bug caught in testing, not just theoretical: adding the
+      // 'show' class and then immediately running the heavy synchronous
+      // loop below in the same tick means the browser never actually
+      // gets a chance to PAINT the overlay before that loop starts —
+      // classList briefly has 'show' but nothing visible ever reaches
+      // the screen, since a single synchronous JS stretch blocks
+      // rendering until it yields. A double rAF forces two real paint
+      // cycles to happen first, guaranteeing the spinner is genuinely on
+      // screen before the blocking work begins.
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    }
+
+    // Haptics suppressed for the duration — replaying potentially several
+    // real lap crossings from the backfilled window through
+    // onLiveGpsFix() below would otherwise buzz the device repeatedly the
+    // instant the page loads, reading as a malfunction, not "loading."
+    const savedHaptics = hapticsEnabled;
+    hapticsEnabled = false;
+    points.forEach(row => {
+      const d = { ...row.data, received_at: new Date(row.received_at).getTime() };
+      pushHistory(d);
+      if (typeof d.seq === 'number') lastSeq = d.seq;   // so poll()'s own seq-dedupe correctly treats the live continuation as new, not a repeat of the last backfilled point
+      if (gpsValid(d.flags) && typeof d.latitude === 'number' && typeof d.longitude === 'number') {
+        const lat = +d.latitude, lon = +d.longitude;
+        gpsTrail.push([lat, lon]);
+        if (gpsTrail.length > MAX_GPS) gpsTrail.shift();
+        onLiveGpsFix(lat, lon, d.received_at);
+      }
+    });
+    hapticsEnabled = savedHaptics;
+    lastPacketAt = Date.now();   // avoids a bogus "SIG 0" flash for the instant between backfill finishing and the first real live poll landing
+
+    // One chart rebuild / one map catch-up at the end — not per point,
+    // which is the whole reason this doesn't lag even for a full hour's
+    // worth of (decimated, see RECENT_BACKFILL_MAX_POINTS server-side)
+    // backfilled data.
+    applyHistory();
+    if (gpsTrail.length) {
+      const [lat, lon] = gpsTrail[gpsTrail.length - 1];
+      updateGpsMap(lat, lon);
+    }
+  } catch(e) {
+    console.warn('backfillRecentHistory error:', e);
+  } finally {
+    overlay.classList.remove('show');
+  }
+}
+
+// Backfill runs to completion BEFORE the live poll loop starts — critical
+// ordering, not incidental: pushHistory() always APPENDS to historyTimes,
+// which the binary search in findTimeIndex() relies on staying sorted
+// ascending. If a live poll() point were pushed first and backfilled
+// (older) points arrived after it, they'd be appended out of order and
+// silently corrupt that invariant. await-ing the backfill before ever
+// calling poll()/starting its interval guarantees that can't happen.
+(async function initLiveData() {
+  await backfillRecentHistory();
+  poll();
+  // 200ms (5Hz) → 250ms (4Hz), matching the firmware's own cadence change
+  // (SENSOR_INTERVAL_MS/LORA_TX_INTERVAL_MS in greenpower_sender.ino, per
+  // explicit request to trade update rate for real LoRa range margin).
+  setInterval(() => { if (!testModeActive) poll(); }, 250);
+})();
 </script>
 </body>
 </html>

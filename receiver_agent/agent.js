@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.6.1.0';
+const AGENT_VERSION = '1.6.3.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -411,21 +411,45 @@ scanPorts();
 // reader plugged into THIS machine, at which point Windows mounts it as
 // an ordinary drive letter.
 //
-// Per explicit request, a local session is meant to be a live MIRROR of
-// what's currently on an inserted card, not a permanent one-way archive —
-// it should disappear from the dashboard as soon as the card is pulled
-// back out. sdScanTick() below is therefore a full RECONCILIATION, run
-// every SD_SCAN_MS: it lists every currently-mounted drive's LOG*.CSV
-// files (EXACTLY that naming scheme — SD_LOG_NAME_RE — matching what
+// ⚠️ Auto-delete-on-removal is BACK, per a further explicit follow-up —
+// but debounced this time, not the same design as before. The very first
+// version of this (see git history / the V1.20/V2.13 entry in this
+// folder's CLAUDE.md) deleted a local session the instant a single
+// sdScanTick() found its file missing from every mounted drive — that
+// was too eager: a card reader/USB drive letter can transiently fail to
+// enumerate for a single 15s poll (a real, ordinary Windows quirk), which
+// made the file look briefly gone and triggered a delete-then-reupload
+// the very next tick once the drive reappeared — reported directly as
+// "it keeps redoing it on its own." Removing auto-delete entirely (the
+// NEXT pass after that) fixed the flicker but lost real removal
+// altogether. This pass adds it back with a GRACE PERIOD: a local
+// session is only deleted once its file has been continuously absent
+// from every mounted drive for at least SD_REMOVE_GRACE_MS (30s, per
+// explicit request — "remove the sd card after like 30sec delete the
+// local sessions"), tracked per-fingerprint in `sdMissingSinceMs`. A
+// single missed poll (the transient glitch above) no longer triggers
+// anything — the file has to be gone for two consecutive 15s ticks in a
+// row before it counts. Reappearing on any later tick before the grace
+// period elapses clears the timer entirely, back to "present."
+// NOTE: closing the dashboard browser tab has NO effect on any of this —
+// this reconciliation runs entirely in receiver_agent, a background
+// process independent of whether anyone has the website open at all.
+// Only the SD card's real physical presence (as seen by THIS machine's
+// own drive enumeration) drives it.
+// sdScanTick() below lists every currently-mounted drive's LOG*.CSV files
+// (EXACTLY that naming scheme — SD_LOG_NAME_RE — matching what
 // greenpower_sender's own openNextLogFile() actually writes, nothing
-// looser), asks the server (GET /api/local-sessions) what it currently
-// has, uploads whatever's on a card but not yet on the server, and
-// DELETES whatever's on the server but no longer present on any mounted
-// drive. This also means state doesn't need to persist across agent
-// restarts at all — every tick re-derives the full truth from "what's on
-// a card right now" vs. "what the server currently has," so a restart
-// mid-session just re-reconciles from scratch rather than needing a local
-// record of what was already uploaded.
+// looser), asks the server (GET /api/local-sessions) what it already has
+// (matched by `source_fingerprint`, "<filename>:<sizeBytes>" — see its
+// own column comment in telemetry_web/server.js), uploads whatever's on
+// a card but not yet on the server, and deletes whatever's been
+// continuously absent past the grace period above. State (both what's
+// already uploaded, and the missing-since timers) doesn't need to
+// persist across agent restarts — the former re-derives from the
+// server's own records via the fingerprint match; the latter simply
+// restarts its grace period fresh, which just means a restart mid-
+// removal briefly extends how long a genuinely-pulled card's session
+// survives, never how long it takes to appear.
 // Deliberately no user prompt before uploading, unlike the live-USB-
 // receiver forwarding flow above — that flow asks first because it's
 // live, ongoing telemetry from whichever machine/vehicle happens to be
@@ -435,9 +459,11 @@ scanPorts();
 // own rules on why /api/sessions has no auth).
 const SD_SCAN_MS = 15000;
 const SD_RETRY_MS = 5 * 60 * 1000;   // don't retry a failing upload every 15s forever — an offline dashboard shouldn't spam agent.log
+const SD_REMOVE_GRACE_MS = 30 * 1000;   // a file must be continuously absent this long before its local session is deleted — see this section's own header comment for why
 const SD_LOG_NAME_RE = /^LOG\d{3}\.CSV$/i;
 
 const sdLastAttemptMs = new Map();   // fingerprint -> Date.now() of last FAILED upload attempt, in-memory only
+const sdMissingSinceMs = new Map();   // fingerprint -> Date.now() a currently-server-known file was FIRST observed absent this run; cleared the moment it's seen present again
 
 function sdCardCandidateDrives() {
     const drives = [];
@@ -617,22 +643,40 @@ async function sdScanTick() {
         }
     }
 
-    // 4. Remove whatever the server has that's no longer on ANY currently-
-    //    mounted card — this is what makes a local session disappear from
-    //    the dashboard as soon as its card is pulled, per explicit request.
+    // 4. Delete whatever's been CONTINUOUSLY absent from every mounted
+    //    drive for at least SD_REMOVE_GRACE_MS — not the instant it's
+    //    missing even once (see this section's own header comment for
+    //    why that was too eager). A file seen present this tick clears
+    //    its timer entirely, back to "present," even if it had been
+    //    missing for a while already — only an unbroken absence counts.
     let removedCount = 0;
     for (const s of serverSessions) {
-        if (!s.source_fingerprint || currentFiles.has(s.source_fingerprint)) continue;
+        if (!s.source_fingerprint) continue;
+        if (currentFiles.has(s.source_fingerprint)) {
+            sdMissingSinceMs.delete(s.source_fingerprint);
+            continue;
+        }
+        let missingSince = sdMissingSinceMs.get(s.source_fingerprint);
+        if (!missingSince) {
+            missingSince = Date.now();
+            sdMissingSinceMs.set(s.source_fingerprint, missingSince);
+        }
+        if (Date.now() - missingSince < SD_REMOVE_GRACE_MS) continue;   // not gone long enough yet — check again next tick
+
         try {
             const res = await fetch(`${DASHBOARD_ORIGIN}/api/local-sessions/${s.id}`, { method: 'DELETE' });
-            if (res.ok || res.status === 204) removedCount++;
-        } catch (e) { /* dashboard unreachable mid-loop — this one just gets retried next tick */ }
+            if (res.ok || res.status === 204) {
+                removedCount++;
+                sdMissingSinceMs.delete(s.source_fingerprint);
+            }
+            // else: delete failed — leave the timer in place, retried next tick without resetting the grace period
+        } catch (e) { /* dashboard unreachable mid-loop — leave the timer in place, retried next tick */ }
     }
 
     if (uploadedCount || removedCount) {
         const parts = [];
         if (uploadedCount) parts.push(`uploaded ${uploadedCount} local session${uploadedCount === 1 ? '' : 's'}`);
-        if (removedCount) parts.push(`removed ${removedCount} local session${removedCount === 1 ? '' : 's'} (SD card no longer present)`);
+        if (removedCount) parts.push(`removed ${removedCount} local session${removedCount === 1 ? '' : 's'} (SD card gone for over ${SD_REMOVE_GRACE_MS / 1000}s)`);
         log(`[OK]   SD card sync: ${parts.join(', ')}.`);
     }
 }
