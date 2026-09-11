@@ -4578,41 +4578,69 @@ function applySessionViewFilters() {
   renderSessionEscSummary(rows);
 }
 
+// ── Shared initial-load-style spinner (#initial-load-overlay) ───────────
+// Two call sites (the page-load backfill below, and opening a large
+// session view just below this) both need the same "show a blurred
+// spinner, but only for genuinely slow work" behavior — pulled out here
+// so both go through identical show/hide timing rather than drifting.
+// showInitialLoadOverlay() adds .show AND awaits a real double
+// requestAnimationFrame before returning, forcing two actual paint
+// cycles so the browser genuinely puts the spinner on screen before a
+// caller's heavy synchronous work starts (see the original bug this
+// fixed: adding the class and immediately blocking in the same tick
+// meant the class was present in the DOM but never actually painted).
+// hideInitialLoadOverlay() enforces a MINIMUM total visible time
+// (OVERLAY_MIN_VISIBLE_MS, 2s, per explicit request — "make sure if the
+// loading screen displays it shows for a minimum of 2 secs that way it
+// doesnt look like something is flashing") — real work that happens to
+// finish in, say, 300ms would otherwise show the spinner as a single
+// flicker frame, which reads as a UI glitch rather than "the app was
+// loading something."
+const OVERLAY_MIN_VISIBLE_MS = 2000;
+let overlayShownAt = null;
+function showInitialLoadOverlay() {
+  const overlay = document.getElementById('initial-load-overlay');
+  overlay.classList.add('show');
+  overlayShownAt = Date.now();
+  return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
+async function hideInitialLoadOverlay() {
+  const overlay = document.getElementById('initial-load-overlay');
+  if (overlayShownAt != null) {
+    const elapsed = Date.now() - overlayShownAt;
+    if (elapsed < OVERLAY_MIN_VISIBLE_MS) await new Promise(r => setTimeout(r, OVERLAY_MIN_VISIBLE_MS - elapsed));
+  }
+  overlay.classList.remove('show');
+  overlayShownAt = null;
+}
+
 // Same spinner as the initial-load backfill (#initial-load-overlay) —
 // reused here rather than a second overlay, since it's the exact same
 // "this is going to take a moment, don't just sit on a stale/blank view"
 // situation. Per explicit request ("add the loading screen if its
 // loading large sessions too like >20mins", then "actually base it off
-// of packets, not mins"): gated on `packet_count` — already sitting in
-// sessionsCache from the table list, no extra fetch needed, checked
-// BEFORE the points request even goes out so the spinner also covers
-// real network latency, not just local rendering time — rather than
-// elapsed time, since packet count is what actually drives the render
-// cost (how many points get pushed through decimateSessionRows()/built
-// into Chart.js datasets), and a session can run long in WALL time while
-// containing very few real packets (a flaky/mostly-dead link), which
-// wouldn't be slow to render at all despite a large duration. 4800 is
-// roughly 20 minutes' worth at the sender's ~4Hz cadence — matching the
-// original ask's scale, just measured the more meaningful way. A session
-// with no known packet count never shows it — no data to justify a
-// spinner over, same reasoning the initial-load backfill only shows for
-// an actual points.length > 300.
-const SESSION_VIEW_SPINNER_PACKETS = 4800;
+// of packets, not mins", then "say it loads if showing 1000 or more
+// packets"): gated on `packet_count` — already sitting in sessionsCache
+// from the table list, no extra fetch needed, checked BEFORE the points
+// request even goes out so the spinner also covers real network latency,
+// not just local rendering time — rather than elapsed time, since packet
+// count is what actually drives the render cost (how many points get
+// pushed through decimateSessionRows()/built into Chart.js datasets),
+// and a session can run long in WALL time while containing very few real
+// packets (a flaky/mostly-dead link), which wouldn't be slow to render
+// at all despite a large duration. A session with no known packet count
+// never shows it — no data to justify a spinner over, same reasoning the
+// initial-load backfill only shows for an actual points.length > 300.
+const SESSION_VIEW_SPINNER_PACKETS = 1000;
 function isLargeSession(kind, id) {
   const row = sessionsCache[kind].find(s => s.id === id);
-  return !!(row && row.packet_count > SESSION_VIEW_SPINNER_PACKETS);
+  return !!(row && row.packet_count >= SESSION_VIEW_SPINNER_PACKETS);
 }
 
 async function viewSession(kind, id) {
   const cfg = SESSION_KIND_CONFIG[kind];
-  const overlay = document.getElementById('initial-load-overlay');
   const showSpinner = isLargeSession(kind, id);
-  if (showSpinner) {
-    overlay.classList.add('show');
-    // Same real paint-before-blocking-work fix backfillRecentHistory()
-    // needed — see that function's own comment for the full story.
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-  }
+  if (showSpinner) await showInitialLoadOverlay();
   try {
     const res = await fetch(`${cfg.apiBase}/${id}/points`, { cache:'no-store' });
     const rows = await res.json();
@@ -4647,7 +4675,7 @@ async function viewSession(kind, id) {
   } catch(e) {
     console.warn('viewSession error:', e);
   } finally {
-    if (showSpinner) overlay.classList.remove('show');
+    if (showSpinner) await hideInitialLoadOverlay();
   }
 }
 
@@ -5929,31 +5957,20 @@ renderOvMobileList();
 // same 5s threshold as everything else, not given a pass for being
 // "historical."
 async function backfillRecentHistory() {
-  const overlay = document.getElementById('initial-load-overlay');
+  // Only worth a visible spinner once there's enough of it that the loop
+  // + chart rebuild below would take a genuinely perceptible moment — per
+  // explicit request ("add a loading icon... if it is trying to draw a
+  // lot of data"), not for every page load regardless of how little (or
+  // nothing) there actually is to catch up on. Declared here (not inside
+  // the try block) so the finally block below can still see it.
+  let showSpinner = false;
   try {
     const res = await fetch('/api/recent-points', { cache:'no-store' });
     const { points } = await res.json();
     if (!Array.isArray(points) || points.length === 0) return;   // nothing recent enough — start fresh, exactly like before this feature existed
 
-    // Only worth a visible spinner once there's enough of it that the
-    // loop + chart rebuild below would take a genuinely perceptible
-    // moment — per explicit request ("add a loading icon... if it is
-    // trying to draw a lot of data"), not for every page load regardless
-    // of how little (or nothing) there actually is to catch up on.
-    const showSpinner = points.length > 300;
-    if (showSpinner) {
-      overlay.classList.add('show');
-      // ⚠️ Real bug caught in testing, not just theoretical: adding the
-      // 'show' class and then immediately running the heavy synchronous
-      // loop below in the same tick means the browser never actually
-      // gets a chance to PAINT the overlay before that loop starts —
-      // classList briefly has 'show' but nothing visible ever reaches
-      // the screen, since a single synchronous JS stretch blocks
-      // rendering until it yields. A double rAF forces two real paint
-      // cycles to happen first, guaranteeing the spinner is genuinely on
-      // screen before the blocking work begins.
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-    }
+    showSpinner = points.length > 300;
+    if (showSpinner) await showInitialLoadOverlay();   // real double-rAF paint wait — see showInitialLoadOverlay()'s own comment for why that's necessary
 
     // Haptics suppressed for the duration — replaying potentially several
     // real lap crossings from the backfilled window through
@@ -5987,7 +6004,7 @@ async function backfillRecentHistory() {
   } catch(e) {
     console.warn('backfillRecentHistory error:', e);
   } finally {
-    overlay.classList.remove('show');
+    if (showSpinner) await hideInitialLoadOverlay();
   }
 }
 
