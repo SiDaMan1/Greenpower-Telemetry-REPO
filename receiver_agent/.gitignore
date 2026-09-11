@@ -2,4 +2,3 @@ node_modules/
 agent.log
 agent.pid
 installer/dist/
-uploaded-logs.json

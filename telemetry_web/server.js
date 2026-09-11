@@ -27,7 +27,16 @@ const fs = require('fs');
 const { Pool } = require('pg');
 
 const app = express();
-app.use(express.json({ limit: '10kb' }));   // one telemetry packet is well under 1kb
+// A single live telemetry packet is well under 1kb, but one full local-
+// session upload (see POST /api/local-sessions below) is a whole SD-card
+// CSV file's worth of points in one JSON body at once — a real, confirmed
+// bug: a multi-hour session at 4Hz ran well past the original blanket
+// 10kb cap and every upload failed with HTTP 413. /api/local-sessions
+// gets real headroom; every other route (including the hot, frequent
+// /api/telemetry path) keeps the original small, deliberately tight
+// limit — nothing else should ever need more than a few KB per request.
+app.use('/api/local-sessions', express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10kb' }));
 
 const PORT = process.env.PORT || 3000;
 const STALE_MS = 2000;          // no update in this long = dashboard shows offline
@@ -94,14 +103,25 @@ if (process.env.DATABASE_URL) {
         -- CLAUDE.md) and POSTs each LOG*.CSV file here as one local
         -- session via POST /api/local-sessions.
         CREATE TABLE IF NOT EXISTS local_sessions (
-            id           SERIAL PRIMARY KEY,
-            name         TEXT,
-            source_file  TEXT,
-            started_at   TIMESTAMPTZ,
-            ended_at     TIMESTAMPTZ,
-            packet_count INTEGER     NOT NULL DEFAULT 0,
-            uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            id                 SERIAL PRIMARY KEY,
+            name               TEXT,
+            source_file        TEXT,
+            -- "<filename>:<sizeBytes>" as computed by receiver_agent — NOT
+            -- just the filename, so two DIFFERENT physical SD cards that
+            -- both happen to number their own logs starting at LOG001.CSV
+            -- are never mistaken for the same session during agent-side
+            -- reconciliation (see agent.js's own sdScanTick() comment).
+            -- This is also exactly how the agent recognizes "this local
+            -- session's card is no longer inserted" and deletes it — a
+            -- local session only exists on the dashboard while its
+            -- fingerprint is still found on some currently-mounted drive.
+            source_fingerprint TEXT,
+            started_at         TIMESTAMPTZ,
+            ended_at           TIMESTAMPTZ,
+            packet_count       INTEGER     NOT NULL DEFAULT 0,
+            uploaded_at        TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE local_sessions ADD COLUMN IF NOT EXISTS source_fingerprint TEXT;
         CREATE TABLE IF NOT EXISTS local_session_points (
             id               BIGSERIAL PRIMARY KEY,
             local_session_id INTEGER     NOT NULL REFERENCES local_sessions(id),
@@ -371,20 +391,38 @@ app.get('/api/sessions/:id/export.csv', async (req, res) => {
 // endpoints above which only the dashboard's own UI calls).
 app.post('/api/local-sessions', requireApiKey, async (req, res) => {
     if (!pool) return res.status(503).json({ error: 'database not configured' });
-    const { name, sourceFile, points } = req.body;
+    const { name, sourceFile, sourceFingerprint, points } = req.body;
     if (!Array.isArray(points) || points.length === 0) {
         return res.status(400).json({ error: 'points must be a non-empty array' });
     }
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
+        // Idempotency guard — receiver_agent's own reconciliation (see its
+        // sdScanTick()) already checks this before uploading, but there's
+        // no DB-level UNIQUE constraint backing that (a pre-existing table
+        // might already have accidental duplicates from before this column
+        // existed, which a UNIQUE constraint would have refused to add).
+        // Belt-and-suspenders: if this exact fingerprint is already here
+        // (e.g. two overlapping sync ticks, or the agent restarting mid-
+        // upload), return the EXISTING session instead of creating a
+        // second copy of the same card file.
+        if (sourceFingerprint) {
+            const existing = await client.query('SELECT id FROM local_sessions WHERE source_fingerprint = $1', [sourceFingerprint]);
+            if (existing.rowCount > 0) {
+                await client.query('ROLLBACK');
+                return res.status(200).json({ id: existing.rows[0].id, packetCount: null, alreadyExists: true });
+            }
+        }
+
         const times = points.map(p => new Date(p.receivedAt)).filter(d => !isNaN(d.getTime()));
         const startedAt = times.length ? new Date(Math.min(...times)) : new Date();
         const endedAt = times.length ? new Date(Math.max(...times)) : new Date();
         const sessionResult = await client.query(
-            `INSERT INTO local_sessions (name, source_file, started_at, ended_at, packet_count)
-             VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-            [(name || sourceFile || 'Local session').slice(0, 200), sourceFile || null, startedAt, endedAt, points.length]
+            `INSERT INTO local_sessions (name, source_file, source_fingerprint, started_at, ended_at, packet_count)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+            [(name || sourceFile || 'Local session').slice(0, 200), sourceFile || null, sourceFingerprint || null, startedAt, endedAt, points.length]
         );
         const sessionId = sessionResult.rows[0].id;
 
@@ -418,7 +456,7 @@ app.get('/api/local-sessions', async (req, res) => {
     if (!pool) return res.status(503).json({ error: 'database not configured' });
     try {
         const result = await pool.query(
-            `SELECT id, name, source_file, started_at, ended_at, packet_count, uploaded_at
+            `SELECT id, name, source_file, source_fingerprint, started_at, ended_at, packet_count, uploaded_at
              FROM local_sessions
              ORDER BY started_at DESC NULLS LAST
              LIMIT 200`

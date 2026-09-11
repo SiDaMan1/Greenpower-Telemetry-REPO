@@ -2139,6 +2139,22 @@
         <div class="section-heading">
           <span id="session-view-title"></span>
           <div style="display:flex;gap:8px">
+            <!-- Same Time Range / Visible Charts customize pattern the live
+                 Overview page uses (see #chart-customize-btn/panel) — a
+                 SEPARATE instance with its own state (sessionRangeMs/
+                 sessionHiddenKeys below), not wired to the live dashboard's
+                 currentRangeMs/ovVisible, since a finished historical
+                 session has no "now" to grow toward the way a live chart
+                 does. See the script's own SESSIONS section for why. -->
+            <div class="customize-wrap">
+              <button id="session-customize-btn" class="btn btn-sm"><span class="icon" data-icon="settings"></span>Customize</button>
+              <div id="session-customize-panel" class="customize-panel">
+                <div class="customize-panel-label">Time Range (from end of view)</div>
+                <div class="range-toggle-row" data-session-range-slot></div>
+                <div class="customize-panel-label">Visible Charts</div>
+                <div id="session-customize-list"></div>
+              </div>
+            </div>
             <a id="session-view-export" href="#" class="btn btn-sm btn-good"><span class="icon" data-icon="download"></span>Export CSV</a>
             <button id="session-view-close" class="btn btn-sm"><span class="icon" data-icon="x"></span>Close</button>
           </div>
@@ -2166,11 +2182,13 @@
              or no ESC link connected simply won't show these, same as a
              metric chart with no numeric samples anywhere in the session
              (see sessionAvailableMetricKeys()). -->
-        <div id="session-map-card" class="chart-card" style="display:none;flex-shrink:0;height:280px">
+        <div id="session-map-card" class="chart-card mini-chart-card" data-metric="raceline" style="display:none;flex-shrink:0;height:280px;position:relative">
+          <button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button>
           <div class="mini-chart-label">RACELINE</div>
           <div id="session-map" style="width:100%;height:calc(100% - 22px);border-radius:var(--radius);overflow:hidden;isolation:isolate"></div>
         </div>
-        <div id="session-esc-card" class="settings-card" style="display:none;flex-shrink:0">
+        <div id="session-esc-card" class="settings-card mini-chart-card" data-metric="esc" style="display:none;flex-shrink:0;position:relative">
+          <button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button>
           <div class="settings-card-title">ESC STATUS (LAST KNOWN THIS SESSION)</div>
           <div class="settings-card-hint" id="session-esc-summary"></div>
         </div>
@@ -4109,18 +4127,131 @@ function decimateSessionRows(rows, key, maxPoints) {
   return out;
 }
 
-// Which METRICS keys are actually worth a chart for this session — any
-// key with at least one real numeric sample somewhere in `rows`. This is
-// what makes a session view show "everything available" instead of a
-// fixed 6-metric subset: a session recorded before the ESC link existed
+// ── Session view: time range + hide/show charts ─────────────────────────
+// Per explicit request — the same two controls the live dashboard already
+// has (a Time Range row, and per-chart hide + a Customize checklist to
+// re-show them) apply to a historical session view too, NOT wired to the
+// live dashboard's own currentRangeMs/ovVisible state (see the customize
+// panel's own HTML comment for why: a finished session has no "now" to
+// grow a window toward the way a live chart does, and "which charts are
+// worth clutter" is naturally a different preference for a stats-dense
+// historical review than for the at-a-glance live Overview).
+//
+// SESSION_CUSTOMIZE_ITEMS is every togglable thing a session view can
+// show: every METRICS key (charted) plus the two non-METRICS extras
+// (raceline map, ESC status text) — see sessionAvailableMetricKeys() for
+// why esc_mode/esc_state/rssi/snr/etc. still only actually render when
+// this specific session has real data for them; hiding is an ADDITIONAL
+// filter on top of that, not a replacement for it.
+const SESSION_CUSTOMIZE_ITEMS = [
+  ...Object.keys(METRICS).map(k => ({ key:k, label:METRICS[k].label, color:METRICS[k].color })),
+  { key:'raceline', label:'Raceline Map', color:'var(--accent2)' },
+  { key:'esc', label:'ESC Status', color:'var(--escset)' },
+];
+const SESSION_HIDDEN_KEY = 'gp_session_hidden_charts';
+let sessionHiddenKeys = new Set();
+try { sessionHiddenKeys = new Set(JSON.parse(localStorage.getItem(SESSION_HIDDEN_KEY) || '[]')); } catch(e) {}
+function saveSessionHiddenKeys() {
+  try { localStorage.setItem(SESSION_HIDDEN_KEY, JSON.stringify(Array.from(sessionHiddenKeys))); } catch(e) {}
+}
+
+// Independent from the live dashboard's RANGE_OPTIONS/currentRangeMs pair
+// (reuses the SAME option list/labels for a consistent look, but its own
+// selected-key/ms state) — see trimRowsByRange() below for how "from end
+// of view" is computed for something that isn't live.
+let sessionRangeKey = 'all';
+let sessionRangeMs = null;
+function renderSessionRangeToggles() {
+  // data-scope="session" (checked by BOTH this section's own click
+  // listener below AND the live dashboard's range-toggle-btn listener's
+  // own guard) is what actually separates the two — NOT an ancestor
+  // check against [data-session-range-slot]. A real, confirmed bug hit
+  // building this: whichever listener runs FIRST re-renders this row via
+  // innerHTML, which detaches the ORIGINAL clicked button node from the
+  // document — the SECOND listener's `e.target` still refers to that now-
+  // detached node, and `.closest(ancestorSelector)` on a detached node
+  // can no longer find an ancestor it used to have, silently defeating an
+  // ancestor-based guard depending on listener order. A plain attribute
+  // check on the button's OWN dataset has no such dependency.
+  const html = RANGE_OPTIONS.map(r =>
+    `<button type="button" class="range-toggle-btn${r.key === sessionRangeKey ? ' active' : ''}" data-range-key="${r.key}" data-scope="session">${r.label}</button>`
+  ).join('');
+  document.querySelectorAll('[data-session-range-slot]').forEach(el => { el.innerHTML = html; });
+}
+// NOT called here at load — RANGE_OPTIONS itself isn't declared until
+// further down this same script (see the live dashboard's own Time Range
+// section), so calling this before that line has run would throw. The
+// row is empty until the first viewSession() call anyway (the panel it
+// lives in only opens from within an active session view), and
+// viewSession() already calls this itself on every open.
+
+function renderSessionCustomizeList() {
+  const list = document.getElementById('session-customize-list');
+  if (!list) return;
+  list.innerHTML = SESSION_CUSTOMIZE_ITEMS.map(item => `<label class="customize-row">
+      <input type="checkbox" data-key="${item.key}" ${sessionHiddenKeys.has(item.key) ? '' : 'checked'}>
+      <span class="customize-swatch" style="background:${resolveColor(item.color)}"></span>
+      ${item.label}
+    </label>`).join('');
+  list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) sessionHiddenKeys.delete(cb.dataset.key); else sessionHiddenKeys.add(cb.dataset.key);
+      saveSessionHiddenKeys();
+      applySessionViewFilters();
+    });
+  });
+}
+renderSessionCustomizeList();
+document.getElementById('session-customize-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('session-customize-panel').classList.toggle('open');
+});
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('session-customize-panel');
+  if (panel && panel.classList.contains('open') && !panel.contains(e.target) && e.target.id !== 'session-customize-btn') {
+    panel.classList.remove('open');
+  }
+});
+// A session chart/card's own "x" hide button (same .chart-hide-btn this
+// file already uses on live Overview mini-charts) — removes it from view
+// immediately (session charts are cheap, static, rebuilt-from-scratch
+// renders anyway, unlike Overview's live ones, so there's no need for
+// Overview's keep-updating-in-the-background/fade-out treatment here).
+document.getElementById('session-view').addEventListener('click', (e) => {
+  const btn = e.target.closest('.chart-hide-btn');
+  if (!btn) return;
+  const card = btn.closest('[data-metric]');
+  if (!card) return;
+  sessionHiddenKeys.add(card.dataset.metric);
+  saveSessionHiddenKeys();
+  renderSessionCustomizeList();
+  applySessionViewFilters();
+});
+
+// Trims `rows` to the last `rangeMs` milliseconds ending at the LAST row's
+// own timestamp — deliberately "from the end of this view" rather than
+// wall-clock now, since a historical session/lap has no "now" of its own.
+// null (the "All" option) returns `rows` unchanged.
+function trimRowsByRange(rows, rangeMs) {
+  if (rangeMs == null || rows.length === 0) return rows;
+  const lastT = new Date(rows[rows.length - 1].received_at).getTime();
+  const cutoff = lastT - rangeMs;
+  return rows.filter(r => new Date(r.received_at).getTime() >= cutoff);
+}
+
+// Which METRICS keys are actually worth a chart for this (already time-
+// range-trimmed, already hidden-filtered) row set — any key with at least
+// one real numeric sample somewhere in `rows`, AND not in sessionHiddenKeys.
+// This is what makes a session view show "everything available" instead of
+// a fixed 6-metric subset: a session recorded before the ESC link existed
 // (say) simply won't have esc_* keys pass this check, rather than showing
-// three permanently-flat-at-null charts. rssi/snr are METRICS keys too,
-// so a live/server session naturally gets a Link-quality chart here for
-// free — local (SD-card) sessions never have those keys in `data` at all
-// (no LoRa link involved in a direct-to-SD write), so they're just
-// skipped, same as any other genuinely absent field.
+// three permanently-flat-at-null charts. rssi/snr are METRICS keys too, so
+// a live/server session naturally gets a Link-quality chart here for free
+// — local (SD-card) sessions never have those keys in `data` at all (no
+// LoRa link involved in a direct-to-SD write), so they're just skipped,
+// same as any other genuinely absent field.
 function sessionAvailableMetricKeys(rows) {
-  return Object.keys(METRICS).filter(k => rows.some(r => typeof r.data[k] === 'number'));
+  return Object.keys(METRICS).filter(k => !sessionHiddenKeys.has(k) && rows.some(r => typeof r.data[k] === 'number'));
 }
 
 // Extracted out of viewSession() itself so it can be called again, scoped
@@ -4141,8 +4272,10 @@ function renderSessionCharts(rows) {
   sessionAvailableMetricKeys(rows).forEach(k => {
     const metric = METRICS[k];
     const card = document.createElement('div');
-    card.className = 'chart-card';
-    card.innerHTML = `<div class="mini-chart-label">${metric.label.toUpperCase()} (${metric.unit})</div><div class="chart-canvas-wrap"><canvas></canvas></div>`;
+    card.className = 'chart-card mini-chart-card';
+    card.dataset.metric = k;
+    card.style.position = 'relative';
+    card.innerHTML = `<button class="chart-hide-btn" title="Hide"><span class="icon" data-icon="x"></span></button><div class="mini-chart-label">${metric.label.toUpperCase()} (${metric.unit})</div><div class="chart-canvas-wrap"><canvas></canvas></div>`;
     grid.appendChild(card);
 
     const ctx = card.querySelector('canvas');
@@ -4170,12 +4303,13 @@ function renderSessionCharts(rows) {
 // gpsMap — this one is destroyed and rebuilt (L.Map.remove()) every time a
 // different session is opened, since Leaflet has no supported "reset to a
 // brand new trail" operation on an existing map instance the way a Chart.js
-// dataset swap does. Hidden entirely (see session-map-card's own display
-// toggle) when this session has fewer than 2 valid GPS fixes — nothing
-// meaningful to draw a line through otherwise.
+// dataset swap does. Hidden when this session has fewer than 2 valid GPS
+// fixes (nothing meaningful to draw a line through) OR 'raceline' is in
+// sessionHiddenKeys.
 let sessionMap = null, sessionMapPolyline = null;
 function renderSessionGpsMap(rows) {
   const card = document.getElementById('session-map-card');
+  if (sessionHiddenKeys.has('raceline')) { if (sessionMap) { try { sessionMap.remove(); } catch(e) {} sessionMap = null; } card.style.display = 'none'; return; }
   const trail = rows
     .filter(r => gpsValid(r.data.flags) && typeof r.data.latitude === 'number' && typeof r.data.longitude === 'number')
     .map(r => [r.data.latitude, r.data.longitude]);
@@ -4199,14 +4333,27 @@ function renderSessionGpsMap(rows) {
 // the LAST row where the ESC link was actually valid this session, since
 // that's the most representative "what was the ESC doing" snapshot for a
 // session that's over — not worth a full mode/state timeline chart.
+// Hidden when 'esc' is in sessionHiddenKeys, same as any chart.
 function renderSessionEscSummary(rows) {
   const card = document.getElementById('session-esc-card');
+  if (sessionHiddenKeys.has('esc')) { card.style.display = 'none'; return; }
   const lastValid = [...rows].reverse().find(r => escValid(r.data.flags));
   if (!lastValid) { card.style.display = 'none'; return; }
   card.style.display = 'block';
   const d = lastValid.data;
   document.getElementById('session-esc-summary').textContent =
     `Mode: ${d.esc_mode ?? '--'} · State: ${d.esc_state ?? '--'} · Setpoint ${fv(d.esc_setpoint_pct,1)}% · Live ${fv(d.esc_live_pct,1)}% · Ramp ${fv(d.esc_ramp_pct,1)}%`;
+}
+
+// Whichever row subset the lap <select> currently has active (all rows, or
+// one lap's slice) — BEFORE time-range trimming. Range/hide changes re-run
+// against this without needing to know which lap is selected.
+let sessionActiveBaseRows = [];
+function applySessionViewFilters() {
+  const rows = trimRowsByRange(sessionActiveBaseRows, sessionRangeMs);
+  renderSessionCharts(rows);
+  renderSessionGpsMap(rows);
+  renderSessionEscSummary(rows);
 }
 
 async function viewSession(kind, id) {
@@ -4223,6 +4370,9 @@ async function viewSession(kind, id) {
 
     sessionRowsFull = rows;
     sessionLapsInfo = analyzeSessionPoints(rows);
+    sessionRangeKey = 'all';
+    sessionRangeMs = null;
+    renderSessionRangeToggles();
 
     const lapsRow = document.getElementById('session-laps-row');
     const select = document.getElementById('session-lap-select');
@@ -4235,9 +4385,8 @@ async function viewSession(kind, id) {
       lapsRow.style.display = 'none';
     }
 
-    renderSessionCharts(rows);
-    renderSessionGpsMap(rows);
-    renderSessionEscSummary(rows);
+    sessionActiveBaseRows = rows;
+    applySessionViewFilters();
     renderSessionLapSummary('All laps', rows, null);
   } catch(e) {
     console.warn('viewSession error:', e);
@@ -4247,19 +4396,32 @@ async function viewSession(kind, id) {
 document.getElementById('session-lap-select').addEventListener('change', (e) => {
   const val = e.target.value;
   if (val === 'all') {
-    renderSessionCharts(sessionRowsFull);
-    renderSessionGpsMap(sessionRowsFull);
-    renderSessionEscSummary(sessionRowsFull);
+    sessionActiveBaseRows = sessionRowsFull;
+    applySessionViewFilters();
     renderSessionLapSummary('All laps', sessionRowsFull, null);
     return;
   }
   const lap = sessionLapsInfo.laps[parseInt(val, 10)];
   if (!lap) return;
   const subset = sessionRowsFull.slice(lap.startIdx, lap.endIdx + 1);
-  renderSessionCharts(subset);
-  renderSessionGpsMap(subset);
-  renderSessionEscSummary(subset);
+  sessionActiveBaseRows = subset;
+  applySessionViewFilters();
   renderSessionLapSummary(`Lap ${lap.lap}`, subset, lap);
+});
+
+// This file's existing global range-toggle-btn handler (RANGE_OPTIONS,
+// live dashboard) explicitly ignores clicks inside [data-session-range-slot]
+// — see that handler's own updated guard further down — so this session-
+// only listener is what actually drives sessionRangeKey/sessionRangeMs.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.range-toggle-btn[data-scope="session"]');
+  if (!btn) return;
+  const opt = RANGE_OPTIONS.find(r => r.key === btn.dataset.rangeKey);
+  if (!opt) return;
+  sessionRangeKey = opt.key;
+  sessionRangeMs = opt.ms;
+  renderSessionRangeToggles();
+  applySessionViewFilters();
 });
 
 document.getElementById('session-view-close').addEventListener('click', () => {
@@ -4347,7 +4509,21 @@ function renderRangeToggles() {
 }
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.range-toggle-btn');
-  if (!btn) return;
+  // A session view's own Time Range row (see the SESSIONS section's
+  // sessionRangeKey/sessionRangeMs and its own separate click listener)
+  // reuses this same .range-toggle-btn markup/CSS for visual consistency
+  // but must NOT drive the live dashboard's currentRangeMs. Checked via
+  // the button's OWN data-scope="session" attribute, NOT an ancestor
+  // check against [data-session-range-slot] — a real, confirmed bug hit
+  // building this: whichever of these two listeners runs first re-renders
+  // its row via innerHTML, detaching the original clicked button from the
+  // document, and .closest(ancestorSelector) on an already-detached node
+  // can no longer find an ancestor it used to have — silently defeating
+  // an ancestor-based guard depending on listener execution order. A
+  // plain check on the clicked button's own dataset has no such
+  // dependency, since detachment doesn't remove the element's own
+  // attributes, only its place in the tree.
+  if (!btn || btn.dataset.scope === 'session') return;
   const opt = RANGE_OPTIONS.find(r => r.key === btn.dataset.rangeKey);
   if (!opt) return;
   currentRangeKey = opt.key;
