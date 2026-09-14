@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.7.2.0';
+const AGENT_VERSION = '1.7.3.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -884,11 +884,11 @@ function startForwarding(portPath, port) {
 // ── Manual Start/Stop Forwarding (GUI buttons) ──────────────────────
 // Per explicit request: two buttons on the native GUI, alongside the
 // existing automatic "found the receiver, ask before forwarding" flow
-// above — Start Forwarding (with a COM port dropdown, auto-selecting
-// whichever port is currently identified as the real receiver) and Stop
-// Forwarding. See startGuiServer()'s /api/ports, /api/start-forwarding,
-// /api/stop-forwarding routes for how the GUI actually calls these, and
-// guiWindowPs1() for the button/dropdown themselves.
+// above — Start Forwarding (always targeting whichever port is currently
+// identified as the real receiver — there's no manual port picker, see
+// guiWindowPs1()'s own note on why that was removed) and Stop Forwarding.
+// See startGuiServer()'s /api/ports, /api/start-forwarding,
+// /api/stop-forwarding routes for how the GUI actually calls these.
 //
 // stopForwarding() just closes whatever's currently active — port.on
 // ('close') above (shared with the automatic path) does the actual
@@ -901,11 +901,14 @@ function stopForwarding() {
     return { ok: true, wasActive: true };
 }
 
-// requestedPath is optional — omitted (or empty) means "whichever port is
-// currently identified as the real Greenpower receiver," matching the
-// dropdown's own auto-selected default. Returns a plain {ok, error?}
-// result object (not a thrown exception) so the HTTP route can always
-// respond with a real JSON body the GUI can show, success or failure.
+// requestedPath is optional — the GUI's own Start Forwarding button never
+// sends one anymore (see guiWindowPs1()'s own note on why the manual port
+// picker was removed), so this always falls back to "whichever port is
+// currently identified as the real Greenpower receiver" in practice; the
+// parameter itself is kept for any other caller that might want to
+// target a specific port explicitly. Returns a plain {ok, error?} result
+// object (not a thrown exception) so the HTTP route can always respond
+// with a real JSON body the GUI can show, success or failure.
 function manualStartForwarding(requestedPath) {
     return new Promise((resolve) => {
         let targetPath = requestedPath && requestedPath.trim();
@@ -915,7 +918,7 @@ function manualStartForwarding(requestedPath) {
             }
         }
         if (!targetPath) {
-            resolve({ ok: false, error: 'No Greenpower receiver has been auto-detected yet, and no port was selected — plug in the receiver or pick a port from the dropdown.' });
+            resolve({ ok: false, error: 'No Greenpower receiver has been auto-detected yet — plug it in and wait a moment for it to be identified.' });
             return;
         }
 
@@ -2298,11 +2301,14 @@ function startGuiServer() {
             res.end(JSON.stringify({ ok: true }));
             triggerUninstall();
         } else if (req.method === 'GET' && req.url === '/api/ports') {
-            // Backs the GUI's port dropdown — every currently-visible serial
-            // port, plus which ONE (if any) is the port already identified
-            // as the real Greenpower receiver (see knownPorts), so the
-            // dropdown can auto-select it by default the same way the
-            // automatic notification-prompt flow already targets it.
+            // Backs the GUI's "Receiver: COM7" status line — every
+            // currently-visible serial port, plus which ONE (if any) is
+            // already identified as the real Greenpower receiver (see
+            // knownPorts), which is the only part of this the GUI
+            // actually displays (see guiWindowPs1()'s Refresh-ReceiverPort).
+            // The full `ports` list is kept in the response for now even
+            // though nothing currently reads it, in case a future need
+            // for it (diagnostics, a future manual-picker) comes up.
             SerialPort.list().then((ports) => {
                 let receiverPath = null;
                 for (const [p, state] of knownPorts) {
