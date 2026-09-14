@@ -4841,7 +4841,7 @@ function findTimeIndex(times, sinceMs) {
   return lo;
 }
 
-// ── STALE-GAP DETECTION (efficiency/lap tracking only — NOT the chart buffer) ──
+// ── STALE-GAP DETECTION (efficiency/lap tracking, AND a real visual break) ──
 // If more than CHART_GAP_STALE_MS passes between two consecutive real
 // packets (LoRa dropout, receiver_agent restarted, the ESP32 receiver/
 // sender itself rebooting, car parked and walked away from for a bit),
@@ -4849,18 +4849,23 @@ function findTimeIndex(times, sinceMs) {
 // in progress as over (see resetLapTracking() there) — a real outage that
 // long shouldn't have its dead time integrated as if power was still
 // being drawn continuously.
-// ⚠️ This USED to also wipe the entire chart history buffer here, so
-// Chart.js would never draw a straight line bridging real dead time —
-// reverted per explicit request/follow-up choice after that turned out to
-// mean restarting the ESP32 hardware reset the live charts back to empty
-// every time. The chosen tradeoff going forward: the chart buffer is
-// simply never touched by a stale gap at all anymore — old data (up to
-// HISTORY_HARD_CAP_MS) stays on screen and the next real point just gets
-// appended normally, with Chart.js connecting it to the last pre-gap
-// point with an ordinary, visually CONTINUOUS line — accepted knowingly,
-// not an oversight, even though that line will visually imply data was
-// recorded during a gap that wasn't. See pushHistory()'s own comment on
-// this exact point for the full reasoning.
+// ⚠️ This constant's relationship to the CHART buffer has changed twice —
+// worth knowing the full history if touching this again. (1) Originally,
+// a stale gap wiped the ENTIRE chart history buffer, so Chart.js would
+// never draw a straight line bridging real dead time — but this meant
+// restarting the ESP32 hardware reset the live charts back to empty every
+// time, reported directly. (2) Reverted to never touching the buffer at
+// all, per an explicit first choice ("connect old and new data with a
+// continuous line") — old data stayed, but the line then bridged straight
+// through the gap with no visual break. (3) That was then explicitly
+// reversed too ("actually i want a gap instead"): pushHistory() now
+// inserts a single null-valued marker point right at the gap before
+// continuing — Chart.js's default `spanGaps:false` breaks the line at a
+// null value rather than connecting through it, so the CURRENT behavior
+// keeps ALL retained data (old and new, up to HISTORY_HARD_CAP_MS) on
+// screen AND shows a real, honest visual break exactly where nothing was
+// recorded. See pushHistory()'s own comment on this exact point for the
+// full reasoning and the marker-insertion code itself.
 const CHART_GAP_STALE_MS = 5000;
 let lastPacketTime = null;
 let activeRunStart = null;
@@ -5251,30 +5256,33 @@ function pushHistory(d) {
   // to Date.now() only if it's ever missing (e.g. an old cached response).
   const t = d.received_at || Date.now();
 
-  // ⚠️ REVERSED, per explicit request/follow-up choice: a gap of more than
-  // CHART_GAP_STALE_MS used to WIPE the entire chart buffer here — the
-  // original reasoning (still true) was that Chart.js would otherwise
-  // draw a straight line bridging real dead time (a LoRa dropout, the
-  // receiver_agent restarting, the ESP32 receiver/sender ITSELF
-  // rebooting) as if it were a continuous reading. In practice this meant
-  // restarting the ESP32 hardware reset the live charts back to empty —
-  // reported directly ("the data and graphs reset when restart the esp32
-  // reciever/sender it should still have the last hr of data there").
-  // Asked directly whether the gap itself should show as a visible break
-  // (keeping old data, but with an honest discontinuity in the line) or a
-  // seamless connection (keeping old data AND drawing straight through
-  // the gap with no visible break) — the explicit choice was the latter.
-  // So: the chart buffer is no longer touched here at all on a stale gap
-  // — whatever's already retained (up to HISTORY_HARD_CAP_MS) simply
-  // stays, and the next real point just gets appended normally, letting
-  // Chart.js connect it to the last pre-gap point with an ordinary line.
-  // Efficiency/lap tracking is a SEPARATE concern from chart continuity
-  // and still resets on a stale gap, just below — a real multi-second-
-  // plus outage (the car may genuinely have powered down) shouldn't have
-  // its dead time integrated into Wh/distance/lap timing as if power was
-  // still being drawn the whole time, even though the chart itself no
-  // longer resets alongside it.
+  // ⚠️ THIRD design for this same problem — see CHART_GAP_STALE_MS's own
+  // section comment for the full history. In order: (1) wipe the entire
+  // chart buffer on a stale gap, to avoid Chart.js bridging real dead
+  // time with a straight line — but this meant restarting the ESP32
+  // receiver/sender reset the live charts back to empty every time
+  // ("the data and graphs reset... it should still have the last hr of
+  // data there"); (2) stop touching the buffer at all, letting the line
+  // connect straight through — explicitly chosen at first ("connect old
+  // and new data with a continuous line"), then explicitly reversed
+  // ("actually i want a gap instead"). This final version keeps BOTH
+  // requirements: the retained buffer (up to HISTORY_HARD_CAP_MS) is
+  // never wiped, but a single null-valued marker point is inserted right
+  // after the last real point before the new one is pushed — Chart.js's
+  // default `spanGaps:false` means a null y-value breaks the line rather
+  // than connecting through it, so the chart shows a real, honest visual
+  // gap exactly where nothing was recorded, with all the surrounding real
+  // data (old AND new) still fully intact on screen either side of it.
+  // Efficiency/lap tracking is a separate concern, unaffected by any of
+  // these three versions — it still resets on a stale gap, just below —
+  // a real multi-second-plus outage (the car may genuinely have powered
+  // down) shouldn't have its dead time integrated into Wh/distance/lap
+  // timing as if power was still being drawn the whole time.
   if (lastPacketTime != null && (t - lastPacketTime) > CHART_GAP_STALE_MS) {
+    const gapMarkerT = lastPacketTime + 1;   // strictly after the last real point, strictly before this one (the gap always exceeds CHART_GAP_STALE_MS, so there's always room)
+    historyTimes.push(gapMarkerT);
+    Object.keys(METRICS).forEach(k => history[k].push(null));
+    historyPowerW.push(null);
     resetLapTracking();
   } else if (lastPacketTime != null) {
     // Integrate battery power draw (Wh) over the real elapsed time since
@@ -5971,11 +5979,12 @@ renderOvMobileList();
 // since every backfilled point can only ever come from ONE session,
 // server-side-bounded by SESSION_GAP_MS) gets exactly the same treatment
 // a live gap that size would get if it happened while this tab was
-// already open: efficiency/lap tracking resets across it (see
-// pushHistory()'s own STALE-GAP DETECTION comment), but the chart itself
-// draws straight through with an ordinary connecting line — per explicit
-// request, the chart never discards or visually breaks across a gap
-// anymore, backfilled or live.
+// already open: efficiency/lap tracking resets across it, and the chart
+// shows a real visual break there (a null-valued marker point — see
+// pushHistory()'s own STALE-GAP DETECTION comment for the full
+// reasoning/history) rather than discarding data or bridging it with a
+// false connecting line — identical treatment whether the gap is
+// backfilled or happens live while the tab's already open.
 async function backfillRecentHistory() {
   // Only worth a visible spinner once there's enough of it that the loop
   // + chart rebuild below would take a genuinely perceptible moment — per
