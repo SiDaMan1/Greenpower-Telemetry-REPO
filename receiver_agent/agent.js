@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.7.0.0';
+const AGENT_VERSION = '1.7.1.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -1762,6 +1762,18 @@ $card.Controls.Add($lblUpdate)
 # whichever one is currently identified as the real Greenpower receiver
 # (see Refresh-Ports below) by default, but can be changed to any other
 # port for a manual override.
+# ⚠️ Real bug, reported directly ("the copy button and spacing between
+# all of them are uneven"): the FIRST version of this row used ad hoc
+# gaps between the label/dropdown/two buttons (4px, then 12px, then
+# 10px — never actually measured, just eyeballed while adding each
+# control) instead of one consistent value, and the two buttons' right
+# edge landed at x=590 rather than flush with x=600, the right edge
+# every other full-width control on this window (the status card, the
+# log box, the Copy button, Uninstall) already aligns to. Every gap
+# between these four controls is now exactly 12px, and the row spans the
+# same 24-600 width as everything else: label(24,40) -> +12 -> combo
+# (76,200) -> +12 -> Start(288,150) -> +12 -> Stop(450,150), ending
+# exactly at 600.
 $lblPort = New-Object System.Windows.Forms.Label
 $lblPort.Location = Pt 24 232
 $lblPort.Size = Sz 40 20
@@ -1771,7 +1783,7 @@ $lblPort.ForeColor = $colorText
 $form.Controls.Add($lblPort)
 
 $cmbPort = New-Object System.Windows.Forms.ComboBox
-$cmbPort.Location = Pt 68 228
+$cmbPort.Location = Pt 76 228
 $cmbPort.Size = Sz 200 28
 $cmbPort.DropDownStyle = "DropDownList"
 $cmbPort.FlatStyle = "Flat"
@@ -1786,7 +1798,7 @@ $form.Controls.Add($cmbPort)
 # a re-skinned Check for Updates or a re-skinned Uninstall.
 $btnStartForward = New-Object System.Windows.Forms.Button
 $btnStartForward.Text = "Start Forwarding"
-$btnStartForward.Location = Pt 280 224
+$btnStartForward.Location = Pt 288 224
 $btnStartForward.Size = Sz 150 36
 $btnStartForward.FlatStyle = "Flat"
 $btnStartForward.FlatAppearance.BorderSize = 0
@@ -1803,7 +1815,7 @@ $btnStartForward.Add_Click({
     # suffix (see Refresh-Ports) — the bare COM path is always the first
     # whitespace-delimited token, and a real COM port name never itself
     # contains whitespace, so this split is safe.
-    if ($selected) { $portPath = ($selected -split '\s+')[0] }
+    if ($selected) { $portPath = ($selected -split '\\s+')[0] }
     if (-not $portPath) {
         [System.Windows.Forms.MessageBox]::Show("Select a COM port first, or plug in the receiver and wait for it to be auto-detected.", "Greenpower Receiver Agent") | Out-Null
         return
@@ -1830,7 +1842,7 @@ Set-RoundedRegion $btnStartForward (S 8)
 # Uninstall button's red-tinted "danger" styling.
 $btnStopForward = New-Object System.Windows.Forms.Button
 $btnStopForward.Text = "Stop Forwarding"
-$btnStopForward.Location = Pt 440 224
+$btnStopForward.Location = Pt 450 224
 $btnStopForward.Size = Sz 150 36
 $btnStopForward.FlatStyle = "Flat"
 $btnStopForward.FlatAppearance.BorderSize = 0
@@ -1919,9 +1931,16 @@ $form.Controls.Add($lblLog)
 # perceptible against the white background). White-on-light-gray
 # already gives enough contrast against the page background without
 # needing a border at all.
+# ⚠️ Real bug, part of the same "uneven spacing" report as the forwarding
+# row above: this button's own Y was never actually centered against
+# $lblLog's — off by 3px (button center 280 vs label center 277 before
+# this fix), a real, measurable misalignment that had been sitting in
+# this file since before the forwarding row even existed. y=267 + this
+# button's own 26px height centers it on 280, matching $lblLog exactly
+# (y=270, height 20, center 280).
 $btnCopyLog = New-Object System.Windows.Forms.Button
 $btnCopyLog.Text = "Copy"
-$btnCopyLog.Location = Pt 500 264
+$btnCopyLog.Location = Pt 500 267
 $btnCopyLog.Size = Sz 100 26
 $btnCopyLog.FlatStyle = "Flat"
 $btnCopyLog.FlatAppearance.BorderSize = 0
