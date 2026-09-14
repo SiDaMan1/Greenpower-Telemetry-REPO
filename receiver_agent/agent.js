@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.6.3.0';
+const AGENT_VERSION = '1.7.0.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -274,6 +274,15 @@ const UPDATE_SUCCESS_MARKER = path.join(os.tmpdir(), 'greenpower-agent-update-su
 // being decided) — keyed by port path, so we don't re-prompt every scan
 // tick for the same physical device.
 const knownPorts = new Map();   // path -> 'pending' | 'ours' | 'not-ours'
+
+// Whichever SerialPort is the CURRENT active forwarding connection, if
+// any — set by startForwarding() (both the automatic accept-the-prompt
+// path AND the manual "Start Forwarding" GUI button use this same
+// function), cleared on close. This is what manualStartForwarding()/
+// stopForwarding() below act on directly, rather than reaching into
+// whatever port object promptToForward()'s closure happened to capture.
+let activePort = null;
+let activePortPath = null;
 
 // Live state the GUI reads — kept as a small module-level object rather
 // than reaching into knownPorts/closures, since those are keyed/shaped for
@@ -827,6 +836,8 @@ function startForwarding(portPath, port) {
     let failureNotified = false;
 
     guiState.forwarding = { active: true, port: portPath, confirmed: false };
+    activePort = port;
+    activePortPath = portPath;
 
     port.on('data', (chunk) => {
         buffer += chunk.toString('utf8');
@@ -863,6 +874,103 @@ function startForwarding(portPath, port) {
         if (guiState.forwarding.port === portPath) {
             guiState.forwarding = { active: false, port: null, confirmed: false };
         }
+        if (activePortPath === portPath) {
+            activePort = null;
+            activePortPath = null;
+        }
+    });
+}
+
+// ── Manual Start/Stop Forwarding (GUI buttons) ──────────────────────
+// Per explicit request: two buttons on the native GUI, alongside the
+// existing automatic "found the receiver, ask before forwarding" flow
+// above — Start Forwarding (with a COM port dropdown, auto-selecting
+// whichever port is currently identified as the real receiver) and Stop
+// Forwarding. See startGuiServer()'s /api/ports, /api/start-forwarding,
+// /api/stop-forwarding routes for how the GUI actually calls these, and
+// guiWindowPs1() for the button/dropdown themselves.
+//
+// stopForwarding() just closes whatever's currently active — port.on
+// ('close') above (shared with the automatic path) does the actual
+// guiState/activePort cleanup, so this doesn't duplicate that bookkeeping.
+function stopForwarding() {
+    if (!activePort) return { ok: true, wasActive: false };
+    const portPath = activePortPath;
+    log(`[FORWARD] Manually stopped forwarding on ${portPath} (GUI button).`);
+    try { activePort.close(() => {}); } catch (e) { /* already closing/closed — the 'close' handler's cleanup still fires either way */ }
+    return { ok: true, wasActive: true };
+}
+
+// requestedPath is optional — omitted (or empty) means "whichever port is
+// currently identified as the real Greenpower receiver," matching the
+// dropdown's own auto-selected default. Returns a plain {ok, error?}
+// result object (not a thrown exception) so the HTTP route can always
+// respond with a real JSON body the GUI can show, success or failure.
+function manualStartForwarding(requestedPath) {
+    return new Promise((resolve) => {
+        let targetPath = requestedPath && requestedPath.trim();
+        if (!targetPath) {
+            for (const [p, state] of knownPorts) {
+                if (state === 'ours') { targetPath = p; break; }
+            }
+        }
+        if (!targetPath) {
+            resolve({ ok: false, error: 'No Greenpower receiver has been auto-detected yet, and no port was selected — plug in the receiver or pick a port from the dropdown.' });
+            return;
+        }
+
+        // Already forwarding exactly this port — nothing to do, not an error.
+        if (guiState.forwarding.active && guiState.forwarding.port === targetPath) {
+            resolve({ ok: true, alreadyActive: true });
+            return;
+        }
+        // Forwarding a DIFFERENT port right now — this agent only ever
+        // forwards one connection at a time (same assumption the
+        // automatic prompt-based flow already makes), so switch cleanly
+        // rather than trying to run two at once.
+        if (activePort) stopForwarding();
+
+        // A port still mid-identify (the automatic handshake already has
+        // it open) would fail to open a second time anyway — surfaced as
+        // a clear message instead of a raw SerialPort error, since this
+        // one's genuinely likely ("just plugged in, wait a second") and
+        // worth explaining rather than just failing.
+        if (knownPorts.get(targetPath) === 'pending') {
+            resolve({ ok: false, error: `${targetPath} is still being identified — try again in a moment.` });
+            return;
+        }
+
+        let settled = false;
+        let port;
+        try {
+            port = new SerialPort({ path: targetPath, baudRate: BAUD_RATE }, (err) => {
+                if (settled) return;
+                if (err) {
+                    settled = true;
+                    log(`[WARN] Manual start forwarding: couldn't open ${targetPath}: ${err.message}`);
+                    resolve({ ok: false, error: err.message });
+                    return;
+                }
+                settled = true;
+                log(`[FORWARD] Manually starting forwarding from ${targetPath} (GUI button).`);
+                // A manual pick is a deliberate, explicit user decision —
+                // the same kind of confirmation accepting the automatic
+                // notification prompt already represents — so this port
+                // is marked 'ours' the same way a successful auto-identify
+                // would, rather than left in whatever state (often
+                // 'not-ours', if the handshake never saw this one) it was
+                // in before. This keeps scanPorts() from re-running an
+                // unnecessary identify pass against a port already known
+                // to be in active use.
+                knownPorts.set(targetPath, 'ours');
+                startForwarding(targetPath, port);
+                resolve({ ok: true });
+            });
+        } catch (e) {
+            resolve({ ok: false, error: e.message });
+            return;
+        }
+        port.on('error', () => { /* handled by the open callback above for the initial-open case; a later runtime error just surfaces via the normal 'close' event like any other disconnect */ });
     });
 }
 
@@ -1563,7 +1671,7 @@ function Sz([int]$w, [int]$h) { return New-Object System.Drawing.Size((S $w), (S
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Greenpower Receiver Agent"
-$form.Size = Sz 640 700
+$form.Size = Sz 640 744
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -1642,13 +1750,153 @@ $lblUpdate.Font = $fontBody
 $lblUpdate.ForeColor = $colorText
 $card.Controls.Add($lblUpdate)
 
+# ── Manual forwarding controls ───────────────────────────────────────
+# Per explicit request: two buttons for directly starting/stopping
+# forwarding, alongside the existing automatic "found it, ask before
+# forwarding" notification flow above (promptToForward() in agent.js) —
+# that flow is completely untouched by this; these are an additional,
+# explicit way to reach the same startForwarding()/stopForwarding()
+# functions, e.g. if a notification was dismissed or never seen, or to
+# deliberately forward from a port other than whichever one auto-
+# identified. $cmbPort lists every visible COM port and auto-selects
+# whichever one is currently identified as the real Greenpower receiver
+# (see Refresh-Ports below) by default, but can be changed to any other
+# port for a manual override.
+$lblPort = New-Object System.Windows.Forms.Label
+$lblPort.Location = Pt 24 232
+$lblPort.Size = Sz 40 20
+$lblPort.Text = "Port:"
+$lblPort.Font = $fontBody
+$lblPort.ForeColor = $colorText
+$form.Controls.Add($lblPort)
+
+$cmbPort = New-Object System.Windows.Forms.ComboBox
+$cmbPort.Location = Pt 68 228
+$cmbPort.Size = Sz 200 28
+$cmbPort.DropDownStyle = "DropDownList"
+$cmbPort.FlatStyle = "Flat"
+$cmbPort.Font = $fontBody
+$cmbPort.Cursor = $realHandCursor
+$form.Controls.Add($cmbPort)
+
+# Green ("go") fill — this project's existing $colorGood, used elsewhere
+# only for status TEXT, doubles here as the first button background on
+# this whole window that isn't the accent blue or the danger red-tint,
+# which is deliberate: this needs to read as a distinct third action, not
+# a re-skinned Check for Updates or a re-skinned Uninstall.
+$btnStartForward = New-Object System.Windows.Forms.Button
+$btnStartForward.Text = "Start Forwarding"
+$btnStartForward.Location = Pt 280 224
+$btnStartForward.Size = Sz 150 36
+$btnStartForward.FlatStyle = "Flat"
+$btnStartForward.FlatAppearance.BorderSize = 0
+$btnStartForward.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(20, 140, 20)
+$btnStartForward.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(12, 108, 12)
+$btnStartForward.BackColor = $colorGood
+$btnStartForward.ForeColor = [System.Drawing.Color]::White
+$btnStartForward.Font = $fontBody
+$btnStartForward.Cursor = $realHandCursor
+$btnStartForward.Add_Click({
+    $selected = $cmbPort.SelectedItem
+    $portPath = $null
+    # Labels can carry a "  (Greenpower Receiver)" or "  - manufacturer"
+    # suffix (see Refresh-Ports) — the bare COM path is always the first
+    # whitespace-delimited token, and a real COM port name never itself
+    # contains whitespace, so this split is safe.
+    if ($selected) { $portPath = ($selected -split '\s+')[0] }
+    if (-not $portPath) {
+        [System.Windows.Forms.MessageBox]::Show("Select a COM port first, or plug in the receiver and wait for it to be auto-detected.", "Greenpower Receiver Agent") | Out-Null
+        return
+    }
+    $lblForwarding.Text = "Starting forwarding on $portPath..."
+    $lblForwarding.ForeColor = $colorWarn
+    try {
+        $bodyJson = (@{ port = $portPath } | ConvertTo-Json -Compress)
+        $resp = Invoke-RestMethod -Uri "$apiBase/api/start-forwarding" -Method Post -Body $bodyJson -ContentType "application/json" -TimeoutSec 8
+        if (-not $resp.ok) {
+            [System.Windows.Forms.MessageBox]::Show(("Couldn't start forwarding on " + $portPath + ": " + $resp.error), "Greenpower Receiver Agent") | Out-Null
+        }
+    } catch {
+        [System.Windows.Forms.MessageBox]::Show("Couldn't reach the agent to start forwarding.", "Greenpower Receiver Agent") | Out-Null
+    }
+    Refresh-Status
+})
+$form.Controls.Add($btnStartForward)
+Set-RoundedRegion $btnStartForward (S 8)
+
+# Plain white/neutral, same secondary-button treatment the Copy button
+# above already uses — stopping forwarding is a normal, non-destructive
+# state change, not a danger action, so it deliberately does NOT get the
+# Uninstall button's red-tinted "danger" styling.
+$btnStopForward = New-Object System.Windows.Forms.Button
+$btnStopForward.Text = "Stop Forwarding"
+$btnStopForward.Location = Pt 440 224
+$btnStopForward.Size = Sz 150 36
+$btnStopForward.FlatStyle = "Flat"
+$btnStopForward.FlatAppearance.BorderSize = 0
+$btnStopForward.FlatAppearance.MouseOverBackColor = $colorBg
+$btnStopForward.BackColor = [System.Drawing.Color]::White
+$btnStopForward.ForeColor = $colorText
+$btnStopForward.Font = $fontBody
+$btnStopForward.Cursor = $realHandCursor
+$btnStopForward.Add_Click({
+    try { Invoke-RestMethod -Uri "$apiBase/api/stop-forwarding" -Method Post -TimeoutSec 5 | Out-Null } catch {}
+    Refresh-Status
+})
+$form.Controls.Add($btnStopForward)
+Set-RoundedRegion $btnStopForward (S 8)
+
+# Refreshes $cmbPort's list from the agent's own live serial-port scan —
+# called on the same 3s cadence as Refresh-Status (see its own call to
+# this near the bottom of that function), not just once at startup, so a
+# receiver plugged in AFTER this window was already open still gets
+# auto-selected the moment it's identified.
+function Refresh-Ports {
+    try {
+        $portsResp = Invoke-JsonUtf8("$apiBase/api/ports")
+        $prevSelected = $cmbPort.SelectedItem
+        $items = @()
+        $receiverLabel = $null
+        foreach ($p in $portsResp.ports) {
+            $label = $p.path
+            if ($p.isReceiver) {
+                $label = $p.path + "  (Greenpower Receiver)"
+                $receiverLabel = $label
+            } elseif ($p.manufacturer) {
+                $label = $p.path + "  - " + $p.manufacturer
+            }
+            $items += $label
+        }
+        # Only actually rebuild .Items if the list content changed —
+        # doing this unconditionally on every 3s tick would otherwise
+        # close an open dropdown out from under the user mid-click.
+        $currentItems = @($cmbPort.Items)
+        if (($items -join '|') -ne ($currentItems -join '|')) {
+            $cmbPort.Items.Clear()
+            foreach ($item in $items) { [void]$cmbPort.Items.Add($item) }
+        }
+        # A pick already made (manual OR a previous auto-select) is left
+        # alone as long as it's still in the list — auto-selecting the
+        # receiver is only ever the DEFAULT for an otherwise-empty
+        # selection, never something that overrides a choice already
+        # sitting in the dropdown.
+        if ($prevSelected -and $cmbPort.Items.Contains($prevSelected)) {
+            $cmbPort.SelectedItem = $prevSelected
+        } elseif ($receiverLabel -and $cmbPort.Items.Contains($receiverLabel)) {
+            $cmbPort.SelectedItem = $receiverLabel
+        } elseif ($cmbPort.SelectedIndex -eq -1 -and $cmbPort.Items.Count -gt 0) {
+            $cmbPort.SelectedIndex = 0
+        }
+    } catch {}
+}
+
 # ── Log ───────────────────────────────────────────────────────────
 # "(latest 150 lines)" removed from the label per explicit request —
 # unnecessary detail; the log still only ever holds the latest 150
 # lines underneath (readLogTail(150) on the agent side, unchanged),
 # just not called out in the UI anymore.
 $lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Location = Pt 24 226
+$lblLog.Location = Pt 24 270
 $lblLog.Size = Sz 300 20
 $lblLog.Text = "Activity log"
 $lblLog.Font = $fontHeading
@@ -1673,7 +1921,7 @@ $form.Controls.Add($lblLog)
 # needing a border at all.
 $btnCopyLog = New-Object System.Windows.Forms.Button
 $btnCopyLog.Text = "Copy"
-$btnCopyLog.Location = Pt 500 220
+$btnCopyLog.Location = Pt 500 264
 $btnCopyLog.Size = Sz 100 26
 $btnCopyLog.FlatStyle = "Flat"
 $btnCopyLog.FlatAppearance.BorderSize = 0
@@ -1709,7 +1957,7 @@ Set-RoundedRegion $btnCopyLog (S 6)
 # looking" garbled characters report: Invoke-JsonUtf8 above decodes
 # the log text correctly before it ever reaches this control.
 $rtbLog = New-Object HandCursorRichTextBox
-$rtbLog.Location = Pt 24 250
+$rtbLog.Location = Pt 24 294
 $rtbLog.Size = Sz 576 318
 $rtbLog.ReadOnly = $true
 $rtbLog.WordWrap = $false
@@ -1742,7 +1990,7 @@ $form.Controls.Add($rtbLog)
 # modern" even with rounded corners.
 $btnUpdate = New-Object System.Windows.Forms.Button
 $btnUpdate.Text = "Check for Updates"
-$btnUpdate.Location = Pt 24 592
+$btnUpdate.Location = Pt 24 636
 $btnUpdate.Size = Sz 210 38
 $btnUpdate.FlatStyle = "Flat"
 $btnUpdate.FlatAppearance.BorderSize = 0
@@ -1775,7 +2023,7 @@ Set-RoundedRegion $btnUpdate (S 8)
 # border to clash with the rounded clip in the first place.
 $btnUninstall = New-Object System.Windows.Forms.Button
 $btnUninstall.Text = "Uninstall"
-$btnUninstall.Location = Pt 394 592
+$btnUninstall.Location = Pt 394 636
 $btnUninstall.Size = Sz 206 38
 $btnUninstall.FlatStyle = "Flat"
 $btnUninstall.FlatAppearance.BorderSize = 0
@@ -1932,6 +2180,7 @@ function Refresh-Status {
             $rtbLog.Invalidate()
         }
     } catch {}
+    Refresh-Ports
 }
 
 $timer = New-Object System.Windows.Forms.Timer
@@ -2023,6 +2272,26 @@ setInterval(refresh, 3000);
 </body></html>`;
 }
 
+// Reads a request body to completion and resolves with the raw string —
+// this GUI server is hand-rolled on Node's built-in http module (no
+// Express/body-parser, matching this project's existing "keep
+// dependencies minimal" pattern), so POST /api/start-forwarding needs
+// this itself to read its {port: "COM5"} JSON body. Capped at 10KB —
+// wildly more than a single port-name JSON body could ever need; a
+// request larger than that is destroyed rather than buffered, since
+// this is a loopback-only API with no legitimate reason to send more.
+function readRequestBody(req) {
+    return new Promise((resolve, reject) => {
+        let data = '';
+        req.on('data', (chunk) => {
+            data += chunk;
+            if (data.length > 10 * 1024) { req.destroy(); reject(new Error('request body too large')); }
+        });
+        req.on('end', () => resolve(data));
+        req.on('error', reject);
+    });
+}
+
 function startGuiServer() {
     const server = http.createServer((req, res) => {
         if (req.method === 'GET' && req.url === '/') {
@@ -2051,6 +2320,44 @@ function startGuiServer() {
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ ok: true }));
             triggerUninstall();
+        } else if (req.method === 'GET' && req.url === '/api/ports') {
+            // Backs the GUI's port dropdown — every currently-visible serial
+            // port, plus which ONE (if any) is the port already identified
+            // as the real Greenpower receiver (see knownPorts), so the
+            // dropdown can auto-select it by default the same way the
+            // automatic notification-prompt flow already targets it.
+            SerialPort.list().then((ports) => {
+                let receiverPath = null;
+                for (const [p, state] of knownPorts) {
+                    if (state === 'ours') { receiverPath = p; break; }
+                }
+                const list = ports.map(p => ({
+                    path: p.path,
+                    manufacturer: p.manufacturer || null,
+                    isReceiver: p.path === receiverPath,
+                }));
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ ports: list, receiverPath }));
+            }).catch((e) => {
+                res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ error: e.message }));
+            });
+        } else if (req.method === 'POST' && req.url === '/api/start-forwarding') {
+            readRequestBody(req).then((bodyStr) => {
+                let body = {};
+                try { body = bodyStr ? JSON.parse(bodyStr) : {}; } catch (e) { /* empty/malformed body — treated the same as "no port specified", manualStartForwarding() falls back to auto-detection */ }
+                return manualStartForwarding(body.port);
+            }).then((result) => {
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify(result));
+            }).catch((e) => {
+                res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ ok: false, error: e.message }));
+            });
+        } else if (req.method === 'POST' && req.url === '/api/stop-forwarding') {
+            const result = stopForwarding();
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify(result));
         } else {
             res.writeHead(404);
             res.end('Not found');
