@@ -45,7 +45,7 @@ const SysTray = require('systray').default;
 // installs — checkForUpdate() below compares THIS constant against that
 // manifest, so a content change with no version bump here is invisible to
 // auto-update even though the .msi itself got rebuilt.
-const AGENT_VERSION = '1.7.1.0';
+const AGENT_VERSION = '1.7.2.0';
 
 // ── Logging ─────────────────────────────────────────────────────────
 // Once this runs silently at login (see setup.bat), there's no visible
@@ -1671,7 +1671,7 @@ function Sz([int]$w, [int]$h) { return New-Object System.Drawing.Size((S $w), (S
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Greenpower Receiver Agent"
-$form.Size = Sz 640 744
+$form.Size = Sz 640 788
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
@@ -1715,7 +1715,7 @@ $form.Controls.Add($lblVersion)
 # ── Status card ───────────────────────────────────────────────────
 $card = New-Object System.Windows.Forms.Panel
 $card.Location = Pt 24 86
-$card.Size = Sz 576 128
+$card.Size = Sz 576 154
 $card.BackColor = $colorCard
 $form.Controls.Add($card)
 Set-RoundedRegion $card (S 10)
@@ -1750,56 +1750,46 @@ $lblUpdate.Font = $fontBody
 $lblUpdate.ForeColor = $colorText
 $card.Controls.Add($lblUpdate)
 
-# ── Manual forwarding controls ───────────────────────────────────────
+# Per explicit follow-up request — the port dropdown/manual-selection
+# control from the previous pass is GONE ("get rid of the COM selection
+# and just make it normal text showing which port is the reciever"). This
+# is now a fourth plain status line inside the card itself, in the same
+# family as Dashboard/Update status right above it, rather than a
+# separate control floating outside the card — refreshed alongside them
+# by Refresh-ReceiverPort (see below), colored green when a receiver is
+# currently identified and muted gray when none is.
+$lblReceiverPort = New-Object System.Windows.Forms.Label
+$lblReceiverPort.Location = Pt 20 112
+$lblReceiverPort.Size = Sz 536 20
+$lblReceiverPort.Text = "Receiver: (loading...)"
+$lblReceiverPort.Font = $fontBody
+$lblReceiverPort.ForeColor = $colorText
+$card.Controls.Add($lblReceiverPort)
+
+# ── Manual forwarding buttons ────────────────────────────────────────
 # Per explicit request: two buttons for directly starting/stopping
 # forwarding, alongside the existing automatic "found it, ask before
 # forwarding" notification flow above (promptToForward() in agent.js) —
 # that flow is completely untouched by this; these are an additional,
 # explicit way to reach the same startForwarding()/stopForwarding()
-# functions, e.g. if a notification was dismissed or never seen, or to
-# deliberately forward from a port other than whichever one auto-
-# identified. $cmbPort lists every visible COM port and auto-selects
-# whichever one is currently identified as the real Greenpower receiver
-# (see Refresh-Ports below) by default, but can be changed to any other
-# port for a manual override.
-# ⚠️ Real bug, reported directly ("the copy button and spacing between
-# all of them are uneven"): the FIRST version of this row used ad hoc
-# gaps between the label/dropdown/two buttons (4px, then 12px, then
-# 10px — never actually measured, just eyeballed while adding each
-# control) instead of one consistent value, and the two buttons' right
-# edge landed at x=590 rather than flush with x=600, the right edge
-# every other full-width control on this window (the status card, the
-# log box, the Copy button, Uninstall) already aligns to. Every gap
-# between these four controls is now exactly 12px, and the row spans the
-# same 24-600 width as everything else: label(24,40) -> +12 -> combo
-# (76,200) -> +12 -> Start(288,150) -> +12 -> Stop(450,150), ending
-# exactly at 600.
-$lblPort = New-Object System.Windows.Forms.Label
-$lblPort.Location = Pt 24 232
-$lblPort.Size = Sz 40 20
-$lblPort.Text = "Port:"
-$lblPort.Font = $fontBody
-$lblPort.ForeColor = $colorText
-$form.Controls.Add($lblPort)
-
-$cmbPort = New-Object System.Windows.Forms.ComboBox
-$cmbPort.Location = Pt 76 228
-$cmbPort.Size = Sz 200 28
-$cmbPort.DropDownStyle = "DropDownList"
-$cmbPort.FlatStyle = "Flat"
-$cmbPort.Font = $fontBody
-$cmbPort.Cursor = $realHandCursor
-$form.Controls.Add($cmbPort)
-
-# Green ("go") fill — this project's existing $colorGood, used elsewhere
-# only for status TEXT, doubles here as the first button background on
-# this whole window that isn't the accent blue or the danger red-tint,
-# which is deliberate: this needs to read as a distinct third action, not
-# a re-skinned Check for Updates or a re-skinned Uninstall.
+# functions, e.g. if a notification was dismissed or never seen. Start
+# Forwarding always targets whichever port is currently auto-detected as
+# the real Greenpower receiver (see $lblReceiverPort above and
+# manualStartForwarding() in agent.js, which already falls back to
+# exactly that when no explicit port is given) — there is deliberately no
+# manual port picker anymore (see the removal note above).
+# ⚠️ Positioned and sized to EXACTLY match $btnUpdate/$btnUninstall below
+# (same x/width, 24/210 and 394/206) — per explicit follow-up report that
+# an earlier version of this row (with ad hoc gaps, a dropdown, and a
+# right edge that didn't reach x=600 like everything else) "dont look
+# nicely aligned." Reusing the exact same proven two-button layout this
+# window already ends on, rather than inventing new proportions for a
+# second button row, is what actually guarantees consistent alignment —
+# both rows now share IDENTICAL left/right edges.
 $btnStartForward = New-Object System.Windows.Forms.Button
 $btnStartForward.Text = "Start Forwarding"
-$btnStartForward.Location = Pt 288 224
-$btnStartForward.Size = Sz 150 36
+$btnStartForward.Location = Pt 24 258
+$btnStartForward.Size = Sz 210 38
 $btnStartForward.FlatStyle = "Flat"
 $btnStartForward.FlatAppearance.BorderSize = 0
 $btnStartForward.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(20, 140, 20)
@@ -1809,24 +1799,15 @@ $btnStartForward.ForeColor = [System.Drawing.Color]::White
 $btnStartForward.Font = $fontBody
 $btnStartForward.Cursor = $realHandCursor
 $btnStartForward.Add_Click({
-    $selected = $cmbPort.SelectedItem
-    $portPath = $null
-    # Labels can carry a "  (Greenpower Receiver)" or "  - manufacturer"
-    # suffix (see Refresh-Ports) — the bare COM path is always the first
-    # whitespace-delimited token, and a real COM port name never itself
-    # contains whitespace, so this split is safe.
-    if ($selected) { $portPath = ($selected -split '\\s+')[0] }
-    if (-not $portPath) {
-        [System.Windows.Forms.MessageBox]::Show("Select a COM port first, or plug in the receiver and wait for it to be auto-detected.", "Greenpower Receiver Agent") | Out-Null
-        return
-    }
-    $lblForwarding.Text = "Starting forwarding on $portPath..."
+    $lblForwarding.Text = "Starting forwarding..."
     $lblForwarding.ForeColor = $colorWarn
     try {
-        $bodyJson = (@{ port = $portPath } | ConvertTo-Json -Compress)
-        $resp = Invoke-RestMethod -Uri "$apiBase/api/start-forwarding" -Method Post -Body $bodyJson -ContentType "application/json" -TimeoutSec 8
+        # No body needed — manualStartForwarding() on the agent side
+        # already falls back to whichever port is currently identified
+        # as the real receiver when none is explicitly given.
+        $resp = Invoke-RestMethod -Uri "$apiBase/api/start-forwarding" -Method Post -TimeoutSec 8
         if (-not $resp.ok) {
-            [System.Windows.Forms.MessageBox]::Show(("Couldn't start forwarding on " + $portPath + ": " + $resp.error), "Greenpower Receiver Agent") | Out-Null
+            [System.Windows.Forms.MessageBox]::Show(("Couldn't start forwarding: " + $resp.error), "Greenpower Receiver Agent") | Out-Null
         }
     } catch {
         [System.Windows.Forms.MessageBox]::Show("Couldn't reach the agent to start forwarding.", "Greenpower Receiver Agent") | Out-Null
@@ -1837,13 +1818,13 @@ $form.Controls.Add($btnStartForward)
 Set-RoundedRegion $btnStartForward (S 8)
 
 # Plain white/neutral, same secondary-button treatment the Copy button
-# above already uses — stopping forwarding is a normal, non-destructive
-# state change, not a danger action, so it deliberately does NOT get the
+# already uses — stopping forwarding is a normal, non-destructive state
+# change, not a danger action, so it deliberately does NOT get the
 # Uninstall button's red-tinted "danger" styling.
 $btnStopForward = New-Object System.Windows.Forms.Button
 $btnStopForward.Text = "Stop Forwarding"
-$btnStopForward.Location = Pt 450 224
-$btnStopForward.Size = Sz 150 36
+$btnStopForward.Location = Pt 394 258
+$btnStopForward.Size = Sz 206 38
 $btnStopForward.FlatStyle = "Flat"
 $btnStopForward.FlatAppearance.BorderSize = 0
 $btnStopForward.FlatAppearance.MouseOverBackColor = $colorBg
@@ -1858,48 +1839,25 @@ $btnStopForward.Add_Click({
 $form.Controls.Add($btnStopForward)
 Set-RoundedRegion $btnStopForward (S 8)
 
-# Refreshes $cmbPort's list from the agent's own live serial-port scan —
+# Refreshes $lblReceiverPort from the agent's own live serial-port scan —
 # called on the same 3s cadence as Refresh-Status (see its own call to
 # this near the bottom of that function), not just once at startup, so a
-# receiver plugged in AFTER this window was already open still gets
-# auto-selected the moment it's identified.
-function Refresh-Ports {
+# receiver plugged in AFTER this window was already open still updates
+# the moment it's identified.
+function Refresh-ReceiverPort {
     try {
         $portsResp = Invoke-JsonUtf8("$apiBase/api/ports")
-        $prevSelected = $cmbPort.SelectedItem
-        $items = @()
-        $receiverLabel = $null
-        foreach ($p in $portsResp.ports) {
-            $label = $p.path
-            if ($p.isReceiver) {
-                $label = $p.path + "  (Greenpower Receiver)"
-                $receiverLabel = $label
-            } elseif ($p.manufacturer) {
-                $label = $p.path + "  - " + $p.manufacturer
-            }
-            $items += $label
+        if ($portsResp.receiverPath) {
+            $lblReceiverPort.Text = "Receiver: " + $portsResp.receiverPath
+            $lblReceiverPort.ForeColor = $colorGood
+        } else {
+            $lblReceiverPort.Text = "Receiver: not detected"
+            $lblReceiverPort.ForeColor = $colorMuted
         }
-        # Only actually rebuild .Items if the list content changed —
-        # doing this unconditionally on every 3s tick would otherwise
-        # close an open dropdown out from under the user mid-click.
-        $currentItems = @($cmbPort.Items)
-        if (($items -join '|') -ne ($currentItems -join '|')) {
-            $cmbPort.Items.Clear()
-            foreach ($item in $items) { [void]$cmbPort.Items.Add($item) }
-        }
-        # A pick already made (manual OR a previous auto-select) is left
-        # alone as long as it's still in the list — auto-selecting the
-        # receiver is only ever the DEFAULT for an otherwise-empty
-        # selection, never something that overrides a choice already
-        # sitting in the dropdown.
-        if ($prevSelected -and $cmbPort.Items.Contains($prevSelected)) {
-            $cmbPort.SelectedItem = $prevSelected
-        } elseif ($receiverLabel -and $cmbPort.Items.Contains($receiverLabel)) {
-            $cmbPort.SelectedItem = $receiverLabel
-        } elseif ($cmbPort.SelectedIndex -eq -1 -and $cmbPort.Items.Count -gt 0) {
-            $cmbPort.SelectedIndex = 0
-        }
-    } catch {}
+    } catch {
+        $lblReceiverPort.Text = "Receiver: (agent not responding)"
+        $lblReceiverPort.ForeColor = $colorMuted
+    }
 }
 
 # ── Log ───────────────────────────────────────────────────────────
@@ -1908,7 +1866,7 @@ function Refresh-Ports {
 # lines underneath (readLogTail(150) on the agent side, unchanged),
 # just not called out in the UI anymore.
 $lblLog = New-Object System.Windows.Forms.Label
-$lblLog.Location = Pt 24 270
+$lblLog.Location = Pt 24 314
 $lblLog.Size = Sz 300 20
 $lblLog.Text = "Activity log"
 $lblLog.Font = $fontHeading
@@ -1940,7 +1898,7 @@ $form.Controls.Add($lblLog)
 # (y=270, height 20, center 280).
 $btnCopyLog = New-Object System.Windows.Forms.Button
 $btnCopyLog.Text = "Copy"
-$btnCopyLog.Location = Pt 500 267
+$btnCopyLog.Location = Pt 500 311
 $btnCopyLog.Size = Sz 100 26
 $btnCopyLog.FlatStyle = "Flat"
 $btnCopyLog.FlatAppearance.BorderSize = 0
@@ -1976,7 +1934,7 @@ Set-RoundedRegion $btnCopyLog (S 6)
 # looking" garbled characters report: Invoke-JsonUtf8 above decodes
 # the log text correctly before it ever reaches this control.
 $rtbLog = New-Object HandCursorRichTextBox
-$rtbLog.Location = Pt 24 294
+$rtbLog.Location = Pt 24 338
 $rtbLog.Size = Sz 576 318
 $rtbLog.ReadOnly = $true
 $rtbLog.WordWrap = $false
@@ -2009,7 +1967,7 @@ $form.Controls.Add($rtbLog)
 # modern" even with rounded corners.
 $btnUpdate = New-Object System.Windows.Forms.Button
 $btnUpdate.Text = "Check for Updates"
-$btnUpdate.Location = Pt 24 636
+$btnUpdate.Location = Pt 24 680
 $btnUpdate.Size = Sz 210 38
 $btnUpdate.FlatStyle = "Flat"
 $btnUpdate.FlatAppearance.BorderSize = 0
@@ -2042,7 +2000,7 @@ Set-RoundedRegion $btnUpdate (S 8)
 # border to clash with the rounded clip in the first place.
 $btnUninstall = New-Object System.Windows.Forms.Button
 $btnUninstall.Text = "Uninstall"
-$btnUninstall.Location = Pt 394 636
+$btnUninstall.Location = Pt 394 680
 $btnUninstall.Size = Sz 206 38
 $btnUninstall.FlatStyle = "Flat"
 $btnUninstall.FlatAppearance.BorderSize = 0
@@ -2199,7 +2157,7 @@ function Refresh-Status {
             $rtbLog.Invalidate()
         }
     } catch {}
-    Refresh-Ports
+    Refresh-ReceiverPort
 }
 
 $timer = New-Object System.Windows.Forms.Timer
